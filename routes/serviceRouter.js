@@ -2,39 +2,75 @@ const express = require("express");
 const router = express.Router();
 const authMiddleware = require("../middleware/authMiddleware");
 
-// Import your modular services
-const leadService = require("../controller/leadService");
-const corporateService = require("../controller/corporateService");
-const ledgerService = require("../controller/ledgerService");
-const userService = require("../controller/useServicesNew");
+// Import the Unified Service Object
+const services = require("../controller/unifiedService");
 
-
-// ✅ Service Mapping (No TypeScript syntax)
+// ✅ Simplified Service Mapping
+// This matches the keys defined in your unifiedService.js exports
 const serviceMap = {
-  leads: leadService,
-  corporate: corporateService,
-  ledger: ledgerService,
-  user: userService,
+  leads: services.leadService,
+  corporate: services.corporateService,
+  ledger: services.ledgerService,
+  user: services.userService,
 };
 
-// ✅ Apply JWT verification to all routes below
+// Apply JWT verification to all routes
 router.use(authMiddleware);
 
-/**
- * ✅ CREATE (POST)
- */
+/* =============================================================
+   1. SPECIALIZED ROUTES (Must be defined BEFORE generic routes)
+   ============================================================= */
+
+// ✅ LEADS BY STATUS
+router.get("/leads/status/:status", async (req, res) => {
+  try {
+    const { status } = req.params;
+    const { corporateId } = req.query; 
+    const result = await services.leadService.getLeadsByStatus(status, corporateId);
+    res.json({ success: true, data: result || [] });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ✅ BULK CREATE LEADS
+router.post("/addmany", async (req, res) => {
+  try {
+    if (!Array.isArray(req.body)) return res.status(400).json({ message: "Array required" });
+    const result = await services.leadService.addMany(req.body);
+    res.status(201).json(result);
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ✅ ADD ACTIVITY LOG
+router.post("/:id/activity", async (req, res) => {
+  try {
+    const result = await services.leadService.addActivity(req.params.id, req.body);
+    if (!result) return res.status(404).json({ success: false, message: "Lead not found" });
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+/* =============================================================
+   2. GENERIC FACTORY ROUTES (CRUD)
+   ============================================================= */
+
+/** ✅ CREATE (POST) */
 router.post("/:type/create", async (req, res) => {
   const { type } = req.params;
   const service = serviceMap[type];
 
   if (!service || !service.create) {
-    return res.status(400).json({ success: false, message: "Invalid service type" });
+    return res.status(400).json({ success: false, message: `Invalid service type: ${type}` });
   }
 
   try {
     const payload = { ...req.body };
-
-    // Attach corporateId for non-admins
+    // Auto-inject corporateId for non-admins
     if (req.user.role !== "Admin" && req.user.corporateId) {
       payload.corporateId = req.user.corporateId;
     }
@@ -42,14 +78,11 @@ router.post("/:type/create", async (req, res) => {
     const result = await service.create(payload);
     res.json({ success: true, data: result });
   } catch (err) {
-    console.error("Error creating record:", err);
     res.status(500).json({ success: false, message: err.message });
   }
 });
 
-/**
- * ✅ LIST (GET)
- */
+/** ✅ LIST (GET) */
 router.get("/:type/list", async (req, res) => {
   const { type } = req.params;
   const service = serviceMap[type];
@@ -63,18 +96,14 @@ router.get("/:type/list", async (req, res) => {
     if (req.user.role !== "Admin" && req.user.corporateId) {
       filters.corporateId = req.user.corporateId;
     }
-
     const result = await service.list(filters);
     res.json({ success: true, data: result });
   } catch (err) {
-    console.error("Error listing records:", err);
     res.status(500).json({ success: false, message: err.message });
   }
 });
 
-/**
- * ✅ GET BY ID (GET)
- */
+/** ✅ GET BY ID (GET) */
 router.get("/:type/:id", async (req, res) => {
   const { type, id } = req.params;
   const service = serviceMap[type];
@@ -85,17 +114,14 @@ router.get("/:type/:id", async (req, res) => {
 
   try {
     const result = await service.getById(id);
-    if (!result) return res.status(404).json({ success: false, message: "Not found" });
+    if (!result) return res.status(404).json({ success: false, message: "Record not found" });
     res.json({ success: true, data: result });
   } catch (err) {
-    console.error("Error fetching record:", err);
     res.status(500).json({ success: false, message: err.message });
   }
 });
 
-/**
- * ✅ UPDATE (PUT)
- */
+/** ✅ UPDATE (PUT) */
 router.put("/:type/:id", async (req, res) => {
   const { type, id } = req.params;
   const service = serviceMap[type];
@@ -108,14 +134,11 @@ router.put("/:type/:id", async (req, res) => {
     const result = await service.update(id, req.body);
     res.json({ success: true, data: result });
   } catch (err) {
-    console.error("Error updating record:", err);
     res.status(500).json({ success: false, message: err.message });
   }
 });
 
-/**
- * ✅ DELETE (DELETE)
- */
+/** ✅ DELETE (DELETE) */
 router.delete("/:type/:id", async (req, res) => {
   const { type, id } = req.params;
   const service = serviceMap[type];
@@ -128,74 +151,8 @@ router.delete("/:type/:id", async (req, res) => {
     await service.remove(id);
     res.json({ success: true, message: "Deleted successfully" });
   } catch (err) {
-    console.error("Error deleting record:", err);
     res.status(500).json({ success: false, message: err.message });
   }
 });
-
-/**
- * ✅ GET LEADS BY STATUS
- */
-router.get("/leads/status/:status", async (req, res, next) => {
-  try {
-    const { status } = req.params;
-    // Extract corporateId from query parameters
-    const { corporateId } = req.query; 
-
-    // Pass BOTH arguments to the service
-    const result = await leadService.getLeadsByStatus(status, corporateId);
-    
-    res.json({ 
-      success: true, 
-      data: result || [] 
-    });
-  } catch (err) {
-    console.error("❌ Route Error:", err.message);
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
-/**
- * ✅ BULK CREATE LEADS (POST)
-  */
-router.post("/addmany", async (req, res) => {
-  try {
-    const leadsArray = req.body;
-    if (!Array.isArray(leadsArray)) return res.status(400).json({ message: "Array required" });
-
-    const result = await leadService.addMany(leadsArray);
-
-    // FIX: Match the property names returned by the service
-    return res.status(201).json({ 
-      success: result.success, 
-      insertedCount: result.insertedCount, // Changed from result.count
-      skippedCount: result.skippedCount
-    });
-  } catch (err) {
-    console.error("Bulk Insert Route Error:", err);
-    return res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-/**
- * ✅ Add an Activity log to a specific lead
- */
-
-router.post("/:id/activity", async (req, res) => {
-  try {
-
-    // 2. USE leadService instead of ledgerService
-    const updatedLead = await leadService.addActivity(req.params.id, req.body);
-    
-    if (!updatedLead) {
-      return res.status(404).json({ success: false, message: "Lead not found" });
-    }
-    res.status(200).json({ success: true, data: updatedLead });
-  } catch (error) {
-    console.error("❌ Router Error:", error.message);
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-
 
 module.exports = router;
