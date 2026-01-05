@@ -33,7 +33,7 @@ app.use(express.urlencoded({ limit: "50mb", extended: true }));
 // Removed deprecated options: useNewUrlParser and useUnifiedTopology are now defaults in v6+
 mongoose
   .connect(process.env.MONGO_URI)
-  .then(() => console.log("✅ MongoDB connected successfully"))
+  .then(() => console.log("MongoDB 🖇️ connected successfully with 📲"))
   .catch((err) => {
     console.error("❌ MongoDB connection error:", err.message);
     process.exit(1); // Exit if DB connection fails
@@ -98,8 +98,7 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, "0.0.0.0", () => {
-  console.log(`✅ Server & Socket.IO running on http://192.168.1.7:${PORT}`);
-  console.log(`🚀 Health Check: http://192.168.1.7:${PORT}/api/auth/health-check`);
+  
 }); 
 
 //const PORT = process.env.PORT || 3000;
