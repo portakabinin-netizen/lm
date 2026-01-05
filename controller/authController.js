@@ -4,7 +4,7 @@ const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
 //const fetch = require('node-fetch');
 const { formatMobile } = require("../middleware/validateAuth");
-
+const cloudinary = require('cloudinary').v2;
 
 // In-memory OTP store (Use Redis for production)
 const otpStore = {}; 
@@ -171,30 +171,37 @@ exports.login = async (req, res) => {
         // Initialize variables properly
         let corpAdminId = null, 
             corporateId = null, 
-            corporateName = "", 
+            corporateName = "",
+            corporateTagName="", 
             accessAllow = false, 
             corporatePAN = "", 
             corporateGST = "", 
             CorpProfileImage = "";
+            userRole="";
 
         if (user.userRole === "CorpAdmin") {
             corpAdminId = user._id;
-            corporateId = user.apiUrls?._id || null;
+            corporateId= user.linkedCorporate?._id || null;
             corporateName = user.linkedCorporate?.corporateName || "";
+            corporateTagName = user.linkedCorporate?.corporateTagName || "Welcome";
             corporatePAN = user.linkedCorporate?.corporatePAN || "";
             corporateGST = user.linkedCorporate?.corporateGST || "Un-Registered";
             accessAllow = true;
             CorpProfileImage = user.linkedCorporate?.CorpProfileImage || "";
-            // Removed the undeclared userRole assignment that was here
+            userRole= user.userRole || "Guest";
+            
         } else {
             corpAdminId = user.accessCorporate?.corpAdminId || null;
             corporateId = user.accessCorporate?.corporateId || null;
+            userRole= user.userRole || "Guest";
+            corporateTagName = user.linkedCorporate?.corporateTagName || "Welcome";
             CorpProfileImage = user.linkedCorporate?.CorpProfileImage || "";
             accessAllow = user.accessCorporate?.accessAllow || false;
 
             if (corpAdminId) {
                 const adminData = await Users.findById(corpAdminId).select("linkedCorporate").lean();
                 corporateName = adminData?.linkedCorporate?.corporateName || "";
+                corporateTagName = user.linkedCorporate?.corporateTagName || "Welcome";
                 corporatePAN = adminData?.linkedCorporate?.corporatePAN || "";
                 corporateGST = adminData?.linkedCorporate?.corporateGST || "Un-Registered";
                 CorpProfileImage = adminData?.linkedCorporate?.CorpProfileImage || "";
@@ -221,7 +228,8 @@ exports.login = async (req, res) => {
                 userDisplayName: user.userDisplayName, 
                 userRole: user.userRole, 
                 accessAllow, 
-                corpAdminId, 
+                corpAdminId,
+                corporateTagName, 
                 CorpProfileImage, 
                 corporateId, 
                 corporateName, 
@@ -232,5 +240,78 @@ exports.login = async (req, res) => {
     } catch (err) {
         console.error("Login Error:", err); // Log the actual error for debugging
         return res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
+exports.updateProfileImage = async (req, res) => {
+    const Users = mongoose.model("Users");
+    try {
+        const { userId, imageBase64, fieldToUpdate } = req.body;
+
+        // 1. Extract IDs and Role
+        const requesterId = (req.user._id || req.user.userId)?.toString();
+        const targetUserId = userId?.toString();
+        const requesterRole = req.user.userRole;
+
+        if (!requesterId || !targetUserId) {
+            return res.status(400).json({ success: false, message: "Invalid Request: Missing IDs" });
+        }
+
+        // 2. Define Permissions & Path
+        let dbPath = "";
+        const isAdmin = requesterRole === "CorpAdmin";
+        const isSelf = requesterId === targetUserId;
+
+        if (fieldToUpdate === "CorpProfileImage") {
+            // ONLY CorpAdmin can update Corporate Image
+            if (!isAdmin) {
+                return res.status(403).json({ success: false, message: "Permission Denied: Admin only" });
+            }
+            dbPath = "linkedCorporate.CorpProfileImage";
+        } else if (fieldToUpdate === "userProfileImage") {
+            // CorpAdmin CAN update anyone's profile image
+            // Other users CAN ONLY update their own
+            if (!isAdmin && !isSelf) {
+                return res.status(403).json({ success: false, message: "Permission Denied: Unauthorized access" });
+            }
+            dbPath = "userProfileImage";
+        }
+
+        // 3. Upload to Cloudinary
+        // Ensure you have a check for imageBase64 content here
+        const uploadRes = await cloudinary.uploader.upload(
+            `data:image/jpeg;base64,${imageBase64}`,
+            {
+                folder: fieldToUpdate === "CorpProfileImage" ? "corporate_logos" : "user_profiles",
+                transformation: [{ width: 500, height: 500, crop: "fill", gravity: "face" }]
+            }
+        );
+
+        const finalUrl = uploadRes.secure_url;
+
+        // 4. Update Database
+        const updatedUser = await Users.findByIdAndUpdate(
+            targetUserId,
+            { $set: { [dbPath]: finalUrl } },
+            { 
+                new: true, 
+                runValidators: false // Bypasses regex checks if the URL format differs slightly
+            }
+        ).select("-userPassword");
+
+        if (!updatedUser) {
+            return res.status(404).json({ success: false, message: "User not found" });
+        }
+
+        return res.status(200).json({
+            success: true,
+            message: "Profile updated successfully",
+            url: finalUrl,
+            user: updatedUser
+        });
+
+    } catch (error) {
+        console.error("Critical Update Error:", error);
+        return res.status(500).json({ success: false, message: error.message });
     }
 };

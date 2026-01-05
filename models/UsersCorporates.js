@@ -18,7 +18,7 @@ const embeddedCorporateSchema = new mongoose.Schema(
   {
     corporateName: { type: String, trim: true, match: regex.name },
     corporateTagName: { type: String, trim: true },
-    CorpProfileImage: { type: String, trim: true, lowercase: true, match: regex.url },
+    CorpProfileImage: { type: String, trim: true, match: regex.url },
     corporateEmail: { type: String, trim: true, lowercase: true, match: regex.email },
     corporateAddress: { type: String, trim: true },
     corporateCity: { type: String, trim: true },
@@ -63,7 +63,7 @@ const userSchema = new mongoose.Schema({
   userPassword: { type: String, required: true, minlength: 8 },
   userRole: { type: String, enum: ["CorpAdmin", "Sales", "Project"], required: true },
   userAadhar: { type: String, trim: true, match: regex.aadhar },
-  userProfileImage: { type: String, trim: true, lowercase: true, match: regex.url },
+  userProfileImage: { type: String, trim: true, match: regex.url },
 
   /* 🎂 Date of Birth — stored as Date, formatted as dd-mm-yyyy when returned */
   userDoB: {

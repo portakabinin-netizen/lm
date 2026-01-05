@@ -10,8 +10,7 @@ router.post("/verify-otp", authController.verifyOtp);
 router.post("/check-unique", validateAuth, authController.checkUnique);
 router.post("/register", validateAuth, authController.register);
 router.post("/login", validateAuth, authController.login);
-
-// Protected Logic
+router.post("/update-profile-image", authMiddleware, authController.updateProfileImage);
 router.get('/health-check', authMiddleware, authController.healthCheck);
 
 module.exports = router;

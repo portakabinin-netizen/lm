@@ -19,6 +19,7 @@ const authMiddleware = (req, res, next) => {
        NORMALIZED USER CONTEXT
     =============================== */
     req.user = {
+      _id: decoded.userId,
       userId: decoded.userId,
       userRole: decoded.userRole,
       corpAdminId: decoded.corpAdminId,

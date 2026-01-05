@@ -26,8 +26,8 @@ cloudinary.config({
 // ---------- Middleware Stack ----------
 app.use(helmet()); // Basic security headers
 app.use(cors({ origin: "*" })); // Configure more strictly for production
-app.use(express.json({ limit: "20mb" }));
-app.use(express.urlencoded({ limit: "20mb", extended: true }));
+app.use(express.json({ limit: "50mb" }));
+app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
 // ---------- MongoDB Connection ----------
 // Removed deprecated options: useNewUrlParser and useUnifiedTopology are now defaults in v6+
