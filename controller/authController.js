@@ -173,6 +173,7 @@ exports.login = async (req, res) => {
             corporateId = null, 
             corporateName = "",
             corporateTagName="", 
+            userProfileImage="",
             accessAllow = false, 
             corporatePAN = "", 
             corporateGST = "", 
@@ -182,6 +183,7 @@ exports.login = async (req, res) => {
         if (user.userRole === "CorpAdmin") {
             corpAdminId = user._id;
             corporateId= user.linkedCorporate?._id || null;
+            userProfileImage= user.userProfileImage
             corporateName = user.linkedCorporate?.corporateName || "";
             corporateTagName = user.linkedCorporate?.corporateTagName || "Welcome";
             corporatePAN = user.linkedCorporate?.corporatePAN || "";
@@ -193,6 +195,7 @@ exports.login = async (req, res) => {
         } else {
             corpAdminId = user.accessCorporate?.corpAdminId || null;
             corporateId = user.accessCorporate?.corporateId || null;
+            userProfileImage= user.userProfileImage
             userRole= user.userRole || "Guest";
             corporateTagName = user.linkedCorporate?.corporateTagName || "Welcome";
             CorpProfileImage = user.linkedCorporate?.CorpProfileImage || "";
@@ -226,7 +229,8 @@ exports.login = async (req, res) => {
             userSession: { 
                 userId: user._id, 
                 userDisplayName: user.userDisplayName, 
-                userRole: user.userRole, 
+                userRole: user.userRole,
+                userProfileImage, 
                 accessAllow, 
                 corpAdminId,
                 corporateTagName, 

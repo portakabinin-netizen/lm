@@ -96,9 +96,10 @@ app.use((err, req, res, next) => {
 
 // ---------- Start Server ----------
 
-const port = process.env.PORT || 3000;
-app.listen(port, "0.0.0.0", () => {
-console.log(`Server listening on port ${port}`);
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, "0.0.0.0", () => {
+  console.log(`✅ Server & Socket.IO running on http://192.168.1.7:${PORT}`);
+  console.log(`🚀 Health Check: http://192.168.1.7:${PORT}/api/auth/health-check`);
 }); 
 
 //const PORT = process.env.PORT || 3000;
