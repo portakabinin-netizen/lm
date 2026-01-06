@@ -1,106 +1,78 @@
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
-const { regex } = require("../middleware/validateAuth");
 
-/* Third party API for SMS, Whatsapp , IndiaMart , Gmail inbox */
-const apiUrlschema = new mongoose.Schema(
-  {
-    apiUrls: {
-      type: Map,
-      of: String,
-      default: {}
-    }
-  },
-  { _id: true }
-);
+/**
+ * 🧱 Corporate Data (Embedded inside Admin)
+ */
+const embeddedCorporateSchema = new mongoose.Schema({
+  corporateName: { type: String, trim: true },
+  corporateTagName: { type: String, trim: true },
+  corporateEmail: { type: String, trim: true, lowercase: true },
+  corporateAddress: { type: String, trim: true },
+  corporateCity: { type: String, trim: true },
+  corporateDistrict: { type: String, trim: true },
+  corporateState: { type: String, trim: true },
+  corporatePin: { type: String, trim: true },
+  corporatePAN: { type: String, trim: true, uppercase: true },
+  corporateGST: { type: String, trim: true, uppercase: true },
+  corporateActive: { type: Boolean, default: true },
+  CorpProfileImage: { type: String, trim: true },
+  
+  // 🔥 apiUrls is now nested INSIDE linkedCorporate per your recordset
+  apiUrls: {
+    SMS: { type: String, trim: true },
+    Whatsapp: { type: String, trim: true },
+    IndiaMart: { type: String, trim: true },
+    TradeIndia: { type: String, trim: true },
+    JustDial: { type: String, trim: true }
+  }
+}, { _id: true }); // Admin's corporate has its own _id (6942d074...40e)
 
-const embeddedCorporateSchema = new mongoose.Schema(
-  {
-    corporateName: { type: String, trim: true, match: regex.name },
-    corporateTagName: { type: String, trim: true },
-    CorpProfileImage: { type: String, trim: true, match: regex.url },
-    corporateEmail: { type: String, trim: true, lowercase: true, match: regex.email },
-    corporateAddress: { type: String, trim: true },
-    corporateCity: { type: String, trim: true },
-    corporateDistrict: { type: String, trim: true },
-    corporateState: { type: String, trim: true },
-    corporatePin: { type: String, trim: true, match: regex.pin },
-    corporatePAN: { type: String, trim: true, uppercase: true, match: regex.pan },
-    corporateGST: { type: String, trim: true, uppercase: true, match: regex.gst },
-    corporateActive: { type: Boolean, default: true },
-
-    apiUrls: {
-      type: Map,
-      of: {
-        type: String,
-        match: regex.url, // validates URL format
-      },
-      default: {},
-      validate: {
-        validator: function (map) {
-          const allowedKeys = ["SMS", "Whatsapp", "IndiaMart", "TradeIndia", "JustDial"];
-          return [...map.keys()].every((key) => allowedKeys.includes(key));
-        },
-        message: "Invalid API URL key. Allowed: SMS, Whatsapp, IndiaMart, TradeIndia, JustDial",
-      },
-    },
-  },
-  { _id: true, timestamps: true}
-);
-
-/* 🧱 Access Corporate Schema — For Sales/Project */
+/**
+ * 🧱 Access Link (For Sales/Project Users)
+ */
 const accessCorporateSchema = new mongoose.Schema({
-  corpAdminId: { type: String, default: "" },
-  corporateId: { type: String, default: "" },
-  accessAllow: { type: Boolean, default: false },
+  // Fixed: These are stored as ObjectIds in MongoDB
+  corpAdminId: { type: mongoose.Schema.Types.ObjectId, ref: 'Users' },
+  corporateId: { type: mongoose.Schema.Types.ObjectId }, 
+  accessAllow: { type: Boolean, default: true }
 }, { _id: false });
 
-/* 🧱 Main User Schema */
+/**
+ * 🧱 Main User Schema
+ */
 const userSchema = new mongoose.Schema({
-  userDisplayName: { type: String, required: true, trim: true, match: regex.name },
-  userEmail: { type: String, trim: true, lowercase: true, match: regex.email },
-  userMobile: { type: String, required: true, unique: true, trim: true, match: regex.mobile },
-  userPassword: { type: String, required: true, minlength: 8 },
-  userRole: { type: String, enum: ["CorpAdmin", "Sales", "Project"], required: true },
-  userAadhar: { type: String, trim: true, match: regex.aadhar },
-  userProfileImage: { type: String, trim: true, match: regex.url },
-
-  /* 🎂 Date of Birth — stored as Date, formatted as dd-mm-yyyy when returned */
-  userDoB: {
-    type: Date,
-    trim: true,
-    get: (date) => {
-      if (!date) return null;
-      const d = new Date(date);
-      const day = String(d.getDate()).padStart(2, "0");
-      const month = String(d.getMonth() + 1).padStart(2, "0");
-      const year = d.getFullYear();
-      return `${day}-${month}-${year}`;
-    },
+  userDisplayName: { type: String, required: true, trim: true },
+  userEmail: { type: String, trim: true, lowercase: true },
+  userMobile: { type: String, required: true, unique: true, trim: true },
+  userPassword: { type: String, required: true },
+  userRole: { 
+    type: String, 
+    enum: ["CorpAdmin", "Sales", "Project"], 
+    required: true 
   },
+  userAadhar: { type: String, trim: true },
+  userDoB: { type: Date },
+  userActive: { type: Boolean, default: true },
+  userProfileImage: { type: String, trim: true },
 
+  // 🔥 ONLY for CorpAdmin
   linkedCorporate: {
     type: embeddedCorporateSchema,
-    default: function () {
-      return this.userRole === "CorpAdmin" ? {} : undefined;
-    },
+    required: false
   },
+
+  // 🔥 ONLY for Sales/Project
   accessCorporate: {
     type: accessCorporateSchema,
-    default: function () {
-      return ["Sales", "Project"].includes(this.userRole)
-        ? { corpAdminId: "", corporateId: "", accessAllow: true }
-        : undefined;
-    },
-  },
-  userActive: { type: Boolean, default: true },
-}, {
+    required: false
+  }
+}, { 
   timestamps: true,
-  toJSON: { getters: true },   
-  toObject: { getters: true }, 
+  minimize: true // Ensures empty objects {} are not saved to DB
 });
 
-/* 🔒 Password Hash */
+// Password Hash
 userSchema.pre("save", async function (next) {
   if (!this.isModified("userPassword")) return next();
   const salt = await bcrypt.genSalt(10);

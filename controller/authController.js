@@ -1,10 +1,9 @@
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
-const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
-//const fetch = require('node-fetch');
-const { formatMobile } = require("../middleware/validateAuth");
 const cloudinary = require('cloudinary').v2;
+const { formatMobile } = require("../middleware/validateAuth");
+
 
 // In-memory OTP store (Use Redis for production)
 const otpStore = {}; 
@@ -159,59 +158,52 @@ exports.login = async (req, res) => {
 
         if (!mobile) return res.status(400).json({ success: false, message: "Mobile required" });
         
-        // Sanitize mobile input
         const cleanMobile = String(mobile).replace(/\s+/g, "").replace(/^(\+91|91)/, "");
-
         const user = await Users.findOne({ userMobile: cleanMobile, userActive: true });
+        
         if (!user) return res.status(404).json({ success: false, message: "User not found" });
 
         const match = await bcrypt.compare(password, user.userPassword);
         if (!match) return res.status(401).json({ success: false, message: "Invalid password" });
 
-        // Initialize variables properly
+        // Initialize variables
         let corpAdminId = null, 
             corporateId = null, 
-            corporateName = "",
-            corporateTagName="", 
-            userProfileImage="",
+            corporateName = "", 
             accessAllow = false, 
             corporatePAN = "", 
             corporateGST = "", 
-            CorpProfileImage = "";
-            userRole="";
+            CorpProfileImage = "",
+            corporateTagName = ""
+
+        // NEW: Capture the user's personal profile image from the DB record
+        const userProfileImage = user.userProfileImage || "";
 
         if (user.userRole === "CorpAdmin") {
             corpAdminId = user._id;
-            corporateId= user.linkedCorporate?._id || null;
-            userProfileImage= user.userProfileImage
-            corporateName = user.linkedCorporate?.corporateName || "";
-            corporateTagName = user.linkedCorporate?.corporateTagName || "Welcome";
-            corporatePAN = user.linkedCorporate?.corporatePAN || "";
-            corporateGST = user.linkedCorporate?.corporateGST || "Un-Registered";
+            corporateId = user.apiUrls?._id || null;
+            corporateName = user.linkedCorporate?.corporateName;
+            corporatePAN = user.linkedCorporate?.corporatePAN ;
+            corporateGST = user.linkedCorporate?.corporateGST || "URN-Business";
             accessAllow = true;
-            CorpProfileImage = user.linkedCorporate?.CorpProfileImage || "";
-            userRole= user.userRole || "Guest";
-            
+            CorpProfileImage = user.linkedCorporate?.CorpProfileImage;
+            corporateTagName=user.linkedCorporate?.corporateTagName || " Welcome You !";
         } else {
             corpAdminId = user.accessCorporate?.corpAdminId || null;
             corporateId = user.accessCorporate?.corporateId || null;
-            userProfileImage= user.userProfileImage
-            userRole= user.userRole || "Guest";
-            corporateTagName = user.linkedCorporate?.corporateTagName || "Welcome";
-            CorpProfileImage = user.linkedCorporate?.CorpProfileImage || "";
             accessAllow = user.accessCorporate?.accessAllow || false;
 
             if (corpAdminId) {
                 const adminData = await Users.findById(corpAdminId).select("linkedCorporate").lean();
-                corporateName = adminData?.linkedCorporate?.corporateName || "";
-                corporateTagName = user.linkedCorporate?.corporateTagName || "Welcome";
+                corporateName = adminData?.linkedCorporate?.corporateName || "No company linked!";
+                corporateTagName = adminData?.linkedCorporate?.corporateTagName || "Welcome you!";
                 corporatePAN = adminData?.linkedCorporate?.corporatePAN || "";
                 corporateGST = adminData?.linkedCorporate?.corporateGST || "Un-Registered";
+                // Fetches corporate logo from the Admin's record
                 CorpProfileImage = adminData?.linkedCorporate?.CorpProfileImage || "";
             }
         }
 
-        // SIGN TOKEN: Ensure the payload is a plain object
         const token = jwt.sign(
             { 
                 userId: String(user._id), 
@@ -222,19 +214,18 @@ exports.login = async (req, res) => {
             { expiresIn: "90d" }
         );
 
-        // SEND RESPONSE: Ensure token is sent as a raw string
         return res.json({
             success: true,
-            token, // This is a clean string
+            token,
             userSession: { 
                 userId: user._id, 
-                userDisplayName: user.userDisplayName, 
-                userRole: user.userRole,
-                userProfileImage, 
+                userDisplayName: user.userDisplayName,
+                corporateTagName,
+                userRole: user.userRole, 
+                userProfileImage, // ✅ ADDED: This ensures the personal photo shows in the drawer
                 accessAllow, 
-                corpAdminId,
-                corporateTagName, 
-                CorpProfileImage, 
+                corpAdminId, 
+                CorpProfileImage, // ✅ This ensures corporate logo shows in the header
                 corporateId, 
                 corporateName, 
                 corporatePAN, 
@@ -242,80 +233,74 @@ exports.login = async (req, res) => {
             }
         });
     } catch (err) {
-        console.error("Login Error:", err); // Log the actual error for debugging
+        console.error("Login Error:", err);
         return res.status(500).json({ success: false, message: "Internal Server Error" });
     }
 };
 
 exports.updateProfileImage = async (req, res) => {
-    const Users = mongoose.model("Users");
     try {
+        const Users = mongoose.model("Users");
         const { userId, imageBase64, fieldToUpdate } = req.body;
 
-        // 1. Extract IDs and Role
-        const requesterId = (req.user._id || req.user.userId)?.toString();
-        const targetUserId = userId?.toString();
+        // Requester info from JWT Middleware
+        const requesterId = req.user.userId; 
         const requesterRole = req.user.userRole;
 
-        if (!requesterId || !targetUserId) {
-            return res.status(400).json({ success: false, message: "Invalid Request: Missing IDs" });
+        // 1. Validation check for payload
+        if (!userId || !fieldToUpdate || !imageBase64) {
+            return res.status(400).json({ success: false, message: "Missing required data" });
         }
 
-        // 2. Define Permissions & Path
         let dbPath = "";
-        const isAdmin = requesterRole === "CorpAdmin";
-        const isSelf = requesterId === targetUserId;
-
+        
+        // 2. Logic Check: Permissions & DB Path Selection
         if (fieldToUpdate === "CorpProfileImage") {
-            // ONLY CorpAdmin can update Corporate Image
-            if (!isAdmin) {
-                return res.status(403).json({ success: false, message: "Permission Denied: Admin only" });
+            // ONLY CorpAdmin can update Corporate Logo
+            if (requesterRole !== "CorpAdmin") {
+                return res.status(403).json({ success: false, message: "Access Denied: Admin only" });
             }
             dbPath = "linkedCorporate.CorpProfileImage";
-        } else if (fieldToUpdate === "userProfileImage") {
-            // CorpAdmin CAN update anyone's profile image
-            // Other users CAN ONLY update their own
-            if (!isAdmin && !isSelf) {
-                return res.status(403).json({ success: false, message: "Permission Denied: Unauthorized access" });
+        } 
+        else if (fieldToUpdate === "userProfileImage") {
+            // Users can ONLY update their own profile
+            if (requesterId !== userId) {
+                return res.status(403).json({ success: false, message: "Access Denied: Cannot update another user" });
             }
             dbPath = "userProfileImage";
+        } else {
+            return res.status(400).json({ success: false, message: "Invalid update field" });
         }
 
-        // 3. Upload to Cloudinary
-        // Ensure you have a check for imageBase64 content here
-        const uploadRes = await cloudinary.uploader.upload(
-            `data:image/jpeg;base64,${imageBase64}`,
-            {
-                folder: fieldToUpdate === "CorpProfileImage" ? "corporate_logos" : "user_profiles",
-                transformation: [{ width: 500, height: 500, crop: "fill", gravity: "face" }]
-            }
-        );
+        // 3. Cloudinary Upload
+        // Note: We check if the string already has the data prefix to avoid duplication
+        const uploadStr = imageBase64.startsWith('data:image') ? imageBase64 : `data:image/jpeg;base64,${imageBase64}`;
+        
+        const uploadRes = await cloudinary.uploader.upload(uploadStr, {
+            folder: fieldToUpdate === "CorpProfileImage" ? "corporate_logos" : "user_profiles",
+            transformation: [{ width: 500, height: 500, crop: "limit", quality: "auto" }]
+        });
 
-        const finalUrl = uploadRes.secure_url;
-
-        // 4. Update Database
+        // 4. Database Update with casting to ObjectId
         const updatedUser = await Users.findByIdAndUpdate(
-            targetUserId,
-            { $set: { [dbPath]: finalUrl } },
-            { 
-                new: true, 
-                runValidators: false // Bypasses regex checks if the URL format differs slightly
-            }
+            new mongoose.Types.ObjectId(userId), 
+            { $set: { [dbPath]: uploadRes.secure_url } },
+            { new: true }
         ).select("-userPassword");
 
         if (!updatedUser) {
             return res.status(404).json({ success: false, message: "User not found" });
         }
 
-        return res.status(200).json({
+        return res.json({
             success: true,
-            message: "Profile updated successfully",
-            url: finalUrl,
-            user: updatedUser
+            message: "Image updated successfully",
+            url: uploadRes.secure_url,
+            field: fieldToUpdate
         });
 
     } catch (error) {
-        console.error("Critical Update Error:", error);
-        return res.status(500).json({ success: false, message: error.message });
+        console.error("Update Profile Image Error:", error);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
     }
 };

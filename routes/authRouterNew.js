@@ -29,9 +29,11 @@ router.post("/login", validateAuth, authController.login);
  */
 
 // Apply authMiddleware to all routes defined below this point
-router.use(authMiddleware);
 
+router.use(authMiddleware);
 router.post("/update-profile-image", authController.updateProfileImage);
+
+//router.post("/update-profile-image", authController.updateProfileImage);
 
 // You can add more protected routes here without repeating 'authMiddleware'
 // router.get("/profile", authController.getProfile);
