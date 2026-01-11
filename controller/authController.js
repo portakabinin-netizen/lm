@@ -1,5 +1,6 @@
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
+const crypto = require('crypto');
 const jwt = require("jsonwebtoken");
 const cloudinary = require('cloudinary').v2;
 const { formatMobile } = require("../middleware/validateAuth");
@@ -12,9 +13,11 @@ const otpStore = {};
 function generateOtp(length = 6) {
     const num = crypto.randomInt(0, Math.pow(10, length));
     return String(num).padStart(length, "0");
+    
 }
 
-const sendOTPExternal = async (mobile) => {
+
+const sendOTPExternal = async (mobile,otp) => {
     const response = await fetch("https://api.msg91.com/api/v5/otp", {
         method: "POST",
         headers: {
@@ -24,11 +27,15 @@ const sendOTPExternal = async (mobile) => {
         body: JSON.stringify({
             template_id: process.env.MSG91_TEMPLATE_ID,
             mobile,
+            otp : otp, // <--- App generated OTP here
             otp_length: "6",
             otp_expiry: "5"
         })
+        
+        
     });
-    return await response.json();
+    const result = await response.json();
+    return result;
 };
 
 // --- Controller Exports ---
@@ -49,12 +56,11 @@ exports.sendOtp = async (req, res) => {
         if (!mobile) return res.status(400).json({ error: "mobile required" });
 
         const otp = generateOtp(6);
+        console.log(otp);
         const expiresAt = Date.now() + 5 * 60 * 1000;
         const toMobile = formatMobile(mobile);
-
         otpStore[toMobile.with91] = { otp, expiresAt, purpose };
-        await sendOTPExternal(toMobile.with91);
-
+        await sendOTPExternal(toMobile.with91,otp);
         return res.json({ success: true, message: "OTP sent" });
     } catch (err) {
         return res.status(500).json({ error: err.message });
@@ -64,13 +70,13 @@ exports.sendOtp = async (req, res) => {
 exports.verifyOtp = (req, res) => {
     try {
         const { mobile, otp, purpose = "register" } = req.body;
-        const record = otpStore[mobile];
-
+        const toMobile = formatMobile(mobile); 
+        const record = otpStore[toMobile.with91];
+        //const record = otpStore[mobile];
         if (!record) return res.status(400).json({ error: "No OTP sent to this number" });
         if (record.purpose !== purpose) return res.status(400).json({ error: "Purpose mismatch" });
         if (Date.now() > record.expiresAt) return res.status(400).json({ error: "OTP expired" });
         if (record.otp !== otp) return res.status(400).json({ error: "Invalid OTP" });
-
         delete otpStore[mobile];
         return res.json({ success: true });
     } catch (err) {
@@ -302,5 +308,82 @@ exports.updateProfileImage = async (req, res) => {
     } catch (error) {
         console.error("Update Profile Image Error:", error);
         return res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
+// --- STEP 1: VERIFY IDENTITY ---
+exports.verifyIdentity = async (req, res) => {
+    try {
+        // Aligned with Frontend Keys: aadhaar, pan, role
+        const { aadhaar, pan, role } = req.body;
+        const Users = mongoose.model("Users");
+
+        if (!aadhaar || !role) {
+            return res.status(400).json({ 
+                success: false, 
+                message: "Aadhaar and Role are required" 
+            });
+        }
+
+        let user = null;
+
+        if (role === "CorpAdmin") {
+            // ADMIN REQUIREMENT: Both PAN and Aadhaar must match the record
+            if (!pan) return res.status(400).json({ success: false, message: "PAN is required for Admin" });
+            
+            user = await Users.findOne({ 
+                userAadhar: aadhaar,
+                "linkedCorporate.corporatePAN": pan.toUpperCase() 
+            });
+        } else {
+            // USER REQUIREMENT: Only Aadhaar
+            user = await Users.findOne({ userAadhar: aadhaar });
+        }
+
+        if (!user) {
+            return res.status(404).json({ 
+                success: false, 
+                message: "Verification failed. Records do not match our system." 
+            });
+        }
+
+        return res.json({ 
+            success: true, 
+            message: "Identity verified successfully" 
+        });
+
+    } catch (err) {
+        console.error("Verification Error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+    }
+};
+
+// --- STEP 2: RESET PASSWORD ---
+exports.resetPassword = async (req, res) => {
+    try {
+        const { aadhaar, newPassword } = req.body;
+        const Users = mongoose.model("Users");
+
+        if (!aadhaar || !newPassword) {
+            return res.status(400).json({ success: false, message: "Aadhaar and New Password required" });
+        }
+
+        // HASH the new password before saving so login works
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(newPassword, salt);
+
+        const updatedUser = await Users.findOneAndUpdate(
+            { userAadhar: aadhaar },
+            { $set: { userPassword: hashedPassword } },
+            { new: true }
+        );
+
+        if (!updatedUser) {
+            return res.status(404).json({ success: false, message: "User not found" });
+        }
+
+        return res.json({ success: true, message: "Password updated successfully" });
+    } catch (err) {
+        return res.status(500).json({ success: false, error: err.message });
     }
 };
