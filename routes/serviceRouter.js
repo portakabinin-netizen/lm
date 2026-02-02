@@ -5,8 +5,7 @@ const authMiddleware = require("../middleware/authMiddleware");
 // Import the Unified Service Object
 const services = require("../controller/unifiedService");
 
-// ✅ Simplified Service Mapping
-// This matches the keys defined in your unifiedService.js exports
+// ✅ Service Mapping for Generic Factory Routes
 const serviceMap = {
   leads: services.leadService,
   corporate: services.corporateService,
@@ -14,14 +13,23 @@ const serviceMap = {
   user: services.userService,
 };
 
-// Apply JWT verification to all routes
+/**
+ * ==========================================
+ * PROTECTED ROUTES
+ * (Valid JWT / Authorization Header Required)
+ * ==========================================
+ */
 router.use(authMiddleware);
 
-/* =============================================================
-   1. SPECIALIZED ROUTES (Must be defined BEFORE generic routes)
-   ============================================================= */
+/* ---------------------------------------------------------
+   1. SEARCH & SPECIALIZED LEADS ROUTES 
+   (Defined first to prevent route collision with /:id)
+   --------------------------------------------------------- */
 
-// ✅ LEADS BY STATUS
+// 🔍 Search lead by mobile (Must be above /leads/:id)
+router.get("/leads/search", services.leadService.searchByMobile);
+
+// 📊 Leads filtering by Status
 router.get("/leads/status/:status", async (req, res) => {
   try {
     const { status } = req.params;
@@ -33,7 +41,7 @@ router.get("/leads/status/:status", async (req, res) => {
   }
 });
 
-// ✅ BULK CREATE LEADS
+// 📥 Bulk Insert Leads
 router.post("/addmany", async (req, res) => {
   try {
     if (!Array.isArray(req.body)) return res.status(400).json({ message: "Array required" });
@@ -44,8 +52,8 @@ router.post("/addmany", async (req, res) => {
   }
 });
 
-// ✅ ADD ACTIVITY LOG
-router.post("/:id/activity", async (req, res) => {
+// 📝 Lead Activity Logging
+router.post("/leads/:id/activity", async (req, res) => {
   try {
     const result = await services.leadService.addActivity(req.params.id, req.body);
     if (!result) return res.status(404).json({ success: false, message: "Lead not found" });
@@ -55,26 +63,22 @@ router.post("/:id/activity", async (req, res) => {
   }
 });
 
-/* =============================================================
+/* ---------------------------------------------------------
    2. GENERIC FACTORY ROUTES (CRUD)
-   ============================================================= */
+   Handles leads, corporate, ledger, and user dynamically
+   --------------------------------------------------------- */
 
-/** ✅ CREATE (POST) */
+/** ✅ CREATE */
 router.post("/:type/create", async (req, res) => {
   const { type } = req.params;
   const service = serviceMap[type];
-
-  if (!service || !service.create) {
-    return res.status(400).json({ success: false, message: `Invalid service type: ${type}` });
-  }
+  if (!service?.create) return res.status(400).json({ success: false, message: `Invalid service: ${type}` });
 
   try {
     const payload = { ...req.body };
-    // Auto-inject corporateId for non-admins
     if (req.user.role !== "Admin" && req.user.corporateId) {
       payload.corporateId = req.user.corporateId;
     }
-
     const result = await service.create(payload);
     res.json({ success: true, data: result });
   } catch (err) {
@@ -82,14 +86,11 @@ router.post("/:type/create", async (req, res) => {
   }
 });
 
-/** ✅ LIST (GET) */
+/** ✅ LIST */
 router.get("/:type/list", async (req, res) => {
   const { type } = req.params;
   const service = serviceMap[type];
-
-  if (!service || !service.list) {
-    return res.status(400).json({ success: false, message: "Invalid service type" });
-  }
+  if (!service?.list) return res.status(400).json({ success: false, message: "Invalid service type" });
 
   try {
     const filters = {};
@@ -103,14 +104,11 @@ router.get("/:type/list", async (req, res) => {
   }
 });
 
-/** ✅ GET BY ID (GET) */
+/** ✅ GET BY ID (Defined after specific routes to avoid collisions) */
 router.get("/:type/:id", async (req, res) => {
   const { type, id } = req.params;
   const service = serviceMap[type];
-
-  if (!service || !service.getById) {
-    return res.status(400).json({ success: false, message: "Invalid service type" });
-  }
+  if (!service?.getById) return res.status(400).json({ success: false, message: "Invalid service type" });
 
   try {
     const result = await service.getById(id);
@@ -121,14 +119,11 @@ router.get("/:type/:id", async (req, res) => {
   }
 });
 
-/** ✅ UPDATE (PUT) */
+/** ✅ UPDATE */
 router.put("/:type/:id", async (req, res) => {
   const { type, id } = req.params;
   const service = serviceMap[type];
-
-  if (!service || !service.update) {
-    return res.status(400).json({ success: false, message: "Invalid service type" });
-  }
+  if (!service?.update) return res.status(400).json({ success: false, message: "Invalid service type" });
 
   try {
     const result = await service.update(id, req.body);
@@ -138,14 +133,11 @@ router.put("/:type/:id", async (req, res) => {
   }
 });
 
-/** ✅ DELETE (DELETE) */
+/** ✅ DELETE */
 router.delete("/:type/:id", async (req, res) => {
   const { type, id } = req.params;
   const service = serviceMap[type];
-
-  if (!service || !service.remove) {
-    return res.status(400).json({ success: false, message: "Invalid service type" });
-  }
+  if (!service?.remove) return res.status(400).json({ success: false, message: "Invalid service type" });
 
   try {
     await service.remove(id);

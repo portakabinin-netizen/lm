@@ -1,22 +1,24 @@
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
-const crypto = require('crypto');
+//const crypto = require('crypto');
 const jwt = require("jsonwebtoken");
 const cloudinary = require('cloudinary').v2;
 const { formatMobile } = require("../middleware/validateAuth");
 
+console.log("Runtime:", typeof process, process?.versions?.node);
 
 // In-memory OTP store (Use Redis for production)
 const otpStore = {}; 
 
 // --- Private Helpers ---
 function generateOtp(length = 6) {
-    const num = crypto.randomInt(0, Math.pow(10, length));
-    return String(num).padStart(length, "0");
-    
+    const otpGenerated = Math.floor(
+        Math.pow(10, length - 1) +
+        Math.random() * 9 * Math.pow(10, length - 1) // Multiplied by 9 to ensure 6 digits
+    ).toString();
+    console.log("Generated OTP:", otpGenerated);
+    return otpGenerated;
 }
-
-
 const sendOTPExternal = async (mobile,otp) => {
     const response = await fetch("https://api.msg91.com/api/v5/otp", {
         method: "POST",
@@ -52,11 +54,10 @@ exports.healthCheck = async (req, res) => {
 
 exports.sendOtp = async (req, res) => {
     try {
+        
         const { mobile, purpose = "register" } = req.body;
         if (!mobile) return res.status(400).json({ error: "mobile required" });
-
         const otp = generateOtp(6);
-        console.log(otp);
         const expiresAt = Date.now() + 5 * 60 * 1000;
         const toMobile = formatMobile(mobile);
         otpStore[toMobile.with91] = { otp, expiresAt, purpose };
@@ -71,13 +72,12 @@ exports.verifyOtp = (req, res) => {
     try {
         const { mobile, otp, purpose = "register" } = req.body;
         const toMobile = formatMobile(mobile); 
-        const record = otpStore[toMobile.with91];
-        //const record = otpStore[mobile];
+        const record = otpStore[toMobile.with91]; // Key is with +91
+
         if (!record) return res.status(400).json({ error: "No OTP sent to this number" });
-        if (record.purpose !== purpose) return res.status(400).json({ error: "Purpose mismatch" });
-        if (Date.now() > record.expiresAt) return res.status(400).json({ error: "OTP expired" });
         if (record.otp !== otp) return res.status(400).json({ error: "Invalid OTP" });
-        delete otpStore[mobile];
+        delete otpStore[toMobile.with91]; 
+        
         return res.json({ success: true });
     } catch (err) {
         return res.status(500).json({ error: err.message });

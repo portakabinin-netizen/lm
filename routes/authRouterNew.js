@@ -15,7 +15,7 @@ const authMiddleware = require("../middleware/authMiddleware");
 router.get('/health-check', authController.healthCheck); 
 
 // Authentication flows
-router.post("/send-otp", validateAuth, authController.sendOtp);
+router.post("/send-otp",authController.sendOtp);
 router.post("/verify-otp", authController.verifyOtp);
 router.post("/check-unique", validateAuth, authController.checkUnique);
 router.post("/register", validateAuth, authController.register);
@@ -33,10 +33,5 @@ router.post("/verify-identity",validateAuth,authController.verifyIdentity);
 
 router.use(authMiddleware);
 router.post("/update-profile-image", authController.updateProfileImage);
-
-//router.post("/update-profile-image", authController.updateProfileImage);
-
-// You can add more protected routes here without repeating 'authMiddleware'
-// router.get("/profile", authController.getProfile);
 
 module.exports = router;

@@ -1,3 +1,4 @@
+
 // --- Regex Patterns ---
 const regex = {
   name: /^[A-Za-z0-9 .,@'-]+$/,
