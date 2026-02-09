@@ -15,37 +15,42 @@ exports.leadService = {
 // controller: searchByMobile
 searchByMobile: async (req, res) => {
   try {
-    const { mobile } = req.query;
-
-    // 1. Check if Model exists (Prevents crash if import failed)
-    if (typeof Leads === 'undefined') {
-      console.error("CRITICAL: Leads Model is not defined.");
-      return res.status(500).json({ success: false, message: "Database configuration error" });
-    }
+    const { mobile, corporateId } = req.query;
 
     if (!mobile) {
       return res.status(400).json({ success: false, message: "Mobile number is required" });
     }
 
-    // 2. Robust Sanitization
-    const cleanPhone = mobile.replace(/\D/g, '').slice(-10);
+    // Sanitization
+    const cleanPhone = mobile.toString().replace(/\D/g, '').slice(-10);
     
-    // Safety check: Ensure we actually have 10 digits after cleaning
-    if (cleanPhone.length !== 10) {
-        return res.status(400).json({ success: false, message: "Invalid mobile format" });
-    }
+    // Database Query
+    const lead = await Leads.findOne({ 
+      sender_mobile: cleanPhone,
+      // corporate_id: corporateId // Uncomment if you filter by Corp ID
+    })
+    .select('sender_name status lead_no product_name sender_mobile')
+    .lean();
 
-    // 3. Execution
-    const lead = await Leads.findOne({ sender_mobile: cleanPhone })
-      .select('sender_name status lead_no product_name sender_mobile')
-      .lean();
-
+    // IF NOT FOUND: Send 200 OK with "New Client" data instead of 404
     if (!lead) {
-      return res.status(404).json({ success: false, message: "Lead not found" });
+      return res.status(200).json({ 
+        success: true, 
+        isNew: true,
+        data: {
+          name: "New Client",
+          status: "Fresh",
+          leadNo: "N/A",
+          product: "None",
+          mobile: cleanPhone
+        } 
+      });
     }
 
+    // IF FOUND: Send the actual lead
     return res.status(200).json({ 
       success: true, 
+      isNew: false,
       data: {
         name: lead.sender_name,
         status: lead.status,
@@ -54,15 +59,10 @@ searchByMobile: async (req, res) => {
         mobile: lead.sender_mobile
       } 
     });
+
   } catch (error) {
-    // 4. Log the actual error so you can see it in your terminal!
-    console.error("SearchByMobile Error:", error); 
-    
-    return res.status(500).json({ 
-      success: false, 
-      message: "Internal Server Error",
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined 
-    });
+    console.error("Search Error:", error);
+    return res.status(500).json({ success: false, message: "Internal Server Error" });
   }
 },
 

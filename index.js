@@ -33,7 +33,7 @@ app.use(express.urlencoded({ limit: "50mb", extended: true }));
 // Removed deprecated options: useNewUrlParser and useUnifiedTopology are now defaults in v6+
 mongoose
   .connect(process.env.MONGO_URI)
-  .then(() => console.log("MongoDB 🖇️ connected successfully with 📲"))
+  .then(() => console.log("MongoDB 🖇️ with 📲"))
   .catch((err) => {
     console.error("❌ MongoDB connection error:", err.message);
     process.exit(1); // Exit if DB connection fails

@@ -26,7 +26,7 @@ const embeddedCorporateSchema = new mongoose.Schema({
     TradeIndia: { type: String, trim: true },
     JustDial: { type: String, trim: true }
   }
-}, { _id: true }); // Admin's corporate has its own _id (6942d074...40e)
+}, { _id: true });
 
 /**
  * 🧱 Access Link (For Sales/Project Users)
@@ -35,7 +35,7 @@ const accessCorporateSchema = new mongoose.Schema({
   // Fixed: These are stored as ObjectIds in MongoDB
   corpAdminId: { type: mongoose.Schema.Types.ObjectId, ref: 'Users' },
   corporateId: { type: mongoose.Schema.Types.ObjectId }, 
-  accessAllow: { type: Boolean, default: true }
+  accessAllow: { type: Boolean, default: false }
 }, { _id: false });
 
 /**

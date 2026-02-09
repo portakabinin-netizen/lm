@@ -21,6 +21,7 @@ router.post("/check-unique", validateAuth, authController.checkUnique);
 router.post("/register", validateAuth, authController.register);
 router.post("/login", validateAuth, authController.login);
 router.post("/verify-identity",validateAuth,authController.verifyIdentity);
+router.post("/search",authController.searchlinkCorp);
 
 /**
  * ==========================================

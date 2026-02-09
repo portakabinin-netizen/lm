@@ -89,25 +89,25 @@ exports.register = async (req, res) => {
         const Users = mongoose.model("Users");
         const data = req.body;
 
+        // 1. Check for existing user
         const existingUser = await Users.findOne({ userMobile: data.userMobile });
         if (existingUser) {
             return res.status(400).json({ success: false, message: "Mobile number already registered" });
         }
 
-        const salt = await bcrypt.genSalt(10);
-        const hashedPassword = await bcrypt.hash(data.userPassword, salt);
-
+        // 2. Base Payload
         let newUserPayload = {
             userDisplayName: data.userDisplayName,
             userEmail: data.userEmail,
             userMobile: data.userMobile,
-            userPassword: hashedPassword,
+            userPassword: data.userPassword,
             userRole: data.userRole,
             userAadhar: data.userAadhar,
             userDoB: data.userDoB,
             userActive: true,
         };
 
+        // 3. Logic for CorpAdmin
         if (data.userRole === "CorpAdmin") {
             newUserPayload.linkedCorporate = {
                 corporateName: data.corporateName,
@@ -123,20 +123,35 @@ exports.register = async (req, res) => {
                 corporateGST: data.corporateGST,
                 corporateActive: true
             };
-        } else {
-            const cleanCorpId = data.corporateId ? data.corporateId.trim() : null;
+        } 
+        // 4. Logic for Sales/Project (Non-Admin)
+        else {
+            // Pulling directly from the data.accessCorporate object sent by frontend
+            const accessData = data.accessCorporate || {};
+            
             newUserPayload.accessCorporate = {
-                accessAllow: false,
-                corpAdminId: null,
-                corporateId: cleanCorpId === "None" ? null : cleanCorpId
+                corpAdminId: accessData.corpAdminId || null,
+                corporateId: accessData.corporateId || null,
+                accessAllow: false // Force false for approval flow
             };
+
+            // Safety Check: If IDs are missing, don't let Mongoose try to save a null ObjectId
+            if (!newUserPayload.accessCorporate.corporateId) {
+                return res.status(400).json({ success: false, message: "Corporate linking information is missing" });
+            }
         }
 
         const newUser = new Users(newUserPayload);
         await newUser.save();
 
-        return res.status(201).json({ success: true, message: "User registered", userId: newUser._id });
+        return res.status(201).json({ 
+            success: true, 
+            message: "User registered successfully", 
+            userId: newUser._id 
+        });
+
     } catch (err) {
+        console.error("Registration Error:", err);
         return res.status(500).json({ success: false, message: err.message });
     }
 };
@@ -386,4 +401,37 @@ exports.resetPassword = async (req, res) => {
     } catch (err) {
         return res.status(500).json({ success: false, error: err.message });
     }
+};
+//---Search and link corporate wit non-admin user
+exports.searchlinkCorp = async (req, res) => {
+  try {
+    const { q } = req.query;
+    const Users = mongoose.model("Users");
+
+    if (!q || q.length < 3) {
+      return res.status(400).json({ message: "Search query too short" });
+    }
+
+    const results = await Users.find({
+      userRole: "CorpAdmin",
+      $or: [
+        { "linkedCorporate.corporateName": { $regex: q, $options: "i" } },
+        { "linkedCorporate.corporatePAN": { $regex: q, $options: "i" } },
+      ],
+    })
+    .limit(10)
+    .select("linkedCorporate _id"); // _id is Admin, linkedCorporate._id is Corporate
+
+    const formattedResults = results.map(admin => ({
+      corpAdminId: admin._id, // ...181
+      corporateId: admin.linkedCorporate._id, // ...182
+      corporateName: admin.linkedCorporate.corporateName,
+      corporateCity: admin.linkedCorporate.corporateCity,
+      corporateState: admin.linkedCorporate.corporateState,
+    }));
+
+    res.status(200).json(formattedResults);
+  } catch (error) {
+    res.status(500).json({ message: "Internal server error" });
+  }
 };
