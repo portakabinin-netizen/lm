@@ -53,7 +53,7 @@ router.post("/addmany", async (req, res) => {
 });
 
 // 📝 Lead Activity Logging
-router.post("/leads/:id/activity", async (req, res) => {
+router.post("/:id/activity", async (req, res) => {
   try {
     const result = await services.leadService.addActivity(req.params.id, req.body);
     if (!result) return res.status(404).json({ success: false, message: "Lead not found" });
