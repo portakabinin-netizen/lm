@@ -435,3 +435,13 @@ exports.searchlinkCorp = async (req, res) => {
     res.status(500).json({ message: "Internal server error" });
   }
 };
+
+exports.apiUrlsConfigureSave = async (req, res) => {
+  try {
+    const result = await userService.apiUrlsConfigureSave(req.params.id, req.body);
+    if (!result) return res.status(404).json({ success: false, message: "User not found" });
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};

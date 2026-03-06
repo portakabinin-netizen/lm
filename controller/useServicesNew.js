@@ -44,3 +44,13 @@ exports.checkExists = async (filter) => {
     return await Users.exists(filter);
 };
 
+/** API URLs and email configures */
+exports.apiUrlsConfigureSave = async (req, res) => {
+  try {
+    const result = await userService.apiUrlsConfigureSave(req.params.id, req.body);
+    if (!result) return res.status(404).json({ success: false, message: "User not found" });
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};

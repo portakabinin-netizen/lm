@@ -20,13 +20,24 @@ const embeddedCorporateSchema = new mongoose.Schema({
   
   // 🔥 apiUrls is now nested INSIDE linkedCorporate per your recordset
   apiUrls: {
-    SMS: { type: String, trim: true },
-    Whatsapp: { type: String, trim: true },
-    IndiaMart: { type: String, trim: true },
-    TradeIndia: { type: String, trim: true },
-    JustDial: { type: String, trim: true }
-  }
-}, { _id: true });
+      SMS: { type: String, trim: true },
+      Whatsapp: { type: String, trim: true },
+      IndiaMart: { type: String, trim: true },
+      TradeIndia: { type: String, trim: true },
+      JustDial: { type: String, trim: true },
+    
+    // 📧 Mail Configuration
+    mailConfigure: {
+      host: { type: String, trim: true, default: 'imap.gmail.com' },
+      port: { type: Number, default: 993 },
+      secure: { type: Boolean, default: true },
+      auth: {
+        user: { type: String, trim: true, lowercase: true },
+        pass: { type: String, trim: true }
+      },
+      isActive: { type: Boolean, default: false }
+    }
+}}, { _id: true });
 
 /**
  * 🧱 Access Link (For Sales/Project Users)

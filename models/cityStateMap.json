@@ -1,0 +1,7 @@
+{
+  "Delhi":             ["New Delhi", "Delhi"],
+  "Rajasthan":         ["Jaipur"],
+  "Uttar Pradesh":     ["Moradabad", "Ghaziabad", "Noida", "Greater Noida"],
+  "Haryana":           ["Faridabad", "Gurugram", "Gurgaon", "Rohtak", "Palwal", "Sonipat"],
+  "Jammu and Kashmir": ["Jammu"]
+}

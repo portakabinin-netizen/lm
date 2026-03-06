@@ -23,6 +23,7 @@ router.post("/login", validateAuth, authController.login);
 router.post("/verify-identity",validateAuth,authController.verifyIdentity);
 router.post("/search",authController.searchlinkCorp);
 
+
 /**
  * ==========================================
  * PROTECTED ROUTES
@@ -34,5 +35,6 @@ router.post("/search",authController.searchlinkCorp);
 
 router.use(authMiddleware);
 router.post("/update-profile-image", authController.updateProfileImage);
+router.put("/url-configure/:id", authController.apiUrlsConfigureSave);
 
 module.exports = router;

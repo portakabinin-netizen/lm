@@ -1,9 +1,10 @@
 const express = require("express");
 const router = express.Router();
 const authMiddleware = require("../middleware/authMiddleware");
-
+const { ImapFlow } = require('imapflow');
+const { simpleParser } = require('mailparser');
 // Import the Unified Service Object
-const services = require("../controller/unifiedService");
+const services = require("../controller/leadServices");
 
 // ✅ Service Mapping for Generic Factory Routes
 const serviceMap = {
@@ -13,18 +14,8 @@ const serviceMap = {
   user: services.userService,
 };
 
-/**
- * ==========================================
- * PROTECTED ROUTES
- * (Valid JWT / Authorization Header Required)
- * ==========================================
- */
 router.use(authMiddleware);
-
-/* ---------------------------------------------------------
-   1. SEARCH & SPECIALIZED LEADS ROUTES 
-   (Defined first to prevent route collision with /:id)
-   --------------------------------------------------------- */
+router.get("/email/readInbox",services.leadService.readInbox);  
 
 // 🔍 Search lead by mobile (Must be above /leads/:id)
 router.get("/leads/search", services.leadService.searchByMobile);
