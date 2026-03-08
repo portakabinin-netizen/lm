@@ -15,6 +15,7 @@ const serviceMap = {
 };
 
 router.use(authMiddleware);
+
 router.get("/email/readInbox",services.leadService.readInbox);  
 
 // 🔍 Search lead by mobile (Must be above /leads/:id)
@@ -44,15 +45,21 @@ router.post("/addmany", async (req, res) => {
 });
 
 // 📝 Lead Activity Logging
-router.post("/:id/activity", async (req, res) => {
+router.post("/leads/:id/activity", async (req, res) => {
   try {
+    const { id } = req.params;
     const { action, byUser } = req.body;
+
+    // Validate ID
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ success: false, message: `Invalid lead ID: ${id}` });
+    }
 
     if (!action?.trim()) {
       return res.status(400).json({ success: false, message: "Action is required" });
     }
 
-    const result = await services.leadService.addActivity(req.params.id, {
+    const result = await services.leadService.addActivity(id, {
       action: action.trim(),
       byUser: byUser || "Agent",
     });
@@ -61,8 +68,18 @@ router.post("/:id/activity", async (req, res) => {
 
     res.json({ success: true, data: result });
   } catch (err) {
+    console.error("❌ Activity route error:", err.message);
     res.status(500).json({ success: false, message: err.message });
   }
+});
+
+router.get("/leads/:id/check", async (req, res) => {
+  const { id } = req.params;
+  const valid = mongoose.Types.ObjectId.isValid(id);
+  const lead = valid
+    ? await services.leadService.getById(id)
+    : null;
+  res.json({ id, valid, found: !!lead });
 });
 
 /* ---------------------------------------------------------

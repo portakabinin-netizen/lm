@@ -374,13 +374,32 @@ searchByMobile: async (req, res) => {
     return await Leads.find(query).sort({ createdAt: -1 });
   },
 
+  
+
   addActivity: async (id, activityData) => {
-    return await Leads.findByIdAndUpdate(
-      id,
-      { $push: { activity: { ...activityData, date: new Date() } } },
-      { new: true }
-    );
+  // Step 1: Validate ObjectId format
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    throw new Error(`Invalid ObjectId format: ${id}`);
   }
+
+  // Step 2: Check if lead actually exists first
+  const exists = await Leads.findById(id).select('_id').lean();
+  console.log("🔍 Lead exists check:", { id, found: !!exists });
+
+  if (!exists) {
+    throw new Error(`Lead not found in DB for id: ${id}`);
+  }
+
+  // Step 3: Perform update
+  const result = await Leads.findByIdAndUpdate(
+    new mongoose.Types.ObjectId(id),  // ← explicit ObjectId conversion
+    { $push: { activity: { ...activityData, date: new Date() } } },
+    { new: true }
+  );
+
+  console.log("✅ Activity update result:", !!result);
+  return result;
+}
 };
 
 /* ============================================================
