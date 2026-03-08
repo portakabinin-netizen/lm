@@ -80,8 +80,8 @@ readInbox: async (req, res) => {
       sender_state:   item.sender_state || null,
       source:         "TradeIndia",
       status:         "Recent",
-      corpAdminId:    adminUser._id,
-      corporateId:    corporate._id,
+      corpAdminId:    adminUser._id.toString(),
+      corporateId:    corporate._id.toString(),
     };
   };
 
@@ -219,8 +219,8 @@ readInbox: async (req, res) => {
         sender_state:   match.state,
         source:         "IndiaMart",
         status:         "Recent",
-        corpAdminId:    adminUser._id,
-        corporateId:    corporate._id,
+        corpAdminId:    adminUser._id.toString(),
+        corporateId:    corporate._id.toString(),
       });
 
       toMarkRead.push(uid);

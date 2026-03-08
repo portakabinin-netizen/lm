@@ -44,10 +44,21 @@ router.post("/addmany", async (req, res) => {
 });
 
 // 📝 Lead Activity Logging
-router.post("/service/:id/activity", async (req, res) => {
+router.post("/:id/activity", async (req, res) => {
   try {
-    const result = await services.leadService.addActivity(req.params.id, req.body);
+    const { action, byUser } = req.body;
+
+    if (!action?.trim()) {
+      return res.status(400).json({ success: false, message: "Action is required" });
+    }
+
+    const result = await services.leadService.addActivity(req.params.id, {
+      action: action.trim(),
+      byUser: byUser || "Agent",
+    });
+
     if (!result) return res.status(404).json({ success: false, message: "Lead not found" });
+
     res.json({ success: true, data: result });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
