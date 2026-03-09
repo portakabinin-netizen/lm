@@ -47,6 +47,18 @@ router.post("/addmany", async (req, res) => {
 // 📝 Lead Activity Logging
 router.post("/leads/:id/activity", async (req, res) => {
   try {
+
+     const rawId = req.params.id;
+    
+    // Sanitize: strip whitespace and non-hex characters
+    const id1 = rawId?.trim().replace(/[^a-fA-F0-9]/g, '');
+
+    if (!id1 || !mongoose.Types.ObjectId.isValid(id1)) {
+      return res.status(400).json({ 
+        success: false, 
+        message: `Invalid lead ID: "${rawId}" (cleaned: "${id1}", length: ${id1?.length})` 
+      });
+    }
     const { id } = req.params;
     const { action, byUser } = req.body;
 
@@ -75,11 +87,19 @@ router.post("/leads/:id/activity", async (req, res) => {
 
 router.get("/leads/:id/check", async (req, res) => {
   const { id } = req.params;
-  const valid = mongoose.Types.ObjectId.isValid(id);
-  const lead = valid
-    ? await services.leadService.getById(id)
-    : null;
-  res.json({ id, valid, found: !!lead });
+  const cleaned = id.trim().replace(/[^a-fA-F0-9]/g, '');
+  const valid = mongoose.Types.ObjectId.isValid(cleaned);
+  const lead = valid ? await services.leadService.getById(cleaned) : null;
+  
+  res.json({ 
+    id, 
+    cleaned,
+    length: id.length,          // Should be 24
+    cleanedLength: cleaned.length, // Should also be 24
+    charCodes: [...id].map(c => c.charCodeAt(0)), // Reveals hidden chars
+    valid, 
+    found: !!lead 
+  });
 });
 
 /* ---------------------------------------------------------
