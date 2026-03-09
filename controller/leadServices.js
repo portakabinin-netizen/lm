@@ -374,8 +374,6 @@ searchByMobile: async (req, res) => {
     return await Leads.find(query).sort({ createdAt: -1 });
   },
 
-  
-
   addActivity: async (id, activityData) => {
   // Step 1: Validate ObjectId format
   if (!mongoose.Types.ObjectId.isValid(id)) {

@@ -1,5 +1,5 @@
 const express    = require("express");
-const mongoose   = require("mongoose"); // ✅ CRITICAL FIX — was missing, caused silent crash → 404
+const mongoose   = require("mongoose"); 
 const router     = express.Router();
 
 const authMiddleware = require("../middleware/authMiddleware");
@@ -85,27 +85,6 @@ router.post("/leads/:id/activity", async (req, res) => {
   }
 });
 
-// 🔎 Debug — check if an ID is valid and exists in DB
-router.get("/leads/:id/check", async (req, res) => {
-  try {
-    const raw     = req.params.id;
-    const cleaned = raw.trim().replace(/[^a-fA-F0-9]/g, "");
-    const valid   = mongoose.Types.ObjectId.isValid(cleaned);
-    const lead    = valid ? await services.leadService.getById(cleaned) : null;
-
-    res.json({
-      raw,
-      cleaned,
-      rawLength:     raw.length,
-      cleanedLength: cleaned.length,
-      charCodes:     [...raw].map(c => c.charCodeAt(0)),
-      valid,
-      found: !!lead,
-    });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
 
 /* =========================================================================
    2. GENERIC FACTORY ROUTES  (leads / corporate / ledger / user)
