@@ -1,42 +1,35 @@
-const express = require("express");
-const router = express.Router();
-const authMiddleware = require("../middleware/authMiddleware");
-const { ImapFlow } = require('imapflow');
-const { simpleParser } = require('mailparser');
-// Import the Unified Service Object
-const services = require("../controller/leadServices");
+const express    = require("express");
+const mongoose   = require("mongoose"); // ✅ CRITICAL FIX — was missing, caused silent crash → 404
+const router     = express.Router();
 
-// ✅ Service Mapping for Generic Factory Routes
+const authMiddleware = require("../middleware/authMiddleware");
+const services       = require("../controller/leadServices");
+
+// ── Service map for generic factory routes ─────────────────────────────────
 const serviceMap = {
-  leads: services.leadService,
+  leads:     services.leadService,
   corporate: services.corporateService,
-  ledger: services.ledgerService,
-  user: services.userService,
+  ledger:    services.ledgerService,
+  user:      services.userService,
 };
 
+// ── Auth on every route ────────────────────────────────────────────────────
 router.use(authMiddleware);
 
-router.get("/email/readInbox",services.leadService.readInbox);  
+/* =========================================================================
+   1. SPECIFIC LEADS ROUTES
+   Must be registered BEFORE generic /:type/:id factory routes
+   ========================================================================= */
 
-// 🔍 Search lead by mobile (Must be above /leads/:id)
-router.get("/leads/search", services.leadService.searchByMobile);
+// 📧 Read email inbox
+router.get("/email/readInbox", services.leadService.readInbox);
 
-// 📊 Leads filtering by Status
-router.get("/leads/status/:status", async (req, res) => {
-  try {
-    const { status } = req.params;
-    const { corporateId } = req.query; 
-    const result = await services.leadService.getLeadsByStatus(status, corporateId);
-    res.json({ success: true, data: result || [] });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-// 📥 Bulk Insert Leads
+// 📥 Bulk insert leads
 router.post("/addmany", async (req, res) => {
   try {
-    if (!Array.isArray(req.body)) return res.status(400).json({ message: "Array required" });
+    if (!Array.isArray(req.body))
+      return res.status(400).json({ success: false, message: "Array required" });
+
     const result = await services.leadService.addMany(req.body);
     res.status(201).json(result);
   } catch (err) {
@@ -44,28 +37,34 @@ router.post("/addmany", async (req, res) => {
   }
 });
 
-// 📝 Lead Activity Logging
+// 🔍 Search lead by mobile  — no :id param, must be above /:type/:id
+router.get("/leads/search", services.leadService.searchByMobile);
+
+// 📊 Filter leads by status — has :status param, must be above /:type/:id
+router.get("/leads/status/:status", async (req, res) => {
+  try {
+    const { status }      = req.params;
+    const { corporateId } = req.query;
+    const result = await services.leadService.getLeadsByStatus(status, corporateId);
+    res.json({ success: true, data: result || [] });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// 📝 Log activity against a lead
 router.post("/leads/:id/activity", async (req, res) => {
   try {
+    const id = req.params.id?.trim().replace(/[^a-fA-F0-9]/g, "");
 
-     const rawId = req.params.id;
-    
-    // Sanitize: strip whitespace and non-hex characters
-    const id1 = rawId?.trim().replace(/[^a-fA-F0-9]/g, '');
-
-    if (!id1 || !mongoose.Types.ObjectId.isValid(id1)) {
-      return res.status(400).json({ 
-        success: false, 
-        message: `Invalid lead ID: "${rawId}" (cleaned: "${id1}", length: ${id1?.length})` 
+    if (!id || !mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid lead ID: "${req.params.id}"`,
       });
     }
-    const { id } = req.params;
-    const { action, byUser } = req.body;
 
-    // Validate ID
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      return res.status(400).json({ success: false, message: `Invalid lead ID: ${id}` });
-    }
+    const { action, byUser } = req.body;
 
     if (!action?.trim()) {
       return res.status(400).json({ success: false, message: "Action is required" });
@@ -76,7 +75,8 @@ router.post("/leads/:id/activity", async (req, res) => {
       byUser: byUser || "Agent",
     });
 
-    if (!result) return res.status(404).json({ success: false, message: "Lead not found" });
+    if (!result)
+      return res.status(404).json({ success: false, message: "Lead not found" });
 
     res.json({ success: true, data: result });
   } catch (err) {
@@ -85,39 +85,44 @@ router.post("/leads/:id/activity", async (req, res) => {
   }
 });
 
+// 🔎 Debug — check if an ID is valid and exists in DB
 router.get("/leads/:id/check", async (req, res) => {
-  const { id } = req.params;
-  const cleaned = id.trim().replace(/[^a-fA-F0-9]/g, '');
-  const valid = mongoose.Types.ObjectId.isValid(cleaned);
-  const lead = valid ? await services.leadService.getById(cleaned) : null;
-  
-  res.json({ 
-    id, 
-    cleaned,
-    length: id.length,          // Should be 24
-    cleanedLength: cleaned.length, // Should also be 24
-    charCodes: [...id].map(c => c.charCodeAt(0)), // Reveals hidden chars
-    valid, 
-    found: !!lead 
-  });
+  try {
+    const raw     = req.params.id;
+    const cleaned = raw.trim().replace(/[^a-fA-F0-9]/g, "");
+    const valid   = mongoose.Types.ObjectId.isValid(cleaned);
+    const lead    = valid ? await services.leadService.getById(cleaned) : null;
+
+    res.json({
+      raw,
+      cleaned,
+      rawLength:     raw.length,
+      cleanedLength: cleaned.length,
+      charCodes:     [...raw].map(c => c.charCodeAt(0)),
+      valid,
+      found: !!lead,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
 });
 
-/* ---------------------------------------------------------
-   2. GENERIC FACTORY ROUTES (CRUD)
-   Handles leads, corporate, ledger, and user dynamically
-   --------------------------------------------------------- */
+/* =========================================================================
+   2. GENERIC FACTORY ROUTES  (leads / corporate / ledger / user)
+   Registered AFTER all specific routes to avoid param conflicts
+   ========================================================================= */
 
-/** ✅ CREATE */
+// ➕ Create
 router.post("/:type/create", async (req, res) => {
-  const { type } = req.params;
-  const service = serviceMap[type];
-  if (!service?.create) return res.status(400).json({ success: false, message: `Invalid service: ${type}` });
+  const service = serviceMap[req.params.type];
+  if (!service?.create)
+    return res.status(400).json({ success: false, message: `Invalid service: ${req.params.type}` });
 
   try {
     const payload = { ...req.body };
-    if (req.user.role !== "Admin" && req.user.corporateId) {
+    if (req.user.role !== "Admin" && req.user.corporateId)
       payload.corporateId = req.user.corporateId;
-    }
+
     const result = await service.create(payload);
     res.json({ success: true, data: result });
   } catch (err) {
@@ -125,17 +130,17 @@ router.post("/:type/create", async (req, res) => {
   }
 });
 
-/** ✅ LIST */
+// 📋 List
 router.get("/:type/list", async (req, res) => {
-  const { type } = req.params;
-  const service = serviceMap[type];
-  if (!service?.list) return res.status(400).json({ success: false, message: "Invalid service type" });
+  const service = serviceMap[req.params.type];
+  if (!service?.list)
+    return res.status(400).json({ success: false, message: "Invalid service type" });
 
   try {
     const filters = {};
-    if (req.user.role !== "Admin" && req.user.corporateId) {
+    if (req.user.role !== "Admin" && req.user.corporateId)
       filters.corporateId = req.user.corporateId;
-    }
+
     const result = await service.list(filters);
     res.json({ success: true, data: result });
   } catch (err) {
@@ -143,43 +148,45 @@ router.get("/:type/list", async (req, res) => {
   }
 });
 
-/** ✅ GET BY ID (Defined after specific routes to avoid collisions) */
+// 🔎 Get by ID
 router.get("/:type/:id", async (req, res) => {
-  const { type, id } = req.params;
-  const service = serviceMap[type];
-  if (!service?.getById) return res.status(400).json({ success: false, message: "Invalid service type" });
+  const service = serviceMap[req.params.type];
+  if (!service?.getById)
+    return res.status(400).json({ success: false, message: "Invalid service type" });
 
   try {
-    const result = await service.getById(id);
-    if (!result) return res.status(404).json({ success: false, message: "Record not found" });
+    const result = await service.getById(req.params.id);
+    if (!result)
+      return res.status(404).json({ success: false, message: "Record not found" });
+
     res.json({ success: true, data: result });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
 });
 
-/** ✅ UPDATE */
+// ✏️ Update
 router.put("/:type/:id", async (req, res) => {
-  const { type, id } = req.params;
-  const service = serviceMap[type];
-  if (!service?.update) return res.status(400).json({ success: false, message: "Invalid service type" });
+  const service = serviceMap[req.params.type];
+  if (!service?.update)
+    return res.status(400).json({ success: false, message: "Invalid service type" });
 
   try {
-    const result = await service.update(id, req.body);
+    const result = await service.update(req.params.id, req.body);
     res.json({ success: true, data: result });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
 });
 
-/** ✅ DELETE */
+// 🗑️ Delete
 router.delete("/:type/:id", async (req, res) => {
-  const { type, id } = req.params;
-  const service = serviceMap[type];
-  if (!service?.remove) return res.status(400).json({ success: false, message: "Invalid service type" });
+  const service = serviceMap[req.params.type];
+  if (!service?.remove)
+    return res.status(400).json({ success: false, message: "Invalid service type" });
 
   try {
-    await service.remove(id);
+    await service.remove(req.params.id);
     res.json({ success: true, message: "Deleted successfully" });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });

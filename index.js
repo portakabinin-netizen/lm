@@ -4,7 +4,7 @@ const cors = require("cors");
 const mongoose = require("mongoose");
 const { Server } = require("socket.io");
 const cloudinary = require('cloudinary').v2;
-const helmet = require("helmet"); // Added for security headers
+const helmet = require("helmet");
 require("dotenv").config();
 
 // ---------- Import Routers ----------
@@ -74,15 +74,6 @@ app.get("/", (req, res) => {
   });
 });
 
-// Temporary debug - add this before your 404 handler
-app.use((req, res, next) => {
-  console.log("⚠️ UNMATCHED ROUTE:", req.method, req.originalUrl);
-  console.log("Registered routes:", app._router.stack
-    .filter(r => r.name === 'router')
-    .map(r => r.regexp));
-  next();
-});
-
 app.use((req, res) => {
   res.status(404).json({ success: false, message: `Route ${req.path} not found` });
 });
@@ -114,6 +105,3 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, "0.0.0.0", () => {
   
 }); 
-
-//const PORT = process.env.PORT || 3000;
-//server.listen(PORT, "0.0.0.0", () => {});
