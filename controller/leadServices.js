@@ -374,30 +374,33 @@ searchByMobile: async (req, res) => {
     return await Leads.find(query).sort({ createdAt: -1 });
   },
 
-  addActivity: async (id, activityData) => {
-  // Step 1: Validate ObjectId format
-  if (!mongoose.Types.ObjectId.isValid(id)) {
-    throw new Error(`Invalid ObjectId format: ${id}`);
+ addActivity: async (req, res) => {
+  const id = req.params.id?.trim().replace(/[^a-fA-F0-9]/g, "");
+
+  if (!id || !mongoose.Types.ObjectId.isValid(id))
+    return res.status(400).json({ success: false, message: `Invalid lead ID: "${req.params.id}"` });
+
+  const { action, byUser } = req.body;
+
+  if (!action?.trim())
+    return res.status(400).json({ success: false, message: "Action is required" });
+
+  try {
+    const lead = await Leads.findByIdAndUpdate(
+      new mongoose.Types.ObjectId(id),
+      { $push: { activity: { action: action.trim(), byUser: byUser || "Agent", date: new Date() } } },
+      { new: true }
+    );
+
+    if (!lead)
+      return res.status(404).json({ success: false, message: "Lead not found" });
+
+    res.json({ success: true, data: lead });
+  } catch (err) {
+    console.error("❌ Activity error:", err.message);
+    res.status(500).json({ success: false, message: err.message });
   }
-
-  // Step 2: Check if lead actually exists first
-  const exists = await Leads.findById(id).select('_id').lean();
-  console.log("🔍 Lead exists check:", { id, found: !!exists });
-
-  if (!exists) {
-    throw new Error(`Lead not found in DB for id: ${id}`);
-  }
-
-  // Step 3: Perform update
-  const result = await Leads.findByIdAndUpdate(
-    new mongoose.Types.ObjectId(id),  // ← explicit ObjectId conversion
-    { $push: { activity: { ...activityData, date: new Date() } } },
-    { new: true }
-  );
-
-  console.log("✅ Activity update result:", !!result);
-  return result;
-}
+},
 };
 
 /* ============================================================

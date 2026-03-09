@@ -53,38 +53,7 @@ router.get("/leads/status/:status", async (req, res) => {
 });
 
 // 📝 Log activity against a lead
-router.post("/leads/:id/activity", async (req, res) => {
-  try {
-    const id = req.params.id?.trim().replace(/[^a-fA-F0-9]/g, "");
-
-    if (!id || !mongoose.Types.ObjectId.isValid(id)) {
-      return res.status(400).json({
-        success: false,
-        message: `Invalid lead ID: "${req.params.id}"`,
-      });
-    }
-
-    const { action, byUser } = req.body;
-
-    if (!action?.trim()) {
-      return res.status(400).json({ success: false, message: "Action is required" });
-    }
-
-    const result = await services.leadService.addActivity(id, {
-      action: action.trim(),
-      byUser: byUser || "Agent",
-    });
-
-    if (!result)
-      return res.status(404).json({ success: false, message: "Lead not found" });
-
-    res.json({ success: true, data: result });
-  } catch (err) {
-    console.error("❌ Activity route error:", err.message);
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
-
+router.post("/leads/:id/activity", services.leadService.addActivity);
 
 /* =========================================================================
    2. GENERIC FACTORY ROUTES  (leads / corporate / ledger / user)
