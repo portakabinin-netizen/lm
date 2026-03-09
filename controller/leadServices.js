@@ -375,7 +375,9 @@ searchByMobile: async (req, res) => {
   },
 
  addActivity: async (req, res) => {
+  console.log("✅ addActivity hit:", req.params.id, req.body);
   const id = req.params.id?.trim().replace(/[^a-fA-F0-9]/g, "");
+  console.log(id);
 
   if (!id || !mongoose.Types.ObjectId.isValid(id))
     return res.status(400).json({ success: false, message: `Invalid lead ID: "${req.params.id}"` });

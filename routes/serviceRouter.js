@@ -53,7 +53,7 @@ router.get("/leads/status/:status", async (req, res) => {
 });
 
 // 📝 Log activity against a lead
-router.post("/leads/:id/activity", authMiddleware, services.leadService.addActivity);
+router.post("/leads/:id/activity", services.leadService.addActivity);
 
 /* =========================================================================
    2. GENERIC FACTORY ROUTES  (leads / corporate / ledger / user)
