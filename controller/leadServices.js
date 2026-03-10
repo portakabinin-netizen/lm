@@ -371,7 +371,7 @@ searchByMobile: async (req, res) => {
     const query = {};
     if (status) query.status = { $regex: `^${status.trim()}$`, $options: "i" };
     if (corporateId && corporateId !== "undefined") query.corporateId = String(corporateId).trim();
-    return await Leads.find(query).sort({ createdAt: -1 });
+    return await Leads.find(query).sort({lead_no : -1, updatedAt: -1 });
   },
 
  addActivity: async (req, res) => {
