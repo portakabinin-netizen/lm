@@ -18,6 +18,104 @@ const CITY_STATE_MAP = require('../models/cityStateMap.json');
 
 exports.leadService = {
 
+leadsAnalytics: async (req, res) => {
+   try {
+        const { corporateId, fromDate, toDate, source } = req.query;
+
+        if (!corporateId) {
+            return res.status(400).json({
+                success: false,
+                message: "corporateId is required",
+            });
+        }
+
+        const cleanId = String(corporateId).trim();
+
+        // ── Base match ────────────────────────────────────────────────
+        // Leads are saved with corporateId = corporate._id (linkedCorporate subdoc).
+        // But a CorpAdmin session sends their own userId as corporateId (corpAdminId).
+        // So we match EITHER field to cover both cases.
+        const idMatch = {
+            $or: [
+                { corporateId:  cleanId },
+                { corpAdminId:  cleanId },
+            ],
+        };
+
+        // ── Source filter ─────────────────────────────────────────────
+        const extraMatch = {};
+        if (source && source.trim() !== "") {
+            extraMatch.source = String(source).trim();
+        }
+
+        // ── Date filter ───────────────────────────────────────────────
+        if (fromDate && fromDate.trim() !== "") {
+            const now = new Date();
+            let from;
+
+            if (fromDate === "today") {
+                from = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+            } else if (fromDate === "7days") {
+                from = new Date(now);
+                from.setDate(from.getDate() - 7);
+                from.setHours(0, 0, 0, 0);
+            } else if (fromDate === "30days") {
+                from = new Date(now);
+                from.setDate(from.getDate() - 30);
+                from.setHours(0, 0, 0, 0);
+            } else {
+                from = new Date(fromDate);
+            }
+
+            extraMatch.generated_date = { $gte: from };
+
+            if (toDate && toDate.trim() !== "" && toDate !== "today") {
+                const to = new Date(toDate);
+                to.setHours(23, 59, 59, 999);
+                extraMatch.generated_date.$lte = to;
+            } else if (fromDate === "today") {
+                const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+                extraMatch.generated_date.$lte = endOfDay;
+            }
+        }
+
+        // Combine $or identity match with extra filters
+        const match = Object.keys(extraMatch).length > 0
+            ? { ...idMatch, ...extraMatch }
+            : idMatch;
+
+        // ── Run all three in parallel ─────────────────────────────────
+        const [sourceCounts, statusCounts, totalCount] = await Promise.all([
+            Leads.aggregate([
+                { $match: match },
+                { $group:   { _id: "$source", count: { $sum: 1 } } },
+                { $project: { _id: 0, label: "$_id", value: "$count" } },
+                { $sort:    { value: -1 } },
+            ]),
+            Leads.aggregate([
+                { $match: match },
+                { $group:   { _id: "$status", count: { $sum: 1 } } },
+                { $project: { _id: 0, label: "$_id", value: "$count" } },
+                { $sort:    { value: -1 } },
+            ]),
+            Leads.countDocuments(match),
+        ]);
+
+        return res.status(200).json({
+            success: true,
+            total:   totalCount,
+            data: {
+                sources:  sourceCounts,
+                statuses: statusCounts,
+            },
+        });
+
+    } catch (err) {
+        console.error("❌ leadsAnalytics error:", err.message);
+        return res.status(500).json({ success: false, message: err.message });
+    }
+},  
+
 readInbox: async (req, res) => {
    
   const { ImapFlow }     = require('imapflow');
@@ -375,10 +473,8 @@ searchByMobile: async (req, res) => {
   },
 
  addActivity: async (req, res) => {
-  console.log("✅ addActivity hit:", req.params.id, req.body);
   const id = req.params.id?.trim().replace(/[^a-fA-F0-9]/g, "");
-  console.log(id);
-
+ 
   if (!id || !mongoose.Types.ObjectId.isValid(id))
     return res.status(400).json({ success: false, message: `Invalid lead ID: "${req.params.id}"` });
 

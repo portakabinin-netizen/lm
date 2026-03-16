@@ -37,6 +37,9 @@ router.post("/addmany", async (req, res) => {
   }
 });
 
+// Get all leads for lead analytics 
+router.get("/leads/analytics", services.leadService.leadsAnalytics);
+
 // 🔍 Search lead by mobile  — no :id param, must be above /:type/:id
 router.get("/leads/search", services.leadService.searchByMobile);
 
