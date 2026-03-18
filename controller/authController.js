@@ -202,7 +202,7 @@ exports.login = async (req, res) => {
 
         if (user.userRole === "CorpAdmin") {
             corpAdminId = user._id;
-            corporateId = user.apiUrls?._id || null;
+            corporateId =  user.linkedCorporate?._id|| null;
             corporateName = user.linkedCorporate?.corporateName;
             corporatePAN = user.linkedCorporate?.corporatePAN ;
             corporateGST = user.linkedCorporate?.corporateGST || "URN-Business";
