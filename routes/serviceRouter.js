@@ -13,6 +13,11 @@ const serviceMap = {
   user:      services.userService,
 };
 
+
+// Public web inquiry form to get lead
+
+router.post("/publicform/webInquiry", services.leadService.webInquiry);
+
 // ── Auth on every route ────────────────────────────────────────────────────
 router.use(authMiddleware);
 
@@ -25,7 +30,7 @@ router.use(authMiddleware);
 router.get("/email/readInbox", services.leadService.readInbox);
 
 // 📥 Bulk insert leads
-router.post("/addmany", async (req, res) => {
+router.post("/addMany", async (req, res) => {
   try {
     if (!Array.isArray(req.body))
       return res.status(400).json({ success: false, message: "Array required" });

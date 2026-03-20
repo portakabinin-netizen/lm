@@ -417,6 +417,35 @@ searchByMobile: async (req, res) => {
     return await new Leads(data).save();
   },
 
+webInquiry: async (req, res) => {
+  try {
+    const {
+      sender_name, sender_mobile, product_name,
+      sender_city, sender_state, sender_email,
+      corporateId, corpAdminId
+    } = req.body;
+
+    if (!sender_name || !sender_mobile || !corporateId) {
+      return res.status(400).json({ success: false, message: 'Missing required fields' });
+    }
+
+    const lead = {
+      sender_name, sender_mobile, product_name,
+      sender_city, sender_state, sender_email,
+      corporateId: String(corporateId).trim(),
+      corpAdminId,
+      source: 'WebForm',
+      status: 'Recent',
+      generated_date: new Date()
+    };
+
+    const result = await exports.leadService.addMany([lead]);
+    return res.status(201).json(result);
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+},
+
   addMany: async (leadsArray) => {
     if (!Array.isArray(leadsArray) || leadsArray.length === 0) {
       return { success: true, insertedCount: 0, message: "Empty array" };
@@ -455,6 +484,7 @@ searchByMobile: async (req, res) => {
     if (filters.corporateId) query.corporateId = filters.corporateId;
     return await Leads.find(query).sort({ createdAt: -1 });
   },
+  
 
   getById: async (id) => {
     if (!mongoose.Types.ObjectId.isValid(id)) return null;
