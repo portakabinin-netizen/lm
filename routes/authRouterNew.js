@@ -16,12 +16,13 @@ router.get('/health-check', authController.healthCheck);
 
 // Authentication flows
 router.post("/send-otp",authController.sendOtp);
+router.post("/search",authController.searchlinkCorp);
 router.post("/verify-otp", authController.verifyOtp);
 router.post("/check-unique", validateAuth, authController.checkUnique);
 router.post("/register", validateAuth, authController.register);
 router.post("/login", validateAuth, authController.login);
 router.post("/verify-identity",validateAuth,authController.verifyIdentity);
-router.post("/search",authController.searchlinkCorp);
+
 
 
 /**
@@ -34,6 +35,7 @@ router.post("/search",authController.searchlinkCorp);
 // Apply authMiddleware to all routes defined below this point
 
 router.use(authMiddleware);
+router.post("/switch-corporate", authController.switchCorporate);
 router.post("/update-profile-image", authController.updateProfileImage);
 router.put("/url-configure/:id", authController.apiUrlsConfigureSave);
 

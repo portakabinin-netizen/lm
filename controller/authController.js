@@ -1,9 +1,11 @@
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
+const { Users, Corporates } = require("../models/UsersCorporates");
 //const crypto = require('crypto');
 const jwt = require("jsonwebtoken");
 const cloudinary = require('cloudinary').v2;
 const { formatMobile } = require("../middleware/validateAuth");
+const { userService } = require("./leadServices");
 
 console.log("Runtime:", typeof process, process?.versions?.node);
 
@@ -109,7 +111,7 @@ exports.register = async (req, res) => {
 
         // 3. Logic for CorpAdmin
         if (data.userRole === "CorpAdmin") {
-            newUserPayload.linkedCorporate = {
+            newUserPayload.linkedCorporates = [{
                 corporateName: data.corporateName,
                 corporateTagName: "Welcome",
                 CorpProfileImage: "https://img.icons8.com/?size=100&id=E6RfmLvxU30R&format=png&color=000000",
@@ -122,7 +124,7 @@ exports.register = async (req, res) => {
                 corporatePAN: data.corporatePAN,
                 corporateGST: data.corporateGST,
                 corporateActive: true
-            };
+            }];
         } 
         // 4. Logic for Sales/Project (Non-Admin)
         else {
@@ -132,7 +134,7 @@ exports.register = async (req, res) => {
             newUserPayload.accessCorporate = {
                 corpAdminId: accessData.corpAdminId || null,
                 corporateId: accessData.corporateId || null,
-                accessAllow: false // Force false for approval flow
+                accessAllow: false
             };
 
             // Safety Check: If IDs are missing, don't let Mongoose try to save a null ObjectId
@@ -159,12 +161,11 @@ exports.register = async (req, res) => {
 exports.checkUnique = async (req, res) => {
     try {
         const { userMobile, userAadhar, corporatePAN } = req.body;
-        const Users = mongoose.model("Users");
         let exists = false;
 
         if (userMobile) exists = await Users.exists({ userMobile });
         else if (userAadhar) exists = await Users.exists({ userAadhar });
-        else if (corporatePAN) exists = await Users.exists({ "linkedCorporate.corporatePAN": corporatePAN });
+        else if (corporatePAN) exists = await Users.exists({ "linkedCorporates.corporatePAN": corporatePAN });
 
         return res.json({ exists: Boolean(exists) });
     } catch (err) {
@@ -175,7 +176,6 @@ exports.checkUnique = async (req, res) => {
 exports.login = async (req, res) => {
     try {
         let { mobile, password } = req.body;
-        const Users = mongoose.model("Users");
 
         if (!mobile) return res.status(400).json({ success: false, message: "Mobile required" });
         
@@ -190,38 +190,51 @@ exports.login = async (req, res) => {
         // Initialize variables
         let corpAdminId = null, 
             corporateId = null, 
+            activeCorp  = null,
             corporateName = "", 
             accessAllow = false, 
             corporatePAN = "", 
             corporateGST = "", 
             CorpProfileImage = "",
-            corporateTagName = ""
+            corporateTagName = "";
 
         // NEW: Capture the user's personal profile image from the DB record
         const userProfileImage = user.userProfileImage || "";
 
+        let corporates = [];
         if (user.userRole === "CorpAdmin") {
             corpAdminId = user._id;
-            corporateId =  user.linkedCorporate?._id|| null;
-            corporateName = user.linkedCorporate?.corporateName;
-            corporatePAN = user.linkedCorporate?.corporatePAN ;
-            corporateGST = user.linkedCorporate?.corporateGST || "URN-Business";
+            corporates = user.linkedCorporates || [];
+            
+            // Default to first corporate if none specified in request
+            const targetCorpId = req.body.corporateId;
+            activeCorp = targetCorpId 
+                ? corporates.find(c => c._id.toString() === targetCorpId)
+                : corporates[0];
+
+            if (activeCorp) {
+                corporateId = activeCorp._id;
+                corporateName = activeCorp.corporateName;
+                corporatePAN = activeCorp.corporatePAN;
+                corporateGST = activeCorp.bankDetails?.corporateGST || "URN-Business";
+                CorpProfileImage = activeCorp.CorpProfileImage;
+                corporateTagName = activeCorp.corporateTagName || " Welcome You !";
+            }
             accessAllow = true;
-            CorpProfileImage = user.linkedCorporate?.CorpProfileImage;
-            corporateTagName=user.linkedCorporate?.corporateTagName || " Welcome You !";
         } else {
             corpAdminId = user.accessCorporate?.corpAdminId || null;
             corporateId = user.accessCorporate?.corporateId || null;
             accessAllow = user.accessCorporate?.accessAllow || false;
 
-            if (corpAdminId) {
-                const adminData = await Users.findById(corpAdminId).select("linkedCorporate").lean();
-                corporateName = adminData?.linkedCorporate?.corporateName || "No company linked!";
-                corporateTagName = adminData?.linkedCorporate?.corporateTagName || "Welcome you!";
-                corporatePAN = adminData?.linkedCorporate?.corporatePAN || "";
-                corporateGST = adminData?.linkedCorporate?.corporateGST || "Un-Registered";
-                // Fetches corporate logo from the Admin's record
-                CorpProfileImage = adminData?.linkedCorporate?.CorpProfileImage || "";
+            if (corporateId) {
+                const adminData = await Users.findById(corpAdminId).select("linkedCorporates").lean();
+                activeCorp = adminData?.linkedCorporates?.find(c => c._id.toString() === corporateId.toString());
+                
+                corporateName = activeCorp?.corporateName || "No company linked!";
+                corporateTagName = activeCorp?.corporateTagName || "Welcome you!";
+                corporatePAN = activeCorp?.corporatePAN || "";
+                corporateGST = activeCorp?.bankDetails?.corporateGST || "Un-Registered";
+                CorpProfileImage = activeCorp?.CorpProfileImage || "";
             }
         }
 
@@ -229,6 +242,8 @@ exports.login = async (req, res) => {
             { 
                 userId: String(user._id), 
                 userRole: user.userRole, 
+                corpAdminId: corpAdminId ? String(corpAdminId) : null,
+                corporateId: corporateId ? String(corporateId) : null,
                 accessAllow: Boolean(accessAllow) 
             },
             process.env.JWT_SECRET,
@@ -243,14 +258,23 @@ exports.login = async (req, res) => {
                 userDisplayName: user.userDisplayName,
                 corporateTagName,
                 userRole: user.userRole, 
-                userProfileImage, // ✅ ADDED: This ensures the personal photo shows in the drawer
+                userProfileImage, 
                 accessAllow, 
-                corpAdminId, 
-                CorpProfileImage, // ✅ This ensures corporate logo shows in the header
+                CorpProfileImage, 
                 corporateId, 
                 corporateName, 
                 corporatePAN, 
-                corporateGST 
+                corporateGST,
+                corporateEmail: activeCorp?.corporateEmail || "",
+                corporateAddress: activeCorp?.corporateAddress || "",
+                corporateCity: activeCorp?.corporateCity || "",
+                corporateState: activeCorp?.corporateState || "",
+                corporatePin: activeCorp?.corporatePin || "",
+                corporateMobile: activeCorp?.taxRegistrations?.corporateMobile || activeCorp?.corporateMobile || "",
+                corpAdminId: String(corpAdminId),
+                corporates: user.userRole === "CorpAdmin" 
+                    ? user.linkedCorporates 
+                    : (user.accessCorporate?.corporateId ? [activeCorp] : [])
             }
         });
     } catch (err) {
@@ -259,58 +283,121 @@ exports.login = async (req, res) => {
     }
 };
 
+exports.switchCorporate = async (req, res) => {
+    try {
+        const { corporateId } = req.body;
+        const userId = req.user.userId;
+
+        const user = await Users.findById(userId).populate("linkedCorporates");
+        if (!user) return res.status(404).json({ success: false, message: "User not found" });
+
+        let targetCorp;
+        if (user.userRole === "CorpAdmin") {
+            targetCorp = (user.linkedCorporates || []).find(c => c._id.toString() === corporateId);
+        } else {
+            // Sub-user can only switch if they have access (though usually they only have one)
+            if (user.accessCorporate?.corporateId?.toString() === corporateId && user.accessCorporate?.accessAllow) {
+                const adminData = await Users.findById(user.accessCorporate.corpAdminId).select("linkedCorporates").lean();
+                targetCorp = adminData?.linkedCorporates?.find(c => c._id.toString() === corporateId);
+            }
+        }
+
+        if (!targetCorp) {
+            return res.status(403).json({ success: false, message: "Access denied to this corporate" });
+        }
+
+        // Return new session data
+        const token = jwt.sign(
+            { 
+                userId: String(user._id), 
+                userRole: user.userRole, 
+                corpAdminId: user.userRole === "CorpAdmin" ? String(user._id) : String(user.accessCorporate.corpAdminId),
+                corporateId: String(targetCorp._id),
+                accessAllow: true 
+            },
+            process.env.JWT_SECRET,
+            { expiresIn: "90d" }
+        );
+
+        return res.json({
+            success: true,
+            token, // Return new token too
+            userSession: {
+                userId: user._id,
+                userDisplayName: user.userDisplayName,
+                corporateTagName: targetCorp.corporateTagName || "Welcome you",
+                userRole: user.userRole,
+                userProfileImage: user.userProfileImage || "",
+                accessAllow: true,
+                CorpProfileImage: targetCorp.CorpProfileImage || "",
+                corporateId: targetCorp._id,
+                corporateName: targetCorp.corporateName,
+                corporatePAN: targetCorp.corporatePAN,
+                corporateGST: targetCorp.bankDetails?.corporateGST || "URN-Business",
+                corporateEmail: targetCorp.corporateEmail || "",
+                corporateAddress: targetCorp.corporateAddress || "",
+                corporateCity: targetCorp.corporateCity || "",
+                corporateState: targetCorp.corporateState || "",
+                corporatePin: targetCorp.corporatePin || "",
+                corporateMobile: targetCorp.taxRegistrations?.corporateMobile || targetCorp.corporateMobile || "",
+                corpAdminId: user.userRole === "CorpAdmin" ? String(user._id) : String(user.accessCorporate.corpAdminId),
+                corporates: user.userRole === "CorpAdmin" 
+                    ? user.linkedCorporates 
+                    : (user.accessCorporate?.corporateId ? [targetCorp] : [])
+            }
+        });
+    } catch (err) {
+        console.error("Switch Corp Error:", err);
+        return res.status(500).json({ success: false, message: "Internal Server Error" });
+    }
+};
+
 exports.updateProfileImage = async (req, res) => {
     try {
         const Users = mongoose.model("Users");
-        const { userId, imageBase64, fieldToUpdate } = req.body;
+        const { userId, imageBase64, fieldToUpdate, corporateId } = req.body;
 
-        // Requester info from JWT Middleware
         const requesterId = req.user.userId; 
         const requesterRole = req.user.userRole;
 
-        // 1. Validation check for payload
         if (!userId || !fieldToUpdate || !imageBase64) {
             return res.status(400).json({ success: false, message: "Missing required data" });
         }
 
-        let dbPath = "";
-        
-        // 2. Logic Check: Permissions & DB Path Selection
-        if (fieldToUpdate === "CorpProfileImage") {
-            // ONLY CorpAdmin can update Corporate Logo
-            if (requesterRole !== "CorpAdmin") {
-                return res.status(403).json({ success: false, message: "Access Denied: Admin only" });
-            }
-            dbPath = "linkedCorporate.CorpProfileImage";
-        } 
-        else if (fieldToUpdate === "userProfileImage") {
-            // Users can ONLY update their own profile
-            if (requesterId !== userId) {
-                return res.status(403).json({ success: false, message: "Access Denied: Cannot update another user" });
-            }
-            dbPath = "userProfileImage";
-        } else {
-            return res.status(400).json({ success: false, message: "Invalid update field" });
-        }
-
-        // 3. Cloudinary Upload
-        // Note: We check if the string already has the data prefix to avoid duplication
+        let updatedUser;
         const uploadStr = imageBase64.startsWith('data:image') ? imageBase64 : `data:image/jpeg;base64,${imageBase64}`;
-        
         const uploadRes = await cloudinary.uploader.upload(uploadStr, {
             folder: fieldToUpdate === "CorpProfileImage" ? "corporate_logos" : "user_profiles",
             transformation: [{ width: 500, height: 500, crop: "limit", quality: "auto" }]
         });
 
-        // 4. Database Update with casting to ObjectId
-        const updatedUser = await Users.findByIdAndUpdate(
-            new mongoose.Types.ObjectId(userId), 
-            { $set: { [dbPath]: uploadRes.secure_url } },
-            { new: true }
-        ).select("-userPassword");
+        if (fieldToUpdate === "CorpProfileImage") {
+            if (requesterRole !== "CorpAdmin") {
+                return res.status(403).json({ success: false, message: "Admin only" });
+            }
+            if (!corporateId) {
+                return res.status(400).json({ success: false, message: "Corporate ID required" });
+            }
+            updatedUser = await Users.findOneAndUpdate(
+                { _id: new mongoose.Types.ObjectId(userId), "linkedCorporates._id": new mongoose.Types.ObjectId(corporateId) },
+                { $set: { "linkedCorporates.$.CorpProfileImage": uploadRes.secure_url } },
+                { new: true }
+            );
+        } else if (fieldToUpdate === "userProfileImage") {
+            if (requesterId !== userId) {
+                return res.status(403).json({ success: false, message: "Cannot update another user" });
+            }
+            updatedUser = await Users.findByIdAndUpdate(
+                new mongoose.Types.ObjectId(userId), 
+                { $set: { userProfileImage: uploadRes.secure_url } },
+                { new: true }
+            );
+        } else {
+            return res.status(400).json({ success: false, message: "Invalid field" });
+        }
 
         if (!updatedUser) {
-            return res.status(404).json({ success: false, message: "User not found" });
+            return res.status(404).json({ success: false, message: "User or Corporate record not found" });
         }
 
         return res.json({
@@ -348,7 +435,7 @@ exports.verifyIdentity = async (req, res) => {
             
             user = await Users.findOne({ 
                 userAadhar: aadhaar,
-                "linkedCorporate.corporatePAN": pan.toUpperCase() 
+                "linkedCorporates.corporatePAN": pan.toUpperCase() 
             });
         } else {
             // USER REQUIREMENT: Only Aadhaar
@@ -415,20 +502,29 @@ exports.searchlinkCorp = async (req, res) => {
     const results = await Users.find({
       userRole: "CorpAdmin",
       $or: [
-        { "linkedCorporate.corporateName": { $regex: q, $options: "i" } },
-        { "linkedCorporate.corporatePAN": { $regex: q, $options: "i" } },
+        { "linkedCorporates.corporateName": { $regex: q, $options: "i" } },
+        { "linkedCorporates.corporatePAN": { $regex: q, $options: "i" } },
       ],
     })
     .limit(10)
-    .select("linkedCorporate _id"); // _id is Admin, linkedCorporate._id is Corporate
+    .select("linkedCorporates _id")
+    .lean();
 
-    const formattedResults = results.map(admin => ({
-      corpAdminId: admin._id, // ...181
-      corporateId: admin.linkedCorporate._id, // ...182
-      corporateName: admin.linkedCorporate.corporateName,
-      corporateCity: admin.linkedCorporate.corporateCity,
-      corporateState: admin.linkedCorporate.corporateState,
-    }));
+    const formattedResults = [];
+    results.forEach(admin => {
+        (admin.linkedCorporates || []).forEach(corp => {
+            if (corp.corporateName.toLowerCase().includes(q.toLowerCase()) || 
+                corp.corporatePAN?.toLowerCase().includes(q.toLowerCase())) {
+                formattedResults.push({
+                   _id: admin._id,
+                   corporateId: corp._id,
+                   corporateName: corp.corporateName,
+                   corporateCity: corp.corporateCity,
+                   corporateState: corp.corporateState,
+                });
+            }
+        });
+    });
 
     res.status(200).json(formattedResults);
   } catch (error) {

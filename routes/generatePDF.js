@@ -2,8 +2,8 @@ const express = require("express");
 const router = express.Router();
 
 const { generatePONumber } = require("../controller/generateNumber");
-const PurchaseOrder = require("../models/orderflows");
-const {formatDate} = require("../middleware/validateAuth");
+//const PurchaseOrder = require("../models/orderflows");
+const { formatDate } = require("../middleware/validateAuth");
 
 // CREATE PO
 router.post("/po/create", async (req, res) => {
@@ -32,15 +32,15 @@ router.post("/po/create", async (req, res) => {
       vendorAddress,
       vendorGST,
       vendorMobile,
-      orderDate ,
-      deliveryDate ,
+      orderDate,
+      deliveryDate,
       deliveryAddress,
       deliveryState,
       deliveryPIN,
       items,
       grandTotal,
     });
-    
+
 
     res.json({
       success: true,

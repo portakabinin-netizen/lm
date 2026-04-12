@@ -6,587 +6,639 @@ const { z } = require("zod");
 const { LeadsLedgers: Leads } = require("../models/LeadsLedgers");
 const { Users, Corporates } = require("../models/UsersCorporates");
 
-// Define Regex Schemas using Zod
-const emailSchema = z.string().email();
-const mobileSchema = z.string().regex(/\b\d{10}\b/);
+// Constants
+const SENDERS = require('../models/senders.json');
+const CITY_STATE_MAP = require('../models/cityStateMap.json');
+
+/* ============================================================
+   HELPERS
+   ============================================================ */
+const toIST = (date) => {
+    const d = date ? new Date(date) : new Date();
+    return new Date(d.getTime() + 5.5 * 60 * 60 * 1000).toISOString().replace('Z', '+05:30');
+};
+
+const stripHtml = (html) =>
+    html
+        .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+        .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/&nbsp;/gi, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+const findCityState = (text) => {
+    const lower = text.toLowerCase();
+    for (const [state, cities] of Object.entries(CITY_STATE_MAP)) {
+        for (const city of cities) {
+            if (lower.includes(city.toLowerCase())) return { city, state };
+        }
+    }
+    return null;
+};
+
+const extractProductName = (subject) => {
+    if (!subject) return null;
+    if (subject.trim().startsWith('Buyer')) {
+        const sp = subject.split(' for ');
+        return sp.length > 1 ? sp[1].replace(/^"|"$/g, '').trim() : null;
+    }
+    const m = subject.match(/for\s+(.*?)\s+from/i);
+    return m ? m[1].trim() : null;
+};
+
+const extractEmail = (text) => {
+    const matches = text.match(/[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g) || [];
+    return [...new Set(matches)].find(e => !e.toLowerCase().endsWith('indiamart.com')) || null;
+};
+
+const extractMobile = (text) => (text.match(/\b\d{10}\b/g) || [])[0] || null;
+
+/**
+ * ── Normalize TradeIndia record to match Hub-and-Spoke schema ──
+ */
+const normalizeTradeIndia = (item, corpAdminId, corporateId) => {
+    const rawMobile = (item.sender_mobile || item.MOBILE || "").replace(/\D/g, '').slice(-10);
+    if (!rawMobile || rawMobile.length < 10) return null; // Skip invalid mobile
+
+    const clean = (val) => (val ? String(val).replace(/"/gi, '').trim() : null);
+
+    return {
+        source_id: `ti_${item.inquiry_id || item.ID || item.rfi_id || Math.random().toString(36).substr(2, 9)}`,
+        generated_date: item.generated_date || item.date || (item.generated ? new Date(item.generated * 1000) : new Date()),
+        sender_name: clean(item.sender_name || item.SENDER || "Unknown"),
+        sender_mobile: rawMobile,
+        sender_email: clean(item.sender_email || item.EMAIL),
+        product_name: clean(item.product_name || item.PRODUCT || "Enquiry"),
+        sender_city: clean(item.sender_city || item.CITY || "Unknown"),
+        sender_state: clean(item.sender_state || item.STATE || "Unknown"),
+        source: "TradeIndia",
+        status: "Recent",
+        corporateId: corporateId.toString(),
+        corpAdminId: corpAdminId.toString(),
+    };
+};
 
 /* ============================================================
    1. LEADS SERVICE 
    ============================================================ */
-const SENDERS      = require('../models/senders.json');
-const CITY_STATE_MAP = require('../models/cityStateMap.json');
-
 exports.leadService = {
 
-leadsAnalytics: async (req, res) => {
-   try {
-        const { corporateId, fromDate, toDate, source } = req.query;
+    leadsAnalytics: async (req, res) => {
+        try {
+            const { corporateId, fromDate, toDate, source } = req.query;
+            const corpAdminId = req.user.corpAdminId;
 
-        if (!corporateId) {
-            return res.status(400).json({
-                success: false,
-                message: "corporateId is required",
+            const hub = await Leads.findById(corpAdminId).lean();
+            if (!hub) return res.json({ success: true, total: 0, data: { sources: [], statuses: [] } });
+
+            const cid = (corporateId || req.user.corporateId)?.toString();
+            // Robust Map access for lean and non-lean Hubs
+            const corpEntry = hub.corporateData instanceof Map
+                ? hub.corporateData.get(cid)
+                : hub.corporateData?.[cid];
+
+            let filtered = corpEntry?.leads || [];
+
+            // ── Source filter ─────────────────────────────────────────────
+            if (source?.trim()) {
+                filtered = filtered.filter(l => l.source === source.trim());
+            }
+
+            // ── Date filter ───────────────────────────────────────────────
+            if (fromDate?.trim()) {
+                const now = new Date();
+                let fromLimit;
+                let toLimit = toDate ? new Date(toDate) : null;
+
+                if (fromDate === "today") {
+                    fromLimit = new Date(now.setHours(0, 0, 0, 0));
+                    if (!toDate) {
+                        toLimit = new Date();
+                        toLimit.setHours(23, 59, 59, 999);
+                    }
+                } else if (fromDate === "7days") {
+                    fromLimit = new Date(now.setDate(now.getDate() - 7));
+                    fromLimit.setHours(0, 0, 0, 0);
+                } else if (fromDate === "30days") {
+                    fromLimit = new Date(now.setDate(now.getDate() - 30));
+                    fromLimit.setHours(0, 0, 0, 0);
+                } else {
+                    fromLimit = new Date(fromDate);
+                }
+
+                filtered = filtered.filter(l => {
+                    const d = new Date(l.generated_date);
+                    if (toLimit) {
+                        toLimit.setHours(23, 59, 59, 999);
+                        return d >= fromLimit && d <= toLimit;
+                    }
+                    return d >= fromLimit;
+                });
+            }
+
+            const sourcesMap = {};
+            const statusesMap = {};
+            filtered.forEach(l => {
+                sourcesMap[l.source] = (sourcesMap[l.source] || 0) + 1;
+                statusesMap[l.status] = (statusesMap[l.status] || 0) + 1;
             });
+
+            res.json({
+                success: true,
+                total: filtered.length,
+                data: {
+                    sources: Object.entries(sourcesMap).map(([k, v]) => ({ label: k, value: v })),
+                    statuses: Object.entries(statusesMap).map(([k, v]) => ({ label: k, value: v }))
+                }
+            });
+        } catch (err) {
+            console.error("❌ leadsAnalytics error:", err.message);
+            res.status(500).json({ success: false, message: err.message });
         }
+    },
 
-        const cleanId = String(corporateId).trim();
+    list: async (filters = {}) => {
+        try {
+            const { corporateId, corpAdminId } = filters;
+            if (!corpAdminId || !corporateId) return [];
 
-        // ── Base match ────────────────────────────────────────────────
-        // Leads are saved with corporateId = corporate._id (linkedCorporate subdoc).
-        // But a CorpAdmin session sends their own userId as corporateId (corpAdminId).
-        // So we match EITHER field to cover both cases.
-        const idMatch = {
-            $or: [
-                { corporateId:  cleanId },
-                { corpAdminId:  cleanId },
-            ],
-        };
+            const hub = await Leads.findById(corpAdminId).lean();
+            const cid = corporateId.toString();
 
-        // ── Source filter ─────────────────────────────────────────────
-        const extraMatch = {};
-        if (source && source.trim() !== "") {
-            extraMatch.source = String(source).trim();
+            const corpEntry = hub?.corporateData instanceof Map
+                ? hub.corporateData.get(cid)
+                : hub.corporateData?.[cid];
+
+            return corpEntry?.leads || [];
+        } catch (err) {
+            console.error("leadService.list error:", err);
+            return [];
         }
+    },
 
-        // ── Date filter ───────────────────────────────────────────────
-        if (fromDate && fromDate.trim() !== "") {
-            const now = new Date();
-            let from;
-
-            if (fromDate === "today") {
-                from = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
-            } else if (fromDate === "7days") {
-                from = new Date(now);
-                from.setDate(from.getDate() - 7);
-                from.setHours(0, 0, 0, 0);
-            } else if (fromDate === "30days") {
-                from = new Date(now);
-                from.setDate(from.getDate() - 30);
-                from.setHours(0, 0, 0, 0);
-            } else {
-                from = new Date(fromDate);
-            }
-
-            extraMatch.generated_date = { $gte: from };
-
-            if (toDate && toDate.trim() !== "" && toDate !== "today") {
-                const to = new Date(toDate);
-                to.setHours(23, 59, 59, 999);
-                extraMatch.generated_date.$lte = to;
-            } else if (fromDate === "today") {
-                const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
-                extraMatch.generated_date.$lte = endOfDay;
+    getById: async (id) => {
+        // Search across all Hubs for a lead with this sub-doc ID? 
+        // Or do we need corpAdminId/corporateId context? 
+        // The generic router only passes ID.
+        const hub = await Leads.findOne({ "corporateData": { $exists: true } });
+        // This is expensive. Better: require context. 
+        // But for now, let's find it.
+        const hubs = await Leads.find({});
+        for (const h of hubs) {
+            if (!h.corporateData) continue;
+            for (const [cid, corpEntry] of h.corporateData.entries()) {
+                const found = corpEntry.leads.id(id);
+                if (found) return found;
             }
         }
+        return null;
+    },
 
-        // Combine $or identity match with extra filters
-        const match = Object.keys(extraMatch).length > 0
-            ? { ...idMatch, ...extraMatch }
-            : idMatch;
+    remove: async (id) => {
+        const hubs = await Leads.find({});
+        for (const h of hubs) {
+            if (!h.corporateData) continue;
+            for (const [cid, corpEntry] of h.corporateData.entries()) {
+                if (corpEntry.leads.id(id)) {
+                    corpEntry.leads.id(id).deleteOne();
+                    await h.save();
+                    return true;
+                }
+            }
+        }
+        return false;
+    },
 
-        // ── Run all three in parallel ─────────────────────────────────
-        const [sourceCounts, statusCounts, totalCount] = await Promise.all([
-            Leads.aggregate([
-                { $match: match },
-                { $group:   { _id: "$source", count: { $sum: 1 } } },
-                { $project: { _id: 0, label: "$_id", value: "$count" } },
-                { $sort:    { value: -1 } },
-            ]),
-            Leads.aggregate([
-                { $match: match },
-                { $group:   { _id: "$status", count: { $sum: 1 } } },
-                { $project: { _id: 0, label: "$_id", value: "$count" } },
-                { $sort:    { value: -1 } },
-            ]),
-            Leads.countDocuments(match),
-        ]);
+    readInbox: async (req, res) => {
+        const { ImapFlow } = require('imapflow');
+        const { simpleParser } = require('mailparser');
+        const https = require('https');
 
-        return res.status(200).json({
-            success: true,
-            total:   totalCount,
-            data: {
-                sources:  sourceCounts,
-                statuses: statusCounts,
-            },
+        const fetchUrl = (url) => new Promise((resolve, reject) => {
+            https.get(url, (res) => {
+                if (res.statusCode < 200 || res.statusCode >= 300) {
+                    return reject(new Error(`API responded with status: ${res.statusCode}`));
+                }
+                let data = '';
+                res.on('data', chunk => data += chunk);
+                res.on('end', () => resolve(data));
+            }).on('error', err => reject(err));
         });
 
-    } catch (err) {
-        console.error("❌ leadsAnalytics error:", err.message);
-        return res.status(500).json({ success: false, message: err.message });
-    }
-},  
+        try {
+            const corporateId = req.query.corporateId || req.user.corporateId;
+            const corpAdminId = req.user.corpAdminId || req.user._id;
+            const adminUser = await Users.findById(corpAdminId).lean();
 
-readInbox: async (req, res) => {
-   
-  const { ImapFlow }     = require('imapflow');
-  const { simpleParser } = require('mailparser');
+            const corporates = adminUser?.linkedCorporates || [];
+            const corporate = corporates.find(c => c._id.toString() === corporateId?.toString());
 
-  const stripHtml = (html) =>
-    html
-      .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/&nbsp;/gi, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
+            if (!corporate) {
+                console.error(`[readInbox] Error: Corporate ${corporateId} not found in Admin ${corpAdminId}`);
+                return res.status(404).json({ success: false, message: `Corporate ${corporateId} not found in this Admin account` });
+            }
 
-  const findCityState = (text) => {
-    const lower = text.toLowerCase();
-    for (const [state, cities] of Object.entries(CITY_STATE_MAP)) {
-      for (const city of cities) {
-        if (lower.includes(city.toLowerCase())) return { city, state };
-      }
-    }
-    return null;
-  };
+            const records = [];
 
-  const extractProductName = (subject) => {
-    if (!subject) return null;
-    if (subject.trim().startsWith('Buyer')) {
-      const sp = subject.split(' for ');
-      return sp.length > 1 ? sp[1].replace(/^"|"$/g, '').trim() : null;
-    }
-    const m = subject.match(/for\s+(.*?)\s+from/i);
-    return m ? m[1].trim() : null;
-  };
+            // ── 1.  IMAP / Email Sync ─────────────────────────────────────────────
+            if (corporate.apiUrls?.mailConfigure?.isActive) {
+                const mailConfig = corporate.apiUrls.mailConfigure;
+                const client = new ImapFlow({
+                    host: mailConfig.host || 'imap.gmail.com',
+                    port: mailConfig.port || 993,
+                    secure: true,
+                    auth: { user: mailConfig.auth.user, pass: mailConfig.auth.pass },
+                    logger: false,
+                    verifyOnly: false,
+                    socketTimeout: 60000,
+                    greetingTimeout: 30000,
+                    connectionTimeout: 30000
+                });
 
-  const extractEmail = (text) => {
-    const matches = text.match(/[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g) || [];
-    return [...new Set(matches)].find(e => !e.toLowerCase().endsWith('indiamart.com')) || null;
-  };
+                // ⚠ CRITICAL: Prevent server crash on socket timeout or other background errors
+                client.on('error', err => {
+                    if (err.code === 'ETIMEOUT') return; // Handled by try-catch usually, but prevents crash
+                    console.error("[readInbox] IMAP Background Error:", err.message);
+                });
 
-  const extractMobile = (text) => (text.match(/\b\d{10}\b/g) || [])[0] || null;
+                try {
+                    await client.connect();
+                    const lock = await client.getMailboxLock('INBOX');
+                    try {
+                        const allUids = new Set();
+                        const since = new Date();
+                        since.setDate(since.getDate() - 7);
 
-  const toIST = (date) => {
-    const d = date ? new Date(date) : new Date();
-    return new Date(d.getTime() + 5.5 * 60 * 60 * 1000).toISOString().replace('Z', '+05:30');
-  };
+                        for (const sender of SENDERS) {
+                            const uids = await client.search({ from: sender, since }, { uid: true });
+                            uids.forEach(uid => allUids.add(uid));
+                        }
 
-  // ── Normalize TradeIndia record to match IndiaMart schema ──
-  const normalizeTradeIndia = (item, adminUser, corporate) => {
-    const rawMobile = (item.sender_mobile || "").replace(/\D/g, '').slice(-10);
-    return {
-      source_id:      item.rfi_id       || null,
-      generated_date: item.generated
-                        ? toIST(new Date(item.generated * 1000))
-                        : null,
-      sender_name:    item.sender_name  || null,
-      sender_mobile:  rawMobile         || null,
-      sender_email:   item.sender_email || null,
-      product_name:   item.product_name?.trim() || null,
-      sender_city:    item.sender_city  || null,
-      sender_state:   item.sender_state || null,
-      source:         "TradeIndia",
-      status:         "Recent",
-      corpAdminId:    adminUser._id.toString(),
-      corporateId:    corporate._id.toString(),
-    };
-  };
+                        if (allUids.size > 0) {
+                            const range = [...allUids].sort((a, b) => a - b).join(",");
+                            const processedUids = [];
+                            for await (const msg of client.fetch(range, { source: true }, { uid: true })) {
+                                const parsed = await simpleParser(msg.source);
+                                const text = [parsed.text, parsed.html ? stripHtml(parsed.html) : "", parsed.subject].join(" ");
+                                const geo = findCityState(text);
+                                const mobile = extractMobile(text);
+                                if (!mobile) continue; // Skip leads without valid mobile
 
-  try {
-    const { corpAdminId, corporateId } = req.query;
-    
-    if (!corpAdminId || !corporateId) {
-      return res.status(400).json({ success: false, 
-      message: "corpAdminId and corporateId are required",
-      received: req.query});
-    }
+                                const sender = parsed.from?.text || "";
+                                const source = sender.toLowerCase().includes('indiamart') ? "IndiaMart" : "TradeIndia";
+                                const clean = (val) => (val ? String(val).replace(/"/gi, '').trim() : null);
 
-    // ── Step 1: Validate Corp Admin User ─────────────────────
-    const adminUser = await Users.findById(corpAdminId).lean();
-    if (!adminUser)            return res.status(404).json({ success: false, message: "Corp admin user not found" });
-    if (!adminUser.userActive) return res.status(403).json({ success: false, message: "Corp admin account is inactive" });
+                                records.push({
+                                    source_id: `email_${msg.uid}`,
+                                    generated_date: parsed.date || new Date(),
+                                    sender_name: clean((parsed.replyTo?.text || parsed.from?.text || "Unknown").replace(/<.*?>/g, '')),
+                                    sender_mobile: mobile,
+                                    sender_email: clean(extractEmail(text)),
+                                    product_name: clean(extractProductName(parsed.subject) || "Enquiry"),
+                                    sender_city: clean(geo?.city || "Unknown"),
+                                    sender_state: clean(geo?.state || "Unknown"),
+                                    source: source,
+                                    status: "Recent",
+                                    corporateId: corporateId,
+                                    corpAdminId: corpAdminId
+                                });
+                                processedUids.push(msg.uid);
+                            }
 
-    // ── Step 2: Find linked Corporate by corporateId ──────────
-    const corporate = adminUser.linkedCorporate;
-    if (!corporate)                               return res.status(404).json({ success: false, message: "No corporate linked to this admin user" });
-    if (corporate._id.toString() !== corporateId) return res.status(403).json({ success: false, message: "Corporate ID does not match linked corporate" });
-    if (!corporate.corporateActive)               return res.status(403).json({ success: false, message: "Corporate account is inactive" });
+                            // Batch update flags for all processed messages in one network call
+                            if (processedUids.length > 0) {
+                                const processedRange = processedUids.sort((a, b) => a - b).join(",");
+                                await client.messageFlagsAdd(processedRange, ['\\Seen'], { uid: true });
+                            }
+                        }
+                    } finally {
+                        lock.release();
+                    }
+                    await client.logout();
+                } catch (e) {
+                    console.error("IMAP Sync Failed:", e.message);
+                }
+            }
 
-    // ── Step 3: Validate Mail Config ──────────────────────────
-    const mailConfig = corporate?.apiUrls?.mailConfigure;
-    if (!mailConfig)          return res.status(404).json({ success: false, message: "Mail not configured for this corporate" });
-    if (!mailConfig.isActive) return res.status(403).json({ success: false, message: "Mail configuration is inactive" });
+            // ── 2.  TradeIndia API Sync ──────────────────────────────────────────
+            const ti = corporate.apiUrls?.tradeindia || corporate.tradeindia || {};
 
-    // ── Step 3b: Build TradeIndia URL & Fetch Data ────────────
-    const tradeindiaConfig = corporate?.apiUrls?.tradeindia;
-    let tradeindiaRecords  = [];
+            if (ti.userid && ti.key) {
+                try {
+                    const now = new Date();
+                    const yesterday = new Date(now);
+                    yesterday.setDate(yesterday.getDate() - 1);
 
-    if (tradeindiaConfig?.url && tradeindiaConfig?.userid && tradeindiaConfig?.profile_id && tradeindiaConfig?.key) {
+                    const params = new URLSearchParams({
+                        userid: ti.userid,
+                        profile_id: ti.profile_id,
+                        key: ti.key,
+                        from_date: yesterday.toISOString().split('T')[0],
+                        to_date: now.toISOString().split('T')[0],
+                        limit: 10
+                    });
 
-      const now       = new Date();
-      const toDate    = now.toISOString().split('T')[0];
-      const yesterday = new Date(now);
-      yesterday.setDate(yesterday.getDate() - 1);
-      const fromDate  = yesterday.toISOString().split('T')[0];
+                    const url = `${ti.url || "https://www.tradeindia.com/utils/my_inquiry.html"}?${params.toString()}`;
 
-      const params = new URLSearchParams({
-        userid:     tradeindiaConfig.userid,
-        profile_id: tradeindiaConfig.profile_id,
-        key:        tradeindiaConfig.key,
-        from_date:  fromDate,
-        to_date:    toDate,
-        limit:      tradeindiaConfig.limit   || 10,
-        page_no:    tradeindiaConfig.page_no || 1,
-      });
+                    const response = await fetchUrl(url);
 
-      const tradeindiaUrl = `${tradeindiaConfig.url}?${params.toString()}`;
-            try {
-        const tiResponse = await fetch(tradeindiaUrl);
-        if (tiResponse.ok) {
-          const tiJson = await tiResponse.json();
-          // API may return array directly or nested under a key
-          const tiArray = Array.isArray(tiJson)
-            ? tiJson
-            : (tiJson?.data || tiJson?.records || tiJson?.inquiries || []);
+                    const data = JSON.parse(response);
+                    const tiArray = Array.isArray(data) ? data : (data.data || data.RESPONSE || data.records || data.inquiries || []);
 
-          tradeindiaRecords = tiArray.map(item =>
-            normalizeTradeIndia(item, adminUser, corporate)
-          );
-         
-        } else {
-          console.warn(`⚠️ TradeIndia API responded with status: ${tiResponse.status}`);
+                    tiArray.forEach(item => {
+                        const normalized = normalizeTradeIndia(item, corpAdminId, corporateId);
+                        if (normalized) records.push(normalized);
+                    });
+                } catch (e) {
+                    console.error("TradeIndia API Failed:", e.message);
+                }
+            }
+
+            let saved = 0;
+            if (records.length > 0) {
+                const result = await exports.leadService.addManyImpl(corpAdminId, corporateId, records);
+                saved = result.length;
+            }
+
+            res.json({ success: true, fetched: records.length, saved, total: saved });
+        } catch (err) {
+            console.error("readInbox fatal error:", err);
+            res.status(500).json({ success: false, message: err.message });
         }
-      } catch (tiErr) {
-        console.error("❌ TradeIndia fetch error:", tiErr.message);
-      }
+    },
 
-    } else {
-      console.log("⚠️ TradeIndia not configured or incomplete — skipping.");
+    create: async (payload) => {
+        try {
+            const { corporateId, corpAdminId, ...leadData } = payload;
+            const result = await exports.leadService.addManyImpl(corpAdminId, corporateId, [leadData]);
+            return result[0];
+        } catch (err) {
+            throw err;
+        }
+    },
+
+    addManyImpl: async (corpAdminId, corporateId, leadsArray) => {
+        const cid = corporateId.toString();
+        let hub = await Leads.findById(corpAdminId);
+        if (!hub) hub = await Leads.create({ _id: corpAdminId, corporateData: {} });
+
+        if (!hub.corporateData.has(cid)) {
+            hub.corporateData.set(cid, { leads: [], leadCounters: 0 });
+        }
+        const corpEntry = hub.corporateData.get(cid);
+        let nextNo = corpEntry.leadCounters || 0;
+
+        const inserted = [];
+        const existingSourceIds = new Set(corpEntry.leads.filter(l => l.source_id).map(l => l.source_id));
+        
+        for (const l of leadsArray) {
+            // Skip duplicate source_id within this corporate (using Set for O(1) lookup)
+            if (l.source_id && existingSourceIds.has(l.source_id)) continue;
+
+            l.lead_no = ++nextNo;
+            l.generated_date = l.generated_date || new Date();
+            l.corporateId = corporateId;
+            l.corpAdminId = corpAdminId;
+            corpEntry.leads.push(l);
+            inserted.push(corpEntry.leads[corpEntry.leads.length - 1]);
+        }
+
+        corpEntry.leadCounters = nextNo;
+        hub.markModified("corporateData");
+        await hub.save();
+        return inserted;
+    },
+
+    update: async (id, payload) => {
+        try {
+            const { corporateId, corpAdminId, ...updateData } = payload;
+            const hub = await Leads.findById(corpAdminId);
+            if (!hub) throw new Error("Hub not found");
+
+            const corpEntry = hub.corporateData.get(corporateId.toString());
+            const lead = corpEntry?.leads.id(id);
+            if (!lead) throw new Error("Lead not found");
+
+            Object.assign(lead, updateData);
+            hub.markModified("corporateData");
+            await hub.save();
+            return lead;
+        } catch (err) {
+            throw err;
+        }
+    },
+
+    updateLead: async (req, res) => {
+        try {
+            const { id } = req.params;
+            const corporateId = (req.body.corporateId || req.user.corporateId)?.toString();
+            const corpAdminId = req.user.corpAdminId;
+
+            if (!id || !corporateId || !corpAdminId) {
+                return res.status(400).json({ success: false, message: "Missing required identity parameters" });
+            }
+
+            const lead = await exports.leadService.update(id, { ...req.body, corporateId, corpAdminId });
+            res.json({ success: true, data: lead });
+        } catch (err) {
+            console.error("❌ leadService.updateLead error:", err);
+            res.status(500).json({ success: false, message: err.message });
+        }
+    },
+
+    addActivity: async (req, res) => {
+        try {
+            const { id } = req.params;
+            const corporateId = (req.body.corporateId || req.user.corporateId)?.toString();
+            const corpAdminId = req.user.corpAdminId;
+            const { action, byUser } = req.body;
+
+            if (!id || !corporateId || !corpAdminId) {
+                return res.status(400).json({ success: false, message: "Missing required identity parameters" });
+            }
+
+            const hub = await Leads.findById(corpAdminId);
+            if (!hub) return res.status(404).json({ success: false, message: "Hub (Admin) not found" });
+
+            const corpEntry = hub.corporateData.get(corporateId);
+            if (!corpEntry) return res.status(404).json({ success: false, message: "Corporate container not found in Hub" });
+
+            const lead = corpEntry.leads.id(id);
+            if (!lead) return res.status(404).json({ success: false, message: "Lead not found in this corporate" });
+
+            // Add the activity entry
+            lead.activity.push({
+                action: action ? action.trim() : "No message provided",
+                byUser: byUser || req.user.userDisplayName || "Agent",
+                date: new Date()
+            });
+
+            // ⚠ CRITICAL: Since corporateData is a Map, Mongoose needs to be told it changed
+            hub.markModified("corporateData");
+
+            await hub.save();
+            res.json({ success: true, data: lead });
+        } catch (err) {
+            console.error("❌ leadService.addActivity error:", err);
+            res.status(500).json({ success: false, message: err.message });
+        }
+    },
+
+    searchByMobile: async (req, res) => {
+        try {
+            const { mobile, corporateId } = req.query;
+            const corpAdminId = req.user.corpAdminId;
+            const cleanPhone = mobile.toString().replace(/\D/g, '').slice(-10);
+
+            const hub = await Leads.findById(corpAdminId).lean();
+            const cid = corporateId?.toString();
+            const corpEntry = hub?.corporateData instanceof Map
+                ? hub.corporateData.get(cid)
+                : hub.corporateData?.[cid];
+
+            const lead = (corpEntry?.leads || []).find(l => l.sender_mobile?.endsWith(cleanPhone));
+
+            if (!lead) {
+                return res.json({
+                    success: true, isNew: true,
+                    data: { name: "New Client", status: "Fresh", mobile: cleanPhone }
+                });
+            }
+            res.json({
+                success: true, isNew: false,
+                data: { name: lead.sender_name, status: lead.status, leadNo: lead.lead_no, product: lead.product_name, mobile: lead.sender_mobile }
+            });
+        } catch (err) {
+            res.status(500).json({ success: false, message: err.message });
+        }
+    },
+
+    webInquiry: async (req, res) => {
+        try {
+            const corporateId = req.body.corporateId || req.user.corporateId;
+            const corpAdminId = req.user.corpAdminId;
+            const lead = { ...req.body, source: 'WebForm', status: 'Recent' };
+            const result = await exports.leadService.addManyImpl(corpAdminId, corporateId, [lead]);
+            res.status(201).json({ success: true, data: result[0] });
+        } catch (err) {
+            res.status(500).json({ success: false, message: err.message });
+        }
+    },
+
+    getLeadsByStatus: async (req, res) => {
+        try {
+            const { status } = req.params;
+            const corporateId = req.query.corporateId || req.user.corporateId;
+            const corpAdminId = req.user.corpAdminId;
+
+            const hub = await Leads.findById(corpAdminId).lean();
+            const cid = corporateId?.toString();
+            const corpEntry = hub?.corporateData instanceof Map
+                ? hub.corporateData.get(cid)
+                : hub.corporateData?.[cid];
+
+            let data = corpEntry?.leads || [];
+
+            if (status) {
+                const regex = new RegExp(`^${status.trim()}$`, "i");
+                data = data.filter(l => regex.test(l.status));
+            }
+            res.json({ success: true, data });
+        } catch (err) {
+            res.status(500).json({ success: false, message: err.message });
+        }
+    },
+
+    addMany: async (leadsArray, ctx) => {
+        // This is called from the router which might pass req context
+        // or from readInbox directly. 
+        // If called from router (serviceRouter.js:38), leadsArray is the body.
+        // If called with (leadsArray, { corporateId, corpAdminId })
+        const { corporateId, corpAdminId } = ctx || {};
+        return await exports.leadService.addManyImpl(corpAdminId, corporateId, leadsArray);
     }
-
-    // ── Step 4: IMAP Client ───────────────────────────────────
-    const client = new ImapFlow({
-      host:   mailConfig.host   || 'imap.gmail.com',
-      port:   mailConfig.port   || 993,
-      secure: mailConfig.secure ?? true,
-      auth: {
-        user: mailConfig.auth.user,
-        pass: mailConfig.auth.pass
-      },
-      logger: false,
-      socketTimeout:     60000,
-      greetingTimeout:   30000,
-      connectionTimeout: 30000
-    });
-
-    await client.connect();
-    const lock = await client.getMailboxLock('INBOX');
-
-    // ── Step 5: Collect unread UIDs from all senders ──────────
-    const allUids = new Set();
-    const since   = new Date();
-    since.setDate(since.getDate() - 2);
-
-    for (const sender of SENDERS) {
-      const uids = await client.search({ seen: false, from: sender, since }, { uid: true });
-      uids.forEach(uid => allUids.add(uid));
-    }
-
-    // ── Step 6: Fetch raw sources while lock is held ──────────
-    const raw      = [];
-    const uidArray = [...allUids].sort((a, b) => a - b);
-    for await (const msg of client.fetch(uidArray, { source: true, uid: true }, { uid: true })) {
-      raw.push({ uid: msg.uid, source: msg.source });
-    }
-
-    lock.release();
-
-    // ── Step 7: Parse emails, build records ───────────────────
-    const indiamartRecords = [];
-    const toMarkRead       = [];
-
-    for (const { uid, source } of raw) {
-      const parsed    = await simpleParser(source);
-      const subject   = parsed.subject || "";
-      const plainText = parsed.text    || "";
-      const htmlText  = parsed.html ? stripHtml(parsed.html) : "";
-      const bodyText  = [plainText, htmlText, subject].join(" ");
-      const match     = findCityState(bodyText);
-
-      if (!match) continue;
-
-      indiamartRecords.push({
-        source_id:      uid,
-        generated_date: toIST(parsed.date),
-        sender_name:    (parsed.replyTo?.text || "").replace(/<.*?>/g, '').replace(/"/g, '').trim() || null,
-        sender_mobile:  extractMobile(bodyText),
-        sender_email:   extractEmail(bodyText),
-        product_name:   extractProductName(subject),
-        sender_city:    match.city,
-        sender_state:   match.state,
-        source:         "IndiaMart",
-        status:         "Recent",
-        corpAdminId:    adminUser._id.toString(),
-        corporateId:    corporate._id.toString(),
-      });
-
-      toMarkRead.push(uid);
-    }
-
-    // ── Step 8: Mark matched emails as read ───────────────────
-    if (toMarkRead.length > 0) {
-      const markLock = await client.getMailboxLock('INBOX');
-      for (const uid of toMarkRead) {
-        await client.messageFlagsAdd({ uid }, ['\\Seen'], { uid: true });
-      }
-      markLock.release();
-    }
-
-    await client.logout();
-
-    // ── Step 9: Merge IndiaMart + TradeIndia records ──────────
-    const records = [...indiamartRecords, ...tradeindiaRecords];
-    
-    return res.json({
-      success:          true,
-      total:            records.length,
-      indiamart_count:  indiamartRecords.length,
-      tradeindia_count: tradeindiaRecords.length,
-      records,
-    });
-
-  } catch (err) {
-    return res.status(500).json({ success: false, message: err.message });
-  }
-},
-
-  /**
-   * 🔍 Search lead by mobile (Triggered by /leads/search)
-   */
-// controller: searchByMobile
-
-searchByMobile: async (req, res) => {
-  try {
-    const { mobile, corporateId } = req.query;
-
-    if (!mobile) {
-      return res.status(400).json({ success: false, message: "Mobile number is required" });
-    }
-
-    // Sanitization
-    const cleanPhone = mobile.toString().replace(/\D/g, '').slice(-10);
-    
-    // Database Query
-    const lead = await Leads.findOne({ 
-      sender_mobile: cleanPhone,
-      // corporate_id: corporateId // Uncomment if you filter by Corp ID
-    })
-    .select('sender_name status lead_no product_name sender_mobile')
-    .lean();
-
-    // IF NOT FOUND: Send 200 OK with "New Client" data instead of 404
-    if (!lead) {
-      return res.status(200).json({ 
-        success: true, 
-        isNew: true,
-        data: {
-          name: "New Client",
-          status: "Fresh",
-          leadNo: "N/A",
-          product: "None",
-          mobile: cleanPhone
-        } 
-      });
-    }
-
-    // IF FOUND: Send the actual lead
-    return res.status(200).json({ 
-      success: true, 
-      isNew: false,
-      data: {
-        name: lead.sender_name,
-        status: lead.status,
-        leadNo: lead.lead_no,
-        product: lead.product_name,
-        mobile: lead.sender_mobile
-      } 
-    });
-
-  } catch (error) {
-    console.error("Search Error:", error);
-    return res.status(500).json({ success: false, message: "Internal Server Error" });
-  }
-},
-
-  create: async (data) => {
-    if (data.source_id) {
-      const existing = await Leads.findOne({ source_id: data.source_id });
-      if (existing) throw new Error("A lead with this source_id already exists.");
-    }
-    return await new Leads(data).save();
-  },
-
-webInquiry: async (req, res) => {
-  try {
-    const {
-      sender_name, sender_mobile, product_name,
-      sender_city, sender_state, sender_email,
-      corporateId, corpAdminId
-    } = req.body;
-
-    if (!sender_name || !sender_mobile || !corporateId) {
-      return res.status(400).json({ success: false, message: 'Missing required fields' });
-    }
-
-    const lead = {
-      sender_name, sender_mobile, product_name,
-      sender_city, sender_state, sender_email,
-      corporateId: String(corporateId).trim(),
-      corpAdminId,
-      source: 'WebForm',
-      status: 'Recent',
-      generated_date: new Date()
-    };
-
-    const result = await exports.leadService.addMany([lead]);
-    return res.status(201).json(result);
-  } catch (err) {
-    return res.status(500).json({ success: false, message: err.message });
-  }
-},
-
-  addMany: async (leadsArray) => {
-    if (!Array.isArray(leadsArray) || leadsArray.length === 0) {
-      return { success: true, insertedCount: 0, message: "Empty array" };
-    }
-
-    const incomingSourceIds = leadsArray.map(l => l.source_id).filter(id => id != null);
-    const existingLeads = await Leads.find({ source_id: { $in: incomingSourceIds } }, { source_id: 1 });
-    const existingIdsSet = new Set(existingLeads.map(l => l.source_id));
-
-    const newLeadsToInsert = leadsArray.filter(l => !existingIdsSet.has(l.source_id));
-    if (newLeadsToInsert.length === 0) return { success: true, insertedCount: 0, message: "All duplicates" };
-
-    const lastLead = await Leads.findOne().sort({ lead_no: -1 }).select("lead_no");
-    let currentNo = lastLead ? lastLead.lead_no : 0;
-
-    const finalizedLeads = newLeadsToInsert.map(lead => {
-      const sanitized = { ...lead };
-      if (sanitized.corporateId) sanitized.corporateId = String(sanitized.corporateId).trim();
-      sanitized.activity = Array.isArray(sanitized.activity) ? sanitized.activity.filter(a => a?.action) : [];
-      sanitized.ledger = Array.isArray(sanitized.ledger) ? sanitized.ledger.filter(l => l?.paymentType) : [];
-      sanitized.lead_no = ++currentNo;
-      sanitized.generated_date = lead.generated_date ? new Date(lead.generated_date) : new Date();
-      return sanitized;
-    });
-
-    const result = await Leads.insertMany(finalizedLeads, { ordered: false, rawResult: true });
-    return { 
-      success: true, 
-      insertedCount: result.insertedCount || 0, 
-      skippedCount: leadsArray.length - (result.insertedCount || 0) 
-    };
-  },
-
-  list: async (filters = {}) => {
-    const query = {};
-    if (filters.corporateId) query.corporateId = filters.corporateId;
-    return await Leads.find(query).sort({ createdAt: -1 });
-  },
-  
-
-  getById: async (id) => {
-    if (!mongoose.Types.ObjectId.isValid(id)) return null;
-    return await Leads.findById(id);
-  },
-  
-  update: async (id, data) => await Leads.findByIdAndUpdate(id, data, { new: true }),
-  
-  remove: async (id) => await Leads.findByIdAndDelete(id),
-
-  getLeadsByStatus: async (status, corporateId) => {
-    const query = {};
-    if (status) query.status = { $regex: `^${status.trim()}$`, $options: "i" };
-    if (corporateId && corporateId !== "undefined") query.corporateId = String(corporateId).trim();
-    return await Leads.find(query).sort({lead_no : 1, updatedAt: 1 });
-  },
-
- addActivity: async (req, res) => {
-  const id = req.params.id?.trim().replace(/[^a-fA-F0-9]/g, "");
- 
-  if (!id || !mongoose.Types.ObjectId.isValid(id))
-    return res.status(400).json({ success: false, message: `Invalid lead ID: "${req.params.id}"` });
-
-  const { action, byUser } = req.body;
-
-  if (!action?.trim())
-    return res.status(400).json({ success: false, message: "Action is required" });
-
-  try {
-    const lead = await Leads.findByIdAndUpdate(
-      new mongoose.Types.ObjectId(id),
-      { $push: { activity: { action: action.trim(), byUser: byUser || "Agent", date: new Date() } } },
-      { new: true }
-    );
-
-    if (!lead)
-      return res.status(404).json({ success: false, message: "Lead not found" });
-
-    res.json({ success: true, data: lead });
-  } catch (err) {
-    console.error("❌ Activity error:", err.message);
-    res.status(500).json({ success: false, message: err.message });
-  }
-},
 };
 
 /* ============================================================
    2. CORPORATE SERVICE
    ============================================================ */
 exports.corporateService = {
-  create: async (data) => await new Corporates(data).save(),
-  list: async (filters = {}) => await Corporates.find(filters).sort({ createdAt: -1 }),
-  getById: async (id) => await Corporates.findById(id),
-  update: async (id, data) => await Corporates.findByIdAndUpdate(id, data, { new: true }),
-  remove: async (id) => await Corporates.findByIdAndDelete(id)
+    create: async (data) => await new Corporates(data).save(),
+    list: async (filters = {}) => await Corporates.find(filters).sort({ createdAt: -1 }),
+    getById: async (id) => await Corporates.findById(id),
+    update: async (id, data) => await Corporates.findByIdAndUpdate(id, data, { new: true }),
+    remove: async (id) => await Corporates.findByIdAndDelete(id)
 };
 
 /* ============================================================
    3. LEDGER SERVICE
    ============================================================ */
 exports.ledgerService = {
-  list: async (filters = {}) => await Leads.find({ "ledger.0": { $exists: true }, ...filters }),
-  getById: async (id) => await Leads.findOne({ "ledger._id": id }, { "ledger.$": 1 }),
-  update: async (id, data) => {
-      return await Leads.findOneAndUpdate({ "ledger._id": id }, { $set: { "ledger.$": data } }, { new: true });
-  }
+    list: async (filters = {}) => {
+        // Logic for ledger depends on how you want to aggregate from Hub
+        // For now, let's just return from separate docs if they still exist, 
+        // or aggregate from Hubs? 
+        // Since migration is done, we should aggregate from Hubs.
+        const hubs = await Leads.find({}).lean();
+        let all = [];
+        hubs.forEach(h => {
+            Object.values(h.corporateData || {}).forEach(corpEntry => {
+                all = all.concat((corpEntry.leads || []).filter(l => l.ledger?.length > 0));
+            });
+        });
+        return all;
+    }
 };
 
 /* ============================================================
    4. USER SERVICE
    ============================================================ */
 exports.userService = {
-  create: async (data) => {
-    const { userMobile, userPassword, corporateId } = data;
-    const existing = await Users.findOne({ userMobile });
-    if (existing) throw new Error("Mobile number already registered");
+    create: async (data) => {
+        const { userMobile, userPassword, corporateId } = data;
+        const existing = await Users.findOne({ userMobile });
+        if (existing) throw new Error("Mobile number already registered");
 
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(userPassword, salt);
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(userPassword, salt);
 
-    const user = new Users({ ...data, userPassword: hashedPassword });
-    await user.save();
+        const user = new Users({ ...data, userPassword: hashedPassword });
+        await user.save();
 
-    if (corporateId && corporateId !== "None") {
-      const corp = await Corporates.findById(corporateId);
-      if (corp) {
-        corp.linkedUsers.push(user._id);
-        await corp.save();
-      }
+        if (corporateId && corporateId !== "None") {
+            const corp = await Corporates.findById(corporateId);
+            if (corp) {
+                corp.linkedUsers.push(user._id);
+                await corp.save();
+            }
+        }
+        return user;
+    },
+    list: async (filters = {}) => await Users.find(filters).select("-userPassword"),
+    getById: async (id) => await Users.findById(id).select("-userPassword"),
+    update: async (id, data) => {
+        if (data.userPassword) {
+            const salt = await bcrypt.genSalt(10);
+            data.userPassword = await bcrypt.hash(data.userPassword, salt);
+        }
+        return await Users.findByIdAndUpdate(id, data, { new: true });
+    },
+    remove: async (id) => await Users.findByIdAndDelete(id),
+    findByMobile: async (mobile) => await Users.findOne({ userMobile: mobile, userActive: true }),
+    apiUrlsConfigureSave: async (userId, data) => {
+        const { corporateId, ...apiData } = data;
+        if (corporateId) {
+            return await Users.findOneAndUpdate(
+                { _id: userId, "linkedCorporates._id": corporateId },
+                { $set: { "linkedCorporates.$.apiUrls": apiData } },
+                { new: true }
+            );
+        }
+        return await Users.findOneAndUpdate(
+            { _id: userId },
+            { $set: { "linkedCorporates.0.apiUrls": apiData } },
+            { new: true }
+        );
     }
-    return user;
-  },
-
-  list: async (filters = {}) => await Users.find(filters).select("-userPassword"),
-  getById: async (id) => await Users.findById(id).select("-userPassword"),
-  update: async (id, data) => {
-      if(data.userPassword) {
-          const salt = await bcrypt.genSalt(10);
-          data.userPassword = await bcrypt.hash(data.userPassword, salt);
-      }
-      return await Users.findByIdAndUpdate(id, data, { new: true });
-  },
-  remove: async (id) => await Users.findByIdAndDelete(id),
-  findByMobile: async (mobile) => await Users.findOne({ userMobile: mobile, userActive: true })
 };

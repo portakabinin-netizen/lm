@@ -1,5 +1,7 @@
 const mongoose = require("mongoose");
-const { regex } = require("../middleware/validateAuth"); 
+const { regex } = require("../middleware/validateAuth");
+const { buyerBillingSchema, buyerShippingSchema, multiTenantSchema } = require("./sharedSchemas");
+
 
 /**
  * 📌 Activity Schema
@@ -13,7 +15,7 @@ const activitySchema = new mongoose.Schema({
   },
   action: {
     type: String,
-    required: true,
+    default: "No details",
     trim: true,
   },
   byUser: {
@@ -42,7 +44,7 @@ const transactionSchema = new mongoose.Schema({
     value: {
       type: mongoose.Schema.Types.Decimal128,
       required: true,
-      get: v => parseFloat(v.toString()), 
+      get: v => parseFloat(v.toString()),
     },
     currency: {
       type: String,
@@ -69,8 +71,7 @@ const leadSchema = new mongoose.Schema(
   {
     lead_no: {
       type: Number,
-      unique: true,
-      index: true, 
+      index: true,
     },
     product_name: {
       type: String,
@@ -91,14 +92,14 @@ const leadSchema = new mongoose.Schema(
     sender_mobile: {
       type: String,
       trim: true,
-      
+
     },
-   sender_email: {
+    sender_email: {
       type: String,
       trim: true,
       lowercase: true,
       validate: {
-        validator: function(v) {
+        validator: function (v) {
           if (!v) return true; // Allow empty
           return /^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$/.test(v);
         },
@@ -106,18 +107,19 @@ const leadSchema = new mongoose.Schema(
       },
     },
     source: String,
-    source_id: { 
-      type: String, 
-      unique: true, 
-      sparse: true, 
-      index: true 
+    source_id: {
+      type: String,
+      sparse: true,
+      index: true
     },
     adminLink: String,
     corpLink: String,
+    corporateId: { type: String, index: true },
+    corpAdminId: { type: String, index: true },
     status: {
       type: String,
       default: "Recent",
-      enum: ["Recent", "Engaged", "Accepted", "Recycle"]
+      enum: ["Recent", "Engaged", "Accepted", "Tax Invoice", "Recycle", "Delete"]
     },
     generated_date: {
       type: Date,
@@ -131,28 +133,49 @@ const leadSchema = new mongoose.Schema(
       type: [transactionSchema],
       default: [],
     },
-     corpAdminId: { type: String, default: "" },
-     corporateId: { type: String, default: "" },
+    buyerInfo: {
+      contact_person: { type: String, trim: true },
+      company_name: { type: String, trim: true },
+      billing_address: buyerBillingSchema,
+      shipping_address: buyerShippingSchema,
+      gst_no: { type: String, trim: true, uppercase: true },
+      place_of_supply: { type: String, trim: true }
+    },
+    quotes: [{ type: mongoose.Schema.Types.ObjectId, ref: "SalPurBook" }],
   },
-  
+
   { timestamps: true, toJSON: { getters: true } }
 );
 
-/**
- * 🔁 Auto-increment lead_no
- */
-leadSchema.pre("save", async function (next) {
-  if (this.isNew) {
-    const lastLead = await mongoose
-      .model("Leads")
-      .findOne()
-      .sort({ lead_no: -1 })
-      .select("lead_no");
+const CorporateLeadsSchema = new mongoose.Schema(
+  {
+    leads: {
+      type: [leadSchema],
+      default: []
+    },
+    leadCounters: {
+      type: Number,
+      default: 0
+    }
+  },
+  { _id: false }
+);
 
-    this.lead_no = lastLead ? lastLead.lead_no + 1 : 1;
-  }
-  next();
-});
+const LeadsLedgersSchema = new mongoose.Schema(
+  {
+    _id: {
+      type: mongoose.Schema.Types.ObjectId,
+      required: true
+    },
+    // The keys are corporateIds (strings)
+    corporateData: {
+      type: Map,
+      of: CorporateLeadsSchema,
+      default: {},
+    }
+  },
+  { timestamps: true }
+);
 
-const LeadsLedgers = mongoose.model("Leads", leadSchema);
+const LeadsLedgers = mongoose.model("Leads", LeadsLedgersSchema);
 module.exports = { LeadsLedgers };

@@ -35,8 +35,11 @@ router.post("/addMany", async (req, res) => {
     if (!Array.isArray(req.body))
       return res.status(400).json({ success: false, message: "Array required" });
 
-    const result = await services.leadService.addMany(req.body);
-    res.status(201).json(result);
+    const result = await services.leadService.addMany(req.body, {
+      corporateId: req.user.corporateId,
+      corpAdminId: req.user.corpAdminId
+    });
+    res.status(201).json({ success: true, ...result });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -49,16 +52,7 @@ router.get("/leads/analytics", services.leadService.leadsAnalytics);
 router.get("/leads/search", services.leadService.searchByMobile);
 
 // 📊 Filter leads by status — has :status param, must be above /:type/:id
-router.get("/leads/status/:status", async (req, res) => {
-  try {
-    const { status }      = req.params;
-    const { corporateId } = req.query;
-    const result = await services.leadService.getLeadsByStatus(status, corporateId);
-    res.json({ success: true, data: result || [] });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
+router.get("/leads/status/:status", services.leadService.getLeadsByStatus);
 
 // 📝 Log activity against a lead
 router.post("/leads/:id/activity", services.leadService.addActivity);
@@ -76,8 +70,9 @@ router.post("/:type/create", async (req, res) => {
 
   try {
     const payload = { ...req.body };
-    if (req.user.role !== "Admin" && req.user.corporateId)
-      payload.corporateId = req.user.corporateId;
+    // Inject multi-tenant context
+    payload.corporateId = req.user?.corporateId;
+    payload.corpAdminId = req.user?.corpAdminId;
 
     const result = await service.create(payload);
     res.json({ success: true, data: result });
@@ -93,9 +88,10 @@ router.get("/:type/list", async (req, res) => {
     return res.status(400).json({ success: false, message: "Invalid service type" });
 
   try {
-    const filters = {};
-    if (req.user.role !== "Admin" && req.user.corporateId)
-      filters.corporateId = req.user.corporateId;
+    const filters = { 
+        corporateId: req.user?.corporateId, 
+        corpAdminId: req.user?.corpAdminId 
+    };
 
     const result = await service.list(filters);
     res.json({ success: true, data: result });
@@ -128,7 +124,12 @@ router.put("/:type/:id", async (req, res) => {
     return res.status(400).json({ success: false, message: "Invalid service type" });
 
   try {
-    const result = await service.update(req.params.id, req.body);
+    const payload = { 
+        ...req.body, 
+        corporateId: req.user?.corporateId, 
+        corpAdminId: req.user?.corpAdminId 
+    };
+    const result = await service.update(req.params.id, payload);
     res.json({ success: true, data: result });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });

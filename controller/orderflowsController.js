@@ -1,5 +1,5 @@
 // controllers/orderflowsController.js
-const OrderFlows = require("../routes/orderflows");
+const OrderFlows = require("../models/orderflowsnew");
 const {
   generatePONumber,
   generatePINumber,
@@ -36,12 +36,17 @@ async function createPO(req, res) {
 
     const number = await generatePONumber();
 
+    const corporateId = payload.corporateId || payload.accessCorporate?.corporateId;
+    
+    if (!corporateId) return res.status(400).json({ success: false, message: "corporateId is required" });
+
     const doc = {
       purchaseOrder: {
         ...payload,
         number,
         date: payload.date || new Date(),
-      }
+      },
+      accessCorporate: { corporateId }
     };
 
     const newDoc = await OrderFlows.create(doc);
@@ -62,12 +67,16 @@ async function createPI(req, res) {
 
     const number = await generatePINumber();
 
+    const { corporateId } = payload;
+    if (!corporateId) return res.status(400).json({ success: false, message: "corporateId is required" });
+
     const doc = {
       performaInvoice: {
         ...payload,
         number,
         date: payload.date || new Date(),
-      }
+      },
+      accessCorporate: { corporateId }
     };
 
     const newDoc = await OrderFlows.create(doc);
@@ -88,12 +97,16 @@ async function createTI(req, res) {
 
     const number = await generateTINumber();
 
+    const { corporateId } = payload;
+    if (!corporateId) return res.status(400).json({ success: false, message: "corporateId is required" });
+
     const doc = {
       taxInvoice: {
         ...payload,
         number,
         date: payload.date || new Date(),
-      }
+      },
+      accessCorporate: { corporateId }
     };
 
     const newDoc = await OrderFlows.create(doc);
@@ -115,12 +128,16 @@ async function createDN(req, res) {
 
     const number = await generateDNNumber();
 
+    const { corporateId } = payload;
+    if (!corporateId) return res.status(400).json({ success: false, message: "corporateId is required" });
+
     const doc = {
       debitNote: {
         ...payload,
         number,
         date: payload.date || new Date(),
-      }
+      },
+      accessCorporate: { corporateId }
     };
 
     const newDoc = await OrderFlows.create(doc);
@@ -141,12 +158,16 @@ async function createCN(req, res) {
 
     const number = await generateCNNumber();
 
+    const { corporateId } = payload;
+    if (!corporateId) return res.status(400).json({ success: false, message: "corporateId is required" });
+
     const doc = {
       creditNote: {
         ...payload,
         number,
         date: payload.date || new Date(),
-      }
+      },
+      accessCorporate: { corporateId }
     };
 
     const newDoc = await OrderFlows.create(doc);
@@ -198,13 +219,20 @@ async function getByNumber(req, res) {
 /* List all orderflows (paginated basic) */
 async function list(req, res) {
   try {
+    const corporateId = req.query.corporateId || req.query.accessCorporate?.corporateId;
+    if (!corporateId) {
+      return res.status(400).json({ success: false, message: "corporate identity required" });
+    }
+    const filter = { "accessCorporate.corporateId": corporateId };
+
     const limit = Math.min(parseInt(req.query.limit || "50", 10), 200);
     const skip = parseInt(req.query.skip || "0", 10);
-    const docs = await OrderFlows.find().sort({ createdAt: -1 }).skip(skip).limit(limit).lean();
+    
+    const docs = await OrderFlows.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean();
     return res.json(docs.map(d => respondDoc(d)));
   } catch (err) {
     console.error("list error:", err);
-    return res.status(500).json({ success: false });
+    return res.status(500).json({ success: false, message: err.message });
   }
 }
 

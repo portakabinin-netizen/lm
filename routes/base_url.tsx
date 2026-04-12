@@ -10,7 +10,7 @@ const getDevHost = () => {
 const expoHost = getDevHost();
 
 // 2. Set production URL
-const productionURL = "https://leadmanager-backend-production.up.railway.app/api";
+const productionURL = "https://leadmanager-backend-production.up.railway.app";
 
 // 3. Strict Environment Detection
 // Use a literal boolean check
