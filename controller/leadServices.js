@@ -164,6 +164,10 @@ exports.leadService = {
             if (!corpAdminId || !corporateId) return [];
 
             const hub = await Leads.findById(corpAdminId).lean();
+            if (!hub) {
+                console.warn("[leadService.list] Hub not found for admin:", corpAdminId);
+                return [];
+            }
             const cid = corporateId.toString();
 
             const corpEntry = hub?.corporateData instanceof Map

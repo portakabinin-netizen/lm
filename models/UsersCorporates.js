@@ -105,7 +105,7 @@ const userSchema = new mongoose.Schema(
     userEmail:        { type: String, trim: true, lowercase: true },
     userMobile:       { type: String, required: true, unique: true, trim: true },
     userPassword:     { type: String, required: true },
-    userRole:         { type: String, enum: ["CorpAdmin", "Sales", "Project"], required: true },
+    userRole:         { type: String, enum: ["CorpAdmin", "Sales", "Project", "Finance"], required: true },
     userAadhar:       { type: String, trim: true },
     userDoB:          { type: Date },
     userActive:       { type: Boolean, default: true },
@@ -148,4 +148,6 @@ userSchema.pre("save", async function (next) {
 });
 
 const Users = mongoose.models.Users || mongoose.model("Users", userSchema);
-module.exports = { Users };
+const Corporates = mongoose.models.Corporates || mongoose.model("Corporates", embeddedCorporateSchema);
+
+module.exports = { Users, Corporates };

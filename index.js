@@ -11,11 +11,13 @@ require("dotenv").config();
 const authRouter = require("./routes/authRouterNew");
 const serviceRouter = require("./routes/serviceRouter");
 const productsRouter = require("./routes/productsRouter");
-const pdfRouter = require("./routes/generatePDF");
+// const pdfRouter = require("./routes/generatePDF");
 //const orderflows     = require("./routes/orderflows");
 const setting = require("./routes/settingRouter");
 const salesBookRouter = require("./routes/salesBookRouter");
 const uploadRouter = require("./routes/uploadRouter");
+const paymentRouter = require("./routes/paymentRouter");
+const staffRouter   = require("./routes/staffRouter");
 const path = require("path");
 
 const app = express();
@@ -80,11 +82,13 @@ app.get("/", (req, res) => {
 app.use("/api/auth", authRouter);
 app.use("/api/service", serviceRouter);
 app.use("/api/product", productsRouter);
-app.use("/api/pdf-generate", pdfRouter);
+// app.use("/api/pdf-generate", pdfRouter);
 //app.use("/api/orderflows",   orderflows);
 app.use("/api/setting", setting);
 app.use("/api/salesbook", salesBookRouter);
 app.use("/api/upload", uploadRouter);
+app.use("/api/payment", paymentRouter);
+app.use("/api/staff",   staffRouter);
 
 // ---------- 404 Handler ----------
 app.use((req, res) => {

@@ -288,7 +288,8 @@ exports.switchCorporate = async (req, res) => {
         const { corporateId } = req.body;
         const userId = req.user.userId;
 
-        const user = await Users.findById(userId).populate("linkedCorporates");
+        const user = await Users.findById(userId); // Embedded, no populate needed
+
         if (!user) return res.status(404).json({ success: false, message: "User not found" });
 
         let targetCorp;

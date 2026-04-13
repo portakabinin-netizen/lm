@@ -27,7 +27,9 @@ router.use(authMiddleware);
    ========================================================================= */
 
 // 📧 Read email inbox
-router.get("/email/readInbox", services.leadService.readInbox);
+router.post("/email/readInbox", services.leadService.readInbox);
+router.post("/readEmails",      services.leadService.readInbox); // For legacy frontend calls
+
 
 // 📥 Bulk insert leads
 router.post("/addMany", async (req, res) => {
@@ -150,4 +152,4 @@ router.delete("/:type/:id", async (req, res) => {
   }
 });
 
-module.exports = router;"// force redeploy $(date)" 
+module.exports = router; 

@@ -3,15 +3,17 @@ const Purchase = require("../models/purchase");
 const mongoose = require("mongoose");
 
 /* ── HELPER: Enrich Line Items ───────────────────────────── */
-async function enrichLineItems(items, corporateId) {
+async function enrichLineItems(items, corporateId, req) {
     if (!items || !Array.isArray(items)) return [];
     if (!corporateId) throw new Error("Corporate identity required for product enrichment.");
     
-    // Get purchase document for the specific corporate
     // Get purchase document for the specific corporate hub
-    const corpAdminId = req?.user?.corpAdminId; // Need to ensure it's available
-    const purchaseHub = await Purchase.findOne({ corpAdminId });
-    const purchase = purchaseHub?.corporateData?.get(corporateId);
+    const corpAdminId = req?.user?.corpAdminId; 
+    const purchaseHub = await Purchase.findOne({ _id: corpAdminId });
+    const cid = corporateId?.toString();
+    const purchase = purchaseHub?.corporateData instanceof Map 
+        ? purchaseHub.corporateData.get(cid) 
+        : purchaseHub?.corporateData?.[cid];
     if (!purchase) return items;
 
     return items.map(item => {
