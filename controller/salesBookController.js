@@ -330,6 +330,50 @@ exports.getQuote = async (req, res) => {
   }
 };
 
+exports.getPO = async (req, res) => {
+  try {
+    const corporateId = req.query.corporateId || req.user.corporateId;
+    const corpAdminId = req.user.corpAdminId;
+    const { id } = req.params;
+
+    const hub = await SalesBook.findOne({ corpAdminId }).lean();
+    const cid = corporateId?.toString();
+    const data = hub?.corporateData instanceof Map 
+        ? hub.corporateData.get(cid) 
+        : hub.corporateData?.[cid];
+    if (!data) return res.status(404).json({ success: false, message: "Corporate data not found" });
+    
+    const po = data.purchaseOrders?.find(o => o._id.toString() === id);
+    if (!po) return res.status(404).json({ success: false, message: "PO not found" });
+    
+    res.json({ success: true, data: po });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+exports.getInvoice = async (req, res) => {
+  try {
+    const corporateId = req.query.corporateId || req.user.corporateId;
+    const corpAdminId = req.user.corpAdminId;
+    const { id } = req.params;
+
+    const hub = await SalesBook.findOne({ corpAdminId }).lean();
+    const cid = corporateId?.toString();
+    const data = hub?.corporateData instanceof Map 
+        ? hub.corporateData.get(cid) 
+        : hub.corporateData?.[cid];
+    if (!data) return res.status(404).json({ success: false, message: "Corporate data not found" });
+    
+    const inv = data.taxInvoices?.find(o => o._id.toString() === id);
+    if (!inv) return res.status(404).json({ success: false, message: "Invoice not found" });
+    
+    res.json({ success: true, data: inv });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 /* ── UPDATE OFFER ────────────────────────────────────────── */
 exports.updateQuote = async (req, res) => {
     try {
@@ -360,6 +404,56 @@ exports.updateQuote = async (req, res) => {
     }
 };
 
+exports.updatePO = async (req, res) => {
+    try {
+        const corporateId = req.body.corporateId || req.user.corporateId;
+        const corpAdminId = req.user.corpAdminId;
+        const { id } = req.params;
+        const updates = req.body;
+        
+        const hub = await getSalesBookHub({ corpAdminId, corporateId });
+        const record = hub.corporateData.get(corporateId);
+        
+        const poDoc = record.purchaseOrders.id(id);
+        if (!poDoc) return res.status(404).json({ success: false, message: "PO not found" });
+
+        Object.keys(updates).forEach(k => {
+            poDoc[k] = updates[k];
+        });
+
+        await hub.save();
+        res.json({ success: true, data: poDoc.toObject() });
+    } catch (err) {
+        const status = err.name === "ValidationError" ? 400 : 500;
+        res.status(status).json({ success: false, message: err.message });
+    }
+};
+
+exports.updateInvoice = async (req, res) => {
+    try {
+        const corporateId = req.body.corporateId || req.user.corporateId;
+        const corpAdminId = req.user.corpAdminId;
+        const { id } = req.params;
+        const updates = req.body;
+        
+        const hub = await getSalesBookHub({ corpAdminId, corporateId });
+        const record = hub.corporateData.get(corporateId);
+        
+        const invDoc = record.taxInvoices.id(id);
+        if (!invDoc) return res.status(404).json({ success: false, message: "Invoice not found" });
+
+        Object.keys(updates).forEach(k => {
+            invDoc[k] = updates[k];
+        });
+
+        await hub.save();
+        res.json({ success: true, data: invDoc.toObject() });
+    } catch (err) {
+        const status = err.name === "ValidationError" ? 400 : 500;
+        res.status(status).json({ success: false, message: err.message });
+    }
+};
+
 /* ── DELETE OFFER ────────────────────────────────────────── */
 exports.deleteQuote = async (req, res) => {
   try {
@@ -369,6 +463,38 @@ exports.deleteQuote = async (req, res) => {
     const record = hub.corporateData.get(corporateId);
     
     record.quotations.pull({ _id: req.params.id });
+    await hub.save();
+    
+    res.json({ success: true, message: "Record deleted" });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+exports.deletePO = async (req, res) => {
+  try {
+    const corporateId = req.query.corporateId || req.user.corporateId;
+    const corpAdminId = req.user.corpAdminId;
+    const hub = await getSalesBookHub({ corpAdminId, corporateId });
+    const record = hub.corporateData.get(corporateId);
+    
+    record.purchaseOrders.pull({ _id: req.params.id });
+    await hub.save();
+    
+    res.json({ success: true, message: "Record deleted" });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+exports.deleteInvoice = async (req, res) => {
+  try {
+    const corporateId = req.query.corporateId || req.user.corporateId;
+    const corpAdminId = req.user.corpAdminId;
+    const hub = await getSalesBookHub({ corpAdminId, corporateId });
+    const record = hub.corporateData.get(corporateId);
+    
+    record.taxInvoices.pull({ _id: req.params.id });
     await hub.save();
     
     res.json({ success: true, message: "Record deleted" });

@@ -159,16 +159,28 @@ invoiceSchema.pre("save", async function (next) {
 
     this.financial_year = yr;
 
-    const last = await mongoose
-        .model("Invoices")
-        .findOne({ "accessCorporate.corporateId": this.accessCorporate.corporateId, financial_year: yr })
-        .sort({ createdAt: -1 })
-        .select("invoice_number");
-
+    // NOTE: In the Hub-and-Spoke model, sequence generation is typically handled
+    // by the controller before pushing the subdocument (e.g., generateInvoiceNumber).
+    // If we need to find the last sequence here, we need to inspect the parent document.
+    const parent = this.ownerDocument ? this.ownerDocument() : null;
     let seq = 1;
-    if (last?.invoice_number) {
-        const parts = last.invoice_number.split("/");
-        seq = (parseInt(parts[parts.length - 1], 10) || 0) + 1;
+
+    if (parent && this.accessCorporate?.corporateId) {
+        const corpIdStr = this.accessCorporate.corporateId.toString();
+        const corpData = parent.corporateData instanceof Map ? parent.corporateData.get(corpIdStr) : parent.corporateData[corpIdStr];
+        
+        if (corpData && corpData.invoices) {
+            const allInvoices = corpData.invoices
+                .filter(i => i.invoice_number && i.invoice_number.includes(yr))
+                .map(i => i.invoice_number);
+
+            if (allInvoices.length > 0) {
+                allInvoices.sort();
+                const lastNum = allInvoices[allInvoices.length - 1];
+                const parts = lastNum.split("/");
+                seq = (parseInt(parts[parts.length - 1], 10) || 0) + 1;
+            }
+        }
     }
 
     this.invoice_number = `INV/${yr}/${String(seq).padStart(5, "0")}`;
@@ -176,7 +188,32 @@ invoiceSchema.pre("save", async function (next) {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 🧱  Corporate Invoices Hub Schema
+// ─────────────────────────────────────────────────────────────────────────────
+const corporateInvoicesSchema = new mongoose.Schema(
+    {
+        invoices: {
+            type: [invoiceSchema],
+            default: []
+        }
+    },
+    { _id: false }
+);
+
+const TaxInvoiceHubSchema = new mongoose.Schema(
+    {
+        _id: { type: mongoose.Schema.Types.ObjectId, required: true },
+        corporateData: {
+            type: Map,
+            of: corporateInvoicesSchema,
+            default: {},
+        },
+    },
+    { timestamps: true }
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 📦  Export
 // ─────────────────────────────────────────────────────────────────────────────
-const Invoices = mongoose.models.Invoices || mongoose.model("Invoices", invoiceSchema);
+const Invoices = mongoose.models.Invoices || mongoose.model("Invoices", TaxInvoiceHubSchema);
 module.exports = { Invoices };

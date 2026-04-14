@@ -14,8 +14,17 @@ router.get("/quotation/list",  ctrl.listQuotations);
 router.get("/po/list",         ctrl.listPOs);
 router.get("/invoice/list",    ctrl.listInvoices);
 router.get("/analytics",       ctrl.getFinanceAnalytics);
-router.get("/:id",             ctrl.getQuote);
-router.put("/:id",             ctrl.updateQuote);
-router.delete("/:id",          ctrl.deleteQuote);
+
+router.get("/quotation/:id",   ctrl.getQuote);
+router.put("/quotation/:id",   ctrl.updateQuote);
+router.delete("/quotation/:id",ctrl.deleteQuote);
+
+router.get("/po/:id",          ctrl.getPO);
+router.put("/po/:id",          ctrl.updatePO);
+router.delete("/po/:id",       ctrl.deletePO);
+
+router.get("/invoice/:id",     ctrl.getInvoice);
+router.put("/invoice/:id",     ctrl.updateInvoice);
+router.delete("/invoice/:id",  ctrl.deleteInvoice);
 
 module.exports = router;
