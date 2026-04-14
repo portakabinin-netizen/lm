@@ -26,4 +26,11 @@ router.get("/rate/vendor/:vendorId",               purchaseController.getVendorR
 router.get("/vendor/by-category/:categoryId",      purchaseController.getVendorsByCategory);
 router.get("/rate/vendor/:vendorId/category/:categoryId", purchaseController.getVendorRatesByCategory);
 
+// Bulk Excel Uploads
+const multer = require("multer");
+const upload = multer({ storage: multer.memoryStorage() });
+
+router.get("/bulk-upload/template", purchaseController.generateTemplate);
+router.post("/bulk-upload", upload.single("file"), purchaseController.uploadBulk);
+
 module.exports = router;

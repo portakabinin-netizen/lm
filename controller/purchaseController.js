@@ -451,3 +451,172 @@ exports.getVendorRatesByCategory = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
+
+/* BULK EXCEL UPLOADS */
+const ExcelJS = require("exceljs");
+
+exports.generateTemplate = async (req, res) => {
+  try {
+    const workbook = new ExcelJS.Workbook();
+
+    const vendorsSheet = workbook.addWorksheet("Vendors");
+    vendorsSheet.columns = [
+      { header: "VendorName", key: "vendorName", width: 20 },
+      { header: "MobileNo", key: "mobileNo", width: 15 },
+      { header: "ContactPerson", key: "contactPerson", width: 20 },
+      { header: "VendorAddress", key: "vendorAddress", width: 25 },
+      { header: "VendorGST", key: "vendorGST", width: 15 },
+    ];
+    vendorsSheet.addRow({ vendorName: "Sample Vendor", mobileNo: "9876543210", contactPerson: "John Doe", vendorAddress: "123 Street", vendorGST: "" });
+
+    const catSheet = workbook.addWorksheet("Categories");
+    catSheet.columns = [
+      { header: "CategoryName", key: "categoryName", width: 20 },
+      { header: "HSN_SAC", key: "hsn_sac", width: 15 },
+    ];
+    catSheet.addRow({ categoryName: "Pumps", hsn_sac: "8413" });
+
+    const prodSheet = workbook.addWorksheet("Products");
+    prodSheet.columns = [
+      { header: "CategoryName", key: "categoryName", width: 20 },
+      { header: "ProductName", key: "productName", width: 20 },
+      { header: "Description", key: "description", width: 25 },
+      { header: "UoM", key: "UoM", width: 10 },
+      { header: "Margin", key: "margin", width: 10 },
+      { header: "HSN_SAC", key: "hsn_sac", width: 15 },
+    ];
+    prodSheet.addRow({ categoryName: "Pumps", productName: "Water Pump 1HP", description: "1HP Submersible", UoM: "PCS", margin: 15, hsn_sac: "8413" });
+
+    const ratesSheet = workbook.addWorksheet("ItemRates");
+    ratesSheet.columns = [
+      { header: "VendorMobile", key: "vendorMobile", width: 15 },
+      { header: "CategoryName", key: "categoryName", width: 20 },
+      { header: "ProductName", key: "productName", width: 20 },
+      { header: "Price", key: "price", width: 10 },
+      { header: "UoM", key: "UoM", width: 10 },
+    ];
+    ratesSheet.addRow({ vendorMobile: "9876543210", categoryName: "Pumps", productName: "Water Pump 1HP", price: 1500, UoM: "PCS" });
+
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", "attachment; filename=" + "Purchase_Bulk_Upload_Template.xlsx");
+
+    await workbook.xlsx.write(res);
+    res.end();
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+exports.uploadBulk = async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+
+    const corporateId = req.body.corporateId || req.user.corporateId;
+    const corpAdminId = req.user.corpAdminId;
+    const hub = await getPurchaseHub({ corpAdminId, corporateId });
+    const data = hub.corporateData.get(corporateId);
+
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(req.file.buffer);
+
+    // 1. Process Categories
+    const catSheet = workbook.getWorksheet("Categories");
+    if (catSheet) {
+      catSheet.eachRow((row, rowNumber) => {
+        if (rowNumber > 1) {
+          const categoryName = row.getCell(1).value?.toString().trim();
+          const hsn_sac = row.getCell(2).value?.toString().trim();
+          if (categoryName && !data.categories.find(c => c.categoryName.toLowerCase() === categoryName.toLowerCase())) {
+            data.categories.push({ categoryName, hsn_sac: hsn_sac || "" });
+          }
+        }
+      });
+    }
+
+    // 2. Process Products
+    const prodSheet = workbook.getWorksheet("Products");
+    if (prodSheet) {
+      prodSheet.eachRow((row, rowNumber) => {
+        if (rowNumber > 1) {
+          const categoryName = row.getCell(1).value?.toString().trim();
+          const productName = row.getCell(2).value?.toString().trim();
+          const description = row.getCell(3).value?.toString().trim();
+          const UoM = row.getCell(4).value?.toString().trim() || "PCS";
+          const margin = parseFloat(row.getCell(5).value) || 15;
+          const hsn_sac = row.getCell(6).value?.toString().trim() || "";
+
+          if (categoryName && productName) {
+            const cat = data.categories.find(c => c.categoryName.toLowerCase() === categoryName.toLowerCase());
+            if (cat && !cat.products.find(p => p.productName.toLowerCase() === productName.toLowerCase())) {
+              cat.products.push({ productName, description: description || productName, UoM, margin, hsn_sac });
+            }
+          }
+        }
+      });
+    }
+
+    // 3. Process Vendors
+    const vendorsSheet = workbook.getWorksheet("Vendors");
+    if (vendorsSheet) {
+      vendorsSheet.eachRow((row, rowNumber) => {
+        if (rowNumber > 1) {
+          const vendorName = row.getCell(1).value?.toString().trim();
+          const mobileNo = row.getCell(2).value?.toString().trim();
+          const contactPerson = row.getCell(3).value?.toString().trim();
+          const vendorAddress = row.getCell(4).value?.toString().trim();
+          const vendorGST = row.getCell(5).value?.toString().trim();
+
+          if (vendorName && mobileNo) {
+            if (!data.vendors.find(v => v.mobileNo === mobileNo)) {
+              data.vendors.push({ vendorName, mobileNo, contactPerson: contactPerson || vendorName, vendorAddress: vendorAddress || "", vendorGST: vendorGST || "", corporateId, productCost: [] });
+            }
+          }
+        }
+      });
+    }
+
+    // 4. Process Item Rates
+    const ratesSheet = workbook.getWorksheet("ItemRates");
+    if (ratesSheet) {
+      ratesSheet.eachRow((row, rowNumber) => {
+        if (rowNumber > 1) {
+          const vendorMobile = row.getCell(1).value?.toString().trim();
+          const categoryName = row.getCell(2).value?.toString().trim();
+          const productName = row.getCell(3).value?.toString().trim();
+          const price = parseFloat(row.getCell(4).value);
+          const UoM = row.getCell(5).value?.toString().trim() || "PCS";
+
+          if (vendorMobile && categoryName && productName && !isNaN(price)) {
+            const vendor = data.vendors.find(v => v.mobileNo === vendorMobile);
+            const cat = data.categories.find(c => c.categoryName.toLowerCase() === categoryName.toLowerCase());
+            
+            if (vendor && cat) {
+              const prod = cat.products.find(p => p.productName.toLowerCase() === productName.toLowerCase());
+              if (prod) {
+                let pc = vendor.productCost.find(c => c.categoryId.toString() === cat._id.toString());
+                if (!pc) {
+                  pc = { categoryId: cat._id.toString(), products: [] };
+                  vendor.productCost.push(pc);
+                }
+                const existingRate = pc.products.find(p => p.productId.toString() === prod._id.toString());
+                if (existingRate) {
+                  existingRate.price = price;
+                  existingRate.UoM = UoM;
+                } else {
+                  pc.products.push({ productId: prod._id.toString(), price, UoM });
+                }
+              }
+            }
+          }
+        }
+      });
+    }
+
+    hub.markModified("corporateData");
+    await hub.save();
+    
+    res.json({ success: true, message: "Bulk upload successful" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
