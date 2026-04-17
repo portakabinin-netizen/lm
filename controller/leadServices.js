@@ -625,11 +625,27 @@ exports.leadService = {
     getProjectActiveLeads: async (req, res) => {
         try {
             const corporateId = req.query.corporateId || req.user.corporateId || req.user.corporateIds?.[0];
-            const corpAdminId = req.user.corpAdminId;
+            let corpAdminId = req.user.corpAdminId || (req.user.userRole === "CorpAdmin" ? req.user.userId : null);
+
+            // 🚀 DEEP RESOLUTION: If corpAdminId is missing, resolve from DB for this user
+            if (!corpAdminId) {
+                const u = await Users.findById(req.user.userId).select("accessCorporate").lean();
+                corpAdminId = u?.accessCorporate?.corpAdminId;
+            }
+
+            if (!corporateId) {
+                return res.status(400).json({ success: false, message: "Missing corporateId in request" });
+            }
+            if (!corpAdminId) {
+                return res.status(400).json({ success: false, message: "Missing or unresolved corpAdminId" });
+            }
+
             const cid = corporateId.toString();
             const adminId = new mongoose.Types.ObjectId(corpAdminId);
 
-            const ACTIVE_STATUSES = new Set(["Engaged", "Accepted", "Tax Invoice"]);
+            // 🚀 ROBUSTNESS: Case-insensitive status matching for projects
+            const ACTIVE_STATUSES = ["Engaged", "Accepted", "Tax Invoice"];
+            const statusRegex = `^(${ACTIVE_STATUSES.map(s => s.trim()).join("|")})$`;
 
             const result = await Leads.aggregate([
                 { $match: { _id: adminId } },
@@ -639,7 +655,13 @@ exports.leadService = {
                             $filter: {
                                 input: { $ifNull: [`$corporateData.${cid}.leads`, []] },
                                 as: "lead",
-                                cond: { $in: ["$$lead.status", Array.from(ACTIVE_STATUSES)] }
+                                cond: { 
+                                    $regexMatch: { 
+                                        input: "$$lead.status", 
+                                        regex: statusRegex, 
+                                        options: "i" 
+                                    } 
+                                }
                             }
                         }
                     }
@@ -673,7 +695,11 @@ exports.leadService = {
                     l.folderGallery = mediaMap[l._id.toString()] || [];
                 });
             } catch (searchErr) {
-                console.error("Cloudinary Search Error:", searchErr.message);
+                if (searchErr.message.includes("ENOTFOUND")) {
+                    console.error("⚠️ Cloudinary Connectivity Error: DNS resolution failed (ENOTFOUND). Please check server internet/DNS settings.");
+                } else {
+                    console.error("Cloudinary Search Error:", searchErr.message);
+                }
                 // Fallback: leads remain without folderGallery if search fails
             }
 
