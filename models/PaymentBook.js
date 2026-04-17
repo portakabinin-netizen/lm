@@ -96,6 +96,10 @@ const transactionSchema = new mongoose.Schema(
         // ── Attachments / receipts ──
         attachment_url: { type: String, trim: true },
 
+        // ── Voucher context ──
+        voucher_id: { type: String, trim: true, index: true },
+        is_voucher: { type: Boolean, default: false },
+
         // ── GST (for vendor payments with tax invoice) ──
         taxable_amount: { type: Number, default: 0 },
         gst_amount:     { type: Number, default: 0 },

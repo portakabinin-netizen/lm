@@ -56,8 +56,14 @@ router.get("/leads/search", services.leadService.searchByMobile);
 // 📊 Filter leads by status — has :status param, must be above /:type/:id
 router.get("/leads/status/:status", services.leadService.getLeadsByStatus);
 
+// 🔍 Active project leads (Engaged + Accepted + Tax Invoice)
+router.get("/leads/project-active", services.leadService.getProjectActiveLeads);
+
 // 📝 Log activity against a lead
 router.post("/leads/:id/activity", services.leadService.addActivity);
+
+// 📍 Log site visit with media and location
+router.post("/leads/:id/site-visit", services.leadService.logSiteVisit);
 
 /* =========================================================================
    2. GENERIC FACTORY ROUTES  (leads / corporate / ledger / user)

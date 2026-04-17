@@ -42,8 +42,8 @@ async function getHub(corpAdminId, corporateId) {
     const id = new mongoose.Types.ObjectId(corpAdminId);
     let hub = await PaymentBook.findById(id);
     if (!hub) hub = new PaymentBook({ _id: id, corporateData: new Map() });
-    if (!hub.corporateData.has(corporateId)) {
-        hub.corporateData.set(corporateId, { transactions: [] });
+    if (!hub?.corporateData?.has?.(corporateId)) {
+        hub?.corporateData?.set?.(corporateId, { transactions: [] });
     }
     return hub;
 }
@@ -60,7 +60,7 @@ async function generateTxnNumber(corpAdminId, corporateId, direction, txn_date) 
     const hub = await PaymentBook.findById(new mongoose.Types.ObjectId(corpAdminId)).lean();
     const cid = corporateId?.toString();
     const record = hub?.corporateData instanceof Map
-        ? hub.corporateData.get(cid)
+        ? hub?.corporateData?.get?.(cid)
         : hub?.corporateData?.[cid];
 
     const existing = (record?.transactions || [])
@@ -97,9 +97,9 @@ async function postLeadVoucher(corpAdminId, corporateId, leadId, txnData) {
         if (!hub) return;
 
         const cid = corporateId?.toString();
-        const corpEntry = hub.corporateData instanceof Map
-            ? hub.corporateData.get(cid)
-            : hub.corporateData?.[cid];
+        const corpEntry = hub?.corporateData instanceof Map
+            ? hub?.corporateData?.get?.(cid)
+            : hub?.corporateData?.[cid];
         if (!corpEntry) return;
 
         const lead = corpEntry.leads.id(leadId.toString());
@@ -142,7 +142,7 @@ exports.getLeadsForPicker = async (req, res) => {
         const hub = await LeadsLedgers.findById(corpAdminId).lean();
         const cid = corporateId?.toString();
         const corpEntry = hub?.corporateData instanceof Map
-            ? hub.corporateData.get(cid)
+            ? hub?.corporateData?.get?.(cid)
             : hub?.corporateData?.[cid];
 
         const allLeads = corpEntry?.leads || [];
@@ -182,7 +182,7 @@ exports.getLeadLedger = async (req, res) => {
         const hub = await LeadsLedgers.findById(corpAdminId).lean();
         const cid = corporateId?.toString();
         const corpEntry = hub?.corporateData instanceof Map
-            ? hub.corporateData.get(cid)
+            ? hub?.corporateData?.get?.(cid)
             : hub?.corporateData?.[cid];
 
         const lead = (corpEntry?.leads || []).find(l => l._id.toString() === leadId);
@@ -222,7 +222,7 @@ exports.getTransactionsByLead = async (req, res) => {
         const hub = await PaymentBook.findById(new mongoose.Types.ObjectId(corpAdminId)).lean();
         const cid = corporateId?.toString();
         const record = hub?.corporateData instanceof Map
-            ? hub.corporateData.get(cid)
+            ? hub?.corporateData?.get?.(cid)
             : hub?.corporateData?.[cid];
 
         if (!record) return res.json({ success: true, data: [] });
@@ -270,7 +270,7 @@ exports.createTransaction = async (req, res) => {
 
         // Save to PaymentBook
         const hub = await getHub(corpAdminId, corporateId);
-        const record = hub.corporateData.get(corporateId);
+        const record = hub?.corporateData?.get?.(corporateId);
         record.transactions.push(txnData);
         await hub.save();
 
@@ -303,7 +303,7 @@ exports.listTransactions = async (req, res) => {
         const hub = await PaymentBook.findById(new mongoose.Types.ObjectId(corpAdminId)).lean();
         const cid = corporateId?.toString();
         const record = hub?.corporateData instanceof Map
-            ? hub.corporateData.get(cid)
+            ? hub?.corporateData?.get?.(cid)
             : hub?.corporateData?.[cid];
 
         if (!record) return res.json({ success: true, data: [], total: 0 });
@@ -343,7 +343,7 @@ exports.getTransaction = async (req, res) => {
         const hub = await PaymentBook.findById(new mongoose.Types.ObjectId(corpAdminId)).lean();
         const cid = corporateId?.toString();
         const record = hub?.corporateData instanceof Map
-            ? hub.corporateData.get(cid)
+            ? hub?.corporateData?.get?.(cid)
             : hub?.corporateData?.[cid];
 
         const txn = record?.transactions?.find(t => t._id.toString() === id);
@@ -365,7 +365,7 @@ exports.updateTransaction = async (req, res) => {
         const { id } = req.params;
 
         const hub = await getHub(corpAdminId, corporateId);
-        const record = hub.corporateData.get(corporateId);
+        const record = hub?.corporateData?.get?.(corporateId);
         const txnDoc = record.transactions.id(id);
 
         if (!txnDoc) return res.status(404).json({ success: false, message: "Transaction not found" });
@@ -394,7 +394,7 @@ exports.deleteTransaction = async (req, res) => {
         const { id } = req.params;
 
         const hub = await getHub(corpAdminId, corporateId);
-        const record = hub.corporateData.get(corporateId);
+        const record = hub?.corporateData?.get?.(corporateId);
         record.transactions.pull({ _id: id });
         await hub.save();
 
@@ -416,7 +416,7 @@ exports.getPaymentSummary = async (req, res) => {
         const hub = await PaymentBook.findById(new mongoose.Types.ObjectId(corpAdminId)).lean();
         const cid = corporateId?.toString();
         const record = hub?.corporateData instanceof Map
-            ? hub.corporateData.get(cid)
+            ? hub?.corporateData?.get?.(cid)
             : hub?.corporateData?.[cid];
 
         const empty = {
@@ -503,3 +503,81 @@ exports.getPaymentSummary = async (req, res) => {
         res.status(500).json({ success: false, message: err.message });
     }
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CREATE VOUCHER (MULTI-ENTRY)
+// ─────────────────────────────────────────────────────────────────────────────
+exports.createVoucher = async (req, res) => {
+    try {
+        const corporateId = req.body.corporateId || req.user?.corporateId;
+        const corpAdminId = req.user?.corpAdminId;
+        const { date, narration, entries } = req.body;
+
+        if (!entries || !Array.isArray(entries) || entries.length < 2) {
+            return res.status(400).json({ success: false, message: "A voucher must have at least two entries." });
+        }
+
+        // 1. Validate Balance
+        const totalDr = entries.filter(e => e.type === "Dr").reduce((s, e) => s + (parseFloat(e.amount) || 0), 0);
+        const totalCr = entries.filter(e => e.type === "Cr").reduce((s, e) => s + (parseFloat(e.amount) || 0), 0);
+
+        if (totalDr !== totalCr) {
+            return res.status(400).json({ success: false, message: `Voucher is unbalanced. Dr (${totalDr}) != Cr (${totalCr})` });
+        }
+
+        const voucherId = req.body.voucherId || `V-${Date.now().toString(36).toUpperCase()}`;
+        const hub = await getHub(corpAdminId, corporateId);
+        const record = hub?.corporateData?.get?.(corporateId);
+
+        const savedEntries = [];
+
+        // 2. Map and Save individual transactions
+        for (const entry of entries) {
+            const direction = entry.type === "Dr" ? "RECEIPT" : "PAYMENT";
+            const txn_number = await generateTxnNumber(corpAdminId, corporateId, direction, date);
+
+            const txnData = {
+                txn_number,
+                txn_type: entry.type === "Dr" ? "misc_income" : "misc_expense", // Generic containers
+                direction,
+                amount: entry.amount,
+                txn_date: date || new Date(),
+                party_name: entry.accountName,
+                party_type: entry.accountType === "Category" ? "Other" : entry.accountType,
+                description: narration,
+                voucher_id: voucherId,
+                is_voucher: true,
+                payment_mode: "Other",
+                status: "Cleared",
+                recorded_by: req.user?._id,
+            };
+
+            // Link Lead/Staff if applicable
+            if (entry.accountType === "Lead") txnData.ref_lead_id = entry.accountId;
+            if (entry.accountType === "Staff") txnData.staff_ref_id = entry.accountId;
+
+            record.transactions.push(txnData);
+            const saved = record.transactions[record.transactions.length - 1];
+            savedEntries.push(saved);
+
+            // Mirror to Lead Ledger if linked
+            if (txnData.ref_lead_id && LEAD_PAYMENT_MAP[txnData.txn_type]) {
+                postLeadVoucher(corpAdminId, corporateId, txnData.ref_lead_id, saved.toObject())
+                    .catch(e => console.error("[postLeadVoucher]", e.message));
+            }
+        }
+
+        await hub.save();
+
+        res.status(201).json({ 
+            success: true, 
+            message: "Voucher posted successfully", 
+            voucherId,
+            entriesCount: savedEntries.length 
+        });
+
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+};
+

@@ -1,6 +1,7 @@
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 const { z } = require("zod");
+const cloudinary = require('cloudinary').v2;
 
 // Models
 const { LeadsLedgers: Leads } = require("../models/LeadsLedgers");
@@ -74,8 +75,8 @@ const normalizeTradeIndia = (item, corpAdminId, corporateId) => {
         sender_state: clean(item.sender_state || item.STATE || "Unknown"),
         source: "TradeIndia",
         status: "Recent",
-        corporateId: corporateId.toString(),
-        corpAdminId: corpAdminId.toString(),
+        corporateId: String(corporateId),
+        corpAdminId: String(corpAdminId),
     };
 };
 
@@ -87,16 +88,29 @@ exports.leadService = {
     leadsAnalytics: async (req, res) => {
         try {
             const { corporateId, fromDate, toDate, source } = req.query;
-            const corpAdminId = req.user.corpAdminId;
+            let corpAdminId = req.user.corpAdminId || (req.user.userRole === "CorpAdmin" ? req.user.userId : null);
 
-            const hub = await Leads.findById(corpAdminId).lean();
+            // 🚀 DEEP RESOLUTION: If corpAdminId is missing, resolve from DB for this user
+            if (!corpAdminId) {
+                const u = await Users.findById(req.user.userId).select("accessCorporate").lean();
+                corpAdminId = u?.accessCorporate?.corpAdminId;
+            }
+
+            const cid = (corporateId || req.user.corporateId || req.user.corporateIds?.[0])?.toString();
+
+            // 🚀 ROBUSTNESS: Explicitly cast to ObjectId for findOne
+            const aid = new mongoose.Types.ObjectId(corpAdminId);
+
+            // 🚀 OPTIMIZATION: Project only the relevant corporateData map key
+            const hub = await Leads.findOne(
+                { _id: aid },
+                { [`corporateData.${cid}`]: 1 }
+            ).lean();
+
             if (!hub) return res.json({ success: true, total: 0, data: { sources: [], statuses: [] } });
 
-            const cid = (corporateId || req.user.corporateId)?.toString();
-            // Robust Map access for lean and non-lean Hubs
-            const corpEntry = hub.corporateData instanceof Map
-                ? hub.corporateData.get(cid)
-                : hub.corporateData?.[cid];
+            // Since it's lean, it's just a POJO
+            const corpEntry = hub?.corporateData?.[cid];
 
             let filtered = corpEntry?.leads || [];
 
@@ -163,18 +177,17 @@ exports.leadService = {
             const { corporateId, corpAdminId } = filters;
             if (!corpAdminId || !corporateId) return [];
 
-            const hub = await Leads.findById(corpAdminId).lean();
-            if (!hub) {
-                console.warn("[leadService.list] Hub not found for admin:", corpAdminId);
-                return [];
-            }
             const cid = corporateId.toString();
 
-            const corpEntry = hub?.corporateData instanceof Map
-                ? hub.corporateData.get(cid)
-                : hub.corporateData?.[cid];
+            // 🚀 OPTIMIZATION: Use ObjectId for aggregation matching (Mongoose doesn't auto-cast in aggregate)
+            const adminId = new mongoose.Types.ObjectId(corpAdminId);
 
-            return corpEntry?.leads || [];
+            const result = await Leads.aggregate([
+                { $match: { _id: adminId } },
+                { $project: { leads: { $ifNull: [`$corporateData.${cid}.leads`, []] } } }
+            ]);
+            
+            return result[0]?.leads || [];
         } catch (err) {
             console.error("leadService.list error:", err);
             return [];
@@ -190,9 +203,9 @@ exports.leadService = {
         // But for now, let's find it.
         const hubs = await Leads.find({});
         for (const h of hubs) {
-            if (!h.corporateData) continue;
-            for (const [cid, corpEntry] of h.corporateData.entries()) {
-                const found = corpEntry.leads.id(id);
+            if (!h?.corporateData) continue;
+            for (const [cid, corpEntry] of h?.corporateData?.entries?.() || []) {
+                const found = corpEntry?.leads?.id?.(id);
                 if (found) return found;
             }
         }
@@ -202,10 +215,11 @@ exports.leadService = {
     remove: async (id) => {
         const hubs = await Leads.find({});
         for (const h of hubs) {
-            if (!h.corporateData) continue;
-            for (const [cid, corpEntry] of h.corporateData.entries()) {
-                if (corpEntry.leads.id(id)) {
-                    corpEntry.leads.id(id).deleteOne();
+            if (!h?.corporateData) continue;
+            for (const [cid, corpEntry] of h?.corporateData?.entries?.() || []) {
+                const doc = corpEntry?.leads?.id?.(id);
+                if (doc) {
+                    doc.deleteOne();
                     await h.save();
                     return true;
                 }
@@ -231,12 +245,17 @@ exports.leadService = {
         });
 
         try {
-            const corporateId = req.query.corporateId || req.user.corporateId;
+            const corporateId = req.query.corporateId || req.user.corporateId || req.user.corporateIds?.[0];
             const corpAdminId = req.user.corpAdminId || req.user._id;
+
             const adminUser = await Users.findById(corpAdminId).lean();
+            if (!adminUser) {
+                console.error(`[readInbox] Error: Admin user ${corpAdminId} not found`);
+                return res.status(404).json({ success: false, message: "Admin user session not found" });
+            }
 
             const corporates = adminUser?.linkedCorporates || [];
-            const corporate = corporates.find(c => c._id.toString() === corporateId?.toString());
+            const corporate = corporates.find(c => String(c._id) === String(corporateId));
 
             if (!corporate) {
                 console.error(`[readInbox] Error: Corporate ${corporateId} not found in Admin ${corpAdminId}`);
@@ -248,81 +267,87 @@ exports.leadService = {
             // ── 1.  IMAP / Email Sync ─────────────────────────────────────────────
             if (corporate.apiUrls?.mailConfigure?.isActive) {
                 const mailConfig = corporate.apiUrls.mailConfigure;
-                const client = new ImapFlow({
-                    host: mailConfig.host || 'imap.gmail.com',
-                    port: mailConfig.port || 993,
-                    secure: true,
-                    auth: { user: mailConfig.auth.user, pass: mailConfig.auth.pass },
-                    logger: false,
-                    verifyOnly: false,
-                    socketTimeout: 60000,
-                    greetingTimeout: 30000,
-                    connectionTimeout: 30000
-                });
+                
+                // 🚀 CONFIG GUARD: Avoid crashing if credentials are missing
+                if (!mailConfig.auth?.user || !mailConfig.auth?.pass) {
+                    console.warn(`[readInbox] Skipping IMAP: mailConfigure is active but auth credentials (user/pass) are missing for ${corporate.corporateName}`);
+                } else {
+                    const client = new ImapFlow({
+                        host: mailConfig.host || 'imap.gmail.com',
+                        port: mailConfig.port || 993,
+                        secure: true,
+                        auth: { user: mailConfig.auth.user, pass: mailConfig.auth.pass },
+                        logger: false,
+                        verifyOnly: false,
+                        socketTimeout: 60000,
+                        greetingTimeout: 30000,
+                        connectionTimeout: 30000
+                    });
 
-                // ⚠ CRITICAL: Prevent server crash on socket timeout or other background errors
-                client.on('error', err => {
-                    if (err.code === 'ETIMEOUT') return; // Handled by try-catch usually, but prevents crash
-                    console.error("[readInbox] IMAP Background Error:", err.message);
-                });
+                    // ⚠ CRITICAL: Prevent server crash on socket timeout or other background errors
+                    client.on('error', err => {
+                        if (err.code === 'ETIMEOUT') return; // Handled by try-catch usually, but prevents crash
+                        console.error("[readInbox] IMAP Background Error:", err.message);
+                    });
 
-                try {
-                    await client.connect();
-                    const lock = await client.getMailboxLock('INBOX');
                     try {
-                        const allUids = new Set();
-                        const since = new Date();
-                        since.setDate(since.getDate() - 7);
+                        await client.connect();
+                        const lock = await client.getMailboxLock('INBOX');
+                        try {
+                            const allUids = new Set();
+                            const since = new Date();
+                            since.setDate(since.getDate() - 7);
 
-                        for (const sender of SENDERS) {
-                            const uids = await client.search({ from: sender, since }, { uid: true });
-                            uids.forEach(uid => allUids.add(uid));
-                        }
-
-                        if (allUids.size > 0) {
-                            const range = [...allUids].sort((a, b) => a - b).join(",");
-                            const processedUids = [];
-                            for await (const msg of client.fetch(range, { source: true }, { uid: true })) {
-                                const parsed = await simpleParser(msg.source);
-                                const text = [parsed.text, parsed.html ? stripHtml(parsed.html) : "", parsed.subject].join(" ");
-                                const geo = findCityState(text);
-                                const mobile = extractMobile(text);
-                                if (!mobile) continue; // Skip leads without valid mobile
-
-                                const sender = parsed.from?.text || "";
-                                const source = sender.toLowerCase().includes('indiamart') ? "IndiaMart" : "TradeIndia";
-                                const clean = (val) => (val ? String(val).replace(/"/gi, '').trim() : null);
-
-                                records.push({
-                                    source_id: `email_${msg.uid}`,
-                                    generated_date: parsed.date || new Date(),
-                                    sender_name: clean((parsed.replyTo?.text || parsed.from?.text || "Unknown").replace(/<.*?>/g, '')),
-                                    sender_mobile: mobile,
-                                    sender_email: clean(extractEmail(text)),
-                                    product_name: clean(extractProductName(parsed.subject) || "Enquiry"),
-                                    sender_city: clean(geo?.city || "Unknown"),
-                                    sender_state: clean(geo?.state || "Unknown"),
-                                    source: source,
-                                    status: "Recent",
-                                    corporateId: corporateId,
-                                    corpAdminId: corpAdminId
-                                });
-                                processedUids.push(msg.uid);
+                            for (const sender of SENDERS) {
+                                const uids = await client.search({ from: sender, since }, { uid: true });
+                                uids.forEach(uid => allUids.add(uid));
                             }
 
-                            // Batch update flags for all processed messages in one network call
-                            if (processedUids.length > 0) {
-                                const processedRange = processedUids.sort((a, b) => a - b).join(",");
-                                await client.messageFlagsAdd(processedRange, ['\\Seen'], { uid: true });
+                            if (allUids.size > 0) {
+                                const range = [...allUids].sort((a, b) => a - b).join(",");
+                                const processedUids = [];
+                                for await (const msg of client.fetch(range, { source: true }, { uid: true })) {
+                                    const parsed = await simpleParser(msg.source);
+                                    const text = [parsed.text, parsed.html ? stripHtml(parsed.html) : "", parsed.subject].join(" ");
+                                    const geo = findCityState(text);
+                                    const mobile = extractMobile(text);
+                                    if (!mobile) continue; // Skip leads without valid mobile
+
+                                    const sender = parsed.from?.text || "";
+                                    const source = sender.toLowerCase().includes('indiamart') ? "IndiaMart" : "TradeIndia";
+                                    const clean = (val) => (val ? String(val).replace(/"/gi, '').trim() : null);
+
+                                    records.push({
+                                        source_id: `email_${msg.uid}`,
+                                        generated_date: parsed.date || new Date(),
+                                        sender_name: clean((parsed.replyTo?.text || parsed.from?.text || "Unknown").replace(/<.*?>/g, '')),
+                                        sender_mobile: mobile,
+                                        sender_email: clean(extractEmail(text)),
+                                        product_name: clean(extractProductName(parsed.subject) || "Enquiry"),
+                                        sender_city: clean(geo?.city || "Unknown"),
+                                        sender_state: clean(geo?.state || "Unknown"),
+                                        source: source,
+                                        status: "Recent",
+                                        corporateId: corporateId,
+                                        corpAdminId: corpAdminId
+                                    });
+                                    processedUids.push(msg.uid);
+                                }
+
+                                // Batch update flags for all processed messages in one network call
+                                if (processedUids.length > 0) {
+                                    const processedRange = processedUids.sort((a, b) => a - b).join(",");
+                                    await client.messageFlagsAdd(processedRange, ['\\Seen'], { uid: true });
+                                }
                             }
+                        } finally {
+                            lock.release();
                         }
-                    } finally {
-                        lock.release();
+                        await client.logout();
+                    } catch (e) {
+                        console.error("IMAP Sync Failed:", e.message);
                     }
-                    await client.logout();
-                } catch (e) {
-                    console.error("IMAP Sync Failed:", e.message);
-                }
+                } // 🚀 Added missing closing brace for 'else' block
             }
 
             // ── 2.  TradeIndia API Sync ──────────────────────────────────────────
@@ -368,7 +393,8 @@ exports.leadService = {
             res.json({ success: true, fetched: records.length, saved, total: saved });
         } catch (err) {
             console.error("readInbox fatal error:", err);
-            res.status(500).json({ success: false, message: err.message });
+            // 🚀 IMPROVED ERROR OUTPUT: Include more detail for the frontend
+            res.status(500).json({ success: false, message: err.message, stack: process.env.NODE_ENV === 'development' ? err.stack : undefined });
         }
     },
 
@@ -383,14 +409,18 @@ exports.leadService = {
     },
 
     addManyImpl: async (corpAdminId, corporateId, leadsArray) => {
+        if (!corpAdminId || !corporateId) {
+            throw new Error(`Missing identity parameters: corpAdminId=${corpAdminId}, corporateId=${corporateId}`);
+        }
         const cid = corporateId.toString();
         let hub = await Leads.findById(corpAdminId);
         if (!hub) hub = await Leads.create({ _id: corpAdminId, corporateData: {} });
 
-        if (!hub.corporateData.has(cid)) {
-            hub.corporateData.set(cid, { leads: [], leadCounters: 0 });
+        if (!hub?.corporateData?.has?.(cid)) {
+            hub?.corporateData?.set?.(cid, { leads: [], leadCounters: 0 });
         }
-        const corpEntry = hub.corporateData.get(cid);
+        const corpEntry = hub?.corporateData?.get?.(cid);
+        if (!corpEntry) throw new Error(`Corporate data slot not found for ID: ${cid}`);
         let nextNo = corpEntry.leadCounters || 0;
 
         const inserted = [];
@@ -417,17 +447,22 @@ exports.leadService = {
     update: async (id, payload) => {
         try {
             const { corporateId, corpAdminId, ...updateData } = payload;
-            const hub = await Leads.findById(corpAdminId);
-            if (!hub) throw new Error("Hub not found");
+            const cid = corporateId.toString();
 
-            const corpEntry = hub.corporateData.get(corporateId.toString());
-            const lead = corpEntry?.leads.id(id);
-            if (!lead) throw new Error("Lead not found");
+            // 🚀 OPTIMIZATION: Atomic update using arrayFilters to avoid loading the Hub
+            const updateOps = {};
+            Object.entries(updateData).forEach(([k, v]) => {
+                updateOps[`corporateData.${cid}.leads.$[elem].${k}`] = v;
+            });
 
-            Object.assign(lead, updateData);
-            hub.markModified("corporateData");
-            await hub.save();
-            return lead;
+            const result = await Leads.updateOne(
+                { _id: corpAdminId },
+                { $set: updateOps },
+                { arrayFilters: [{ "elem._id": new mongoose.Types.ObjectId(id) }] }
+            );
+
+            if (result.matchedCount === 0) throw new Error("Lead or Hub not found");
+            return { _id: id, ...updateData };
         } catch (err) {
             throw err;
         }
@@ -462,27 +497,24 @@ exports.leadService = {
                 return res.status(400).json({ success: false, message: "Missing required identity parameters" });
             }
 
-            const hub = await Leads.findById(corpAdminId);
-            if (!hub) return res.status(404).json({ success: false, message: "Hub (Admin) not found" });
-
-            const corpEntry = hub.corporateData.get(corporateId);
-            if (!corpEntry) return res.status(404).json({ success: false, message: "Corporate container not found in Hub" });
-
-            const lead = corpEntry.leads.id(id);
-            if (!lead) return res.status(404).json({ success: false, message: "Lead not found in this corporate" });
-
-            // Add the activity entry
-            lead.activity.push({
+            const newActivity = {
                 action: action ? action.trim() : "No message provided",
                 byUser: byUser || req.user.userDisplayName || "Agent",
                 date: new Date()
-            });
+            };
 
-            // ⚠ CRITICAL: Since corporateData is a Map, Mongoose needs to be told it changed
-            hub.markModified("corporateData");
+            // 🚀 OPTIMIZATION: Atomic $push using arrayFilters to avoid loading the whole Hub
+            const result = await Leads.updateOne(
+                { _id: corpAdminId },
+                { $push: { [`corporateData.${corporateId}.leads.$[elem].activity`]: newActivity } },
+                { arrayFilters: [{ "elem._id": new mongoose.Types.ObjectId(id) }] }
+            );
 
-            await hub.save();
-            res.json({ success: true, data: lead });
+            if (result.matchedCount === 0) {
+                return res.status(404).json({ success: false, message: "Hub or Lead not found" });
+            }
+
+            res.json({ success: true, message: "Activity added successfully" });
         } catch (err) {
             console.error("❌ leadService.addActivity error:", err);
             res.status(500).json({ success: false, message: err.message });
@@ -498,8 +530,8 @@ exports.leadService = {
             const hub = await Leads.findById(corpAdminId).lean();
             const cid = corporateId?.toString();
             const corpEntry = hub?.corporateData instanceof Map
-                ? hub.corporateData.get(cid)
-                : hub.corporateData?.[cid];
+                ? hub?.corporateData?.get?.(cid)
+                : hub?.corporateData?.[cid];
 
             const lead = (corpEntry?.leads || []).find(l => l.sender_mobile?.endsWith(cleanPhone));
 
@@ -520,8 +552,8 @@ exports.leadService = {
 
     webInquiry: async (req, res) => {
         try {
-            const corporateId = req.body.corporateId || req.user.corporateId;
-            const corpAdminId = req.user.corpAdminId;
+            const corporateId = req.body.corporateId || req.user.corporateId || req.user.corporateIds?.[0];
+            const corpAdminId = req.user.corpAdminId || (req.user.userRole === "CorpAdmin" ? req.user.userId : null);
             const lead = { ...req.body, source: 'WebForm', status: 'Recent' };
             const result = await exports.leadService.addManyImpl(corpAdminId, corporateId, [lead]);
             res.status(201).json({ success: true, data: result[0] });
@@ -533,22 +565,151 @@ exports.leadService = {
     getLeadsByStatus: async (req, res) => {
         try {
             const { status } = req.params;
-            const corporateId = req.query.corporateId || req.user.corporateId;
+            const corporateId = req.query.corporateId || req.user.corporateId || req.user.corporateIds?.[0];
+            let corpAdminId = req.user.corpAdminId || (req.user.userRole === "CorpAdmin" ? req.user.userId : null);
+
+            // 🚀 DEEP RESOLUTION: If corpAdminId is missing, resolve from DB for this user
+            if (!corpAdminId) {
+                const u = await Users.findById(req.user.userId).select("accessCorporate").lean();
+                corpAdminId = u?.accessCorporate?.corpAdminId;
+            }
+
+            if (!corporateId || !corpAdminId) {
+                return res.status(400).json({ success: false, message: "Missing corporate or admin ID" });
+            }
+
+            const cid = corporateId.toString();
+            
+            // 🚀 OPTIMIZATION: Use ObjectId for aggregation matching
+            const adminId = new mongoose.Types.ObjectId(corpAdminId);
+            if (!adminId) return res.status(400).json({ success: false, message: "Invalid admin ID" });
+
+            const pipeline = [{ $match: { _id: adminId } }];
+            
+            // Build the filter condition
+            const conditions = [];
+            if (status) {
+                // Exact status match (case-insensitive)
+                conditions.push({ $regexMatch: { input: "$$lead.status", regex: `^${status.trim()}$`, options: "i" } });
+                
+                // For 'Recycle' status, also filter by date if needed (e.g. 30 days)
+                if (status.toLowerCase() === "recycle") {
+                    const thirtyDaysAgo = new Date();
+                    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+                    conditions.push({ $gte: ["$$lead.generated_date", thirtyDaysAgo] });
+                }
+            }
+
+            pipeline.push({
+                $project: {
+                    leads: {
+                        $filter: {
+                            input: { $ifNull: [`$corporateData.${cid}.leads`, []] },
+                            as: "lead",
+                            cond: conditions.length > 0 ? (conditions.length > 1 ? { $and: conditions } : conditions[0]) : true
+                        }
+                    }
+                }
+            });
+
+            const result = await Leads.aggregate(pipeline);
+            const data = result[0]?.leads || [];
+
+            res.json({ success: true, data });
+        } catch (err) {
+            console.error("❌ getLeadsByStatus error:", err.message);
+            res.status(500).json({ success: false, message: err.message });
+        }
+    },
+
+    getProjectActiveLeads: async (req, res) => {
+        try {
+            const corporateId = req.query.corporateId || req.user.corporateId || req.user.corporateIds?.[0];
+            const corpAdminId = req.user.corpAdminId;
+            const cid = corporateId.toString();
+            const adminId = new mongoose.Types.ObjectId(corpAdminId);
+
+            const ACTIVE_STATUSES = new Set(["Engaged", "Accepted", "Tax Invoice"]);
+
+            const result = await Leads.aggregate([
+                { $match: { _id: adminId } },
+                {
+                    $project: {
+                        leads: {
+                            $filter: {
+                                input: { $ifNull: [`$corporateData.${cid}.leads`, []] },
+                                as: "lead",
+                                cond: { $in: ["$$lead.status", Array.from(ACTIVE_STATUSES)] }
+                            }
+                        }
+                    }
+                }
+            ]);
+
+            const leads = result[0]?.leads || [];
+
+            // 🚀 FOLDER DISCOVERY: Bulk fetch all images in hipk/leads subfolders
+            try {
+                const searchRes = await cloudinary.search
+                    .expression(`folder:hipk/leads/*`)
+                    .sort_by('created_at', 'desc')
+                    .max_results(100)
+                    .execute();
+
+                const mediaMap = {};
+                searchRes.resources.forEach(asset => {
+                    const parts = asset.public_id.split('/');
+                    const leadsIdx = parts.indexOf('leads');
+                    const folderKey = (leadsIdx !== -1 && parts[leadsIdx + 1]) ? parts[leadsIdx + 1] : null;
+                    
+                    if (folderKey) {
+                        if (!mediaMap[folderKey]) mediaMap[folderKey] = [];
+                        mediaMap[folderKey].push(asset.secure_url);
+                    }
+                });
+
+                // Attach media to leads
+                leads.forEach(l => {
+                    l.folderGallery = mediaMap[l._id.toString()] || [];
+                });
+            } catch (searchErr) {
+                console.error("Cloudinary Search Error:", searchErr.message);
+                // Fallback: leads remain without folderGallery if search fails
+            }
+
+            res.json({ success: true, data: leads });
+        } catch (err) {
+            res.status(500).json({ success: false, message: err.message });
+        }
+    },
+
+    logSiteVisit: async (req, res) => {
+        try {
+            const { id } = req.params;
+            const { selfie_url, location, remarks } = req.body;
+            const corporateId = (req.body.corporateId || req.user.corporateId)?.toString();
             const corpAdminId = req.user.corpAdminId;
 
-            const hub = await Leads.findById(corpAdminId).lean();
-            const cid = corporateId?.toString();
-            const corpEntry = hub?.corporateData instanceof Map
-                ? hub.corporateData.get(cid)
-                : hub.corporateData?.[cid];
+            const siteVisitActivity = {
+                action: `Site Visit: ${remarks || "Completed"}`,
+                byUser: req.user.userDisplayName || "Field Staff",
+                date: new Date(),
+                metadata: {
+                    type: "site_visit",
+                    selfie_url,
+                    location,
+                }
+            };
 
-            let data = corpEntry?.leads || [];
+            const result = await Leads.updateOne(
+                { _id: corpAdminId },
+                { $push: { [`corporateData.${corporateId}.leads.$[elem].activity`]: siteVisitActivity } },
+                { arrayFilters: [{ "elem._id": new mongoose.Types.ObjectId(id) }] }
+            );
 
-            if (status) {
-                const regex = new RegExp(`^${status.trim()}$`, "i");
-                data = data.filter(l => regex.test(l.status));
-            }
-            res.json({ success: true, data });
+            if (result.matchedCount === 0) return res.status(404).json({ success: false, message: "Lead not found" });
+
+            res.json({ success: true, message: "Site visit logged successfully" });
         } catch (err) {
             res.status(500).json({ success: false, message: err.message });
         }
@@ -587,8 +748,8 @@ exports.ledgerService = {
         const hubs = await Leads.find({}).lean();
         let all = [];
         hubs.forEach(h => {
-            Object.values(h.corporateData || {}).forEach(corpEntry => {
-                all = all.concat((corpEntry.leads || []).filter(l => l.ledger?.length > 0));
+            Object.values(h?.corporateData || {}).forEach(corpEntry => {
+                all = all.concat((corpEntry?.leads || []).filter(l => l.ledger?.length > 0));
             });
         });
         return all;

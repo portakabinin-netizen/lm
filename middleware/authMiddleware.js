@@ -22,8 +22,10 @@ const authMiddleware = (req, res, next) => {
       _id: decoded.userId,
       userId: decoded.userId,
       userRole: decoded.userRole,
-      corpAdminId: decoded.corpAdminId,
+      // 🚀 ROBUSTNESS: If corpAdminId is missing in token but user is admin, use userId
+      corpAdminId: decoded.corpAdminId || (decoded.userRole === "CorpAdmin" ? decoded.userId : null),
       corporateId: decoded.corporateId,
+      corporateIds: decoded.corporateIds || [],
       corporateName: decoded.corporateName,
       userEmail: decoded.userEmail,
     };

@@ -12,9 +12,9 @@ async function getPurchaseHub(filters) {
     hub = await Purchase.create({ _id: corpAdminId, corporateData: {} });
   }
 
-  if (!hub.corporateData.has(corporateId)) {
-    hub.corporateData.set(corporateId, { vendors: [], categories: [] });
-    await hub.save();
+  if (!hub?.corporateData?.has?.(corporateId)) {
+    hub?.corporateData?.set?.(corporateId, { vendors: [], categories: [] });
+    await hub?.save?.();
   }
 
   return hub;
@@ -27,7 +27,7 @@ exports.addVendor = async (req, res) => {
     const corporateId = req.body.corporateId || req.query.corporateId || req.user?.corporateId;
 
     const hub = await getPurchaseHub({ corpAdminId, corporateId });
-    const data = hub.corporateData.get(corporateId);
+    const data = hub?.corporateData?.get?.(corporateId);
 
     const vendorData = { ...req.body };
     // Ensure nested IDs don't conflict with main IDs if they were sent in body
@@ -49,7 +49,7 @@ exports.getVendors = async (req, res) => {
     const corporateId = req.query.corporateId || req.body.corporateId || req.user?.corporateId;
 
     const hub = await getPurchaseHub({ corpAdminId, corporateId });
-    const data = hub.corporateData.get(corporateId);
+    const data = hub?.corporateData?.get?.(corporateId);
     if (!data) return res.json({ vendors: [], categories: [] });
 
     const categories = data.categories || [];
@@ -83,7 +83,7 @@ exports.updateVendor = async (req, res) => {
     const corporateId = req.body.corporateId || req.query.corporateId || req.user?.corporateId;
 
     const hub = await getPurchaseHub({ corpAdminId, corporateId });
-    const data = hub.corporateData.get(corporateId);
+    const data = hub?.corporateData?.get?.(corporateId);
     const vendor = data.vendors.id(id);
 
     if (!vendor) return res.status(404).json({ error: "Vendor not found" });
@@ -108,7 +108,7 @@ exports.deleteVendor = async (req, res) => {
     const corporateId = req.query.corporateId || req.body.corporateId || req.user?.corporateId;
 
     const hub = await getPurchaseHub({ corpAdminId, corporateId });
-    const data = hub.corporateData.get(corporateId);
+    const data = hub?.corporateData?.get?.(corporateId);
 
     const vendor = data.vendors.id(id);
     if (!vendor) return res.status(404).json({ error: "Vendor not found" });
@@ -131,7 +131,7 @@ exports.addCategory = async (req, res) => {
     if (!categoryName?.trim()) return res.status(400).json({ error: "Category name is required" });
 
     const hub = await getPurchaseHub({ corpAdminId, corporateId });
-    const data = hub.corporateData.get(corporateId);
+    const data = hub?.corporateData?.get?.(corporateId);
     data.categories.push({ categoryName: categoryName.trim(), hsn_sac: hsn_sac?.trim() || "" });
     hub.markModified("corporateData");
     await hub.save();
@@ -146,7 +146,7 @@ exports.updateCategory = async (req, res) => {
     const corporateId = req.body.corporateId || req.query.corporateId || req.user.corporateId;
     const corpAdminId = req.user.corpAdminId;
     const hub = await getPurchaseHub({ corpAdminId, corporateId });
-    const data = hub.corporateData.get(corporateId);
+    const data = hub?.corporateData?.get?.(corporateId);
     const category = data.categories.id(req.params.categoryId);
     if (!category) return res.status(404).json({ error: "Category not found" });
 
@@ -167,7 +167,7 @@ exports.deleteCategory = async (req, res) => {
     const corporateId = req.query.corporateId || req.user.corporateId;
     const corpAdminId = req.user.corpAdminId;
     const hub = await getPurchaseHub({ corpAdminId, corporateId });
-    const data = hub.corporateData.get(corporateId);
+    const data = hub?.corporateData?.get?.(corporateId);
     const category = data.categories.id(req.params.categoryId);
     if (!category) return res.status(404).json({ error: "Category not found" });
     if (category.products?.length > 0)
@@ -188,8 +188,8 @@ exports.getCategories = async (req, res) => {
     const corporateId = req.query.corporateId || req.body.corporateId || req.user?.corporateId;
 
     const hub = await getPurchaseHub({ corpAdminId, corporateId });
-    const data = hub.corporateData.get(corporateId);
-    res.json(data ? data.categories : []);
+    const data = hub?.corporateData?.get?.(corporateId);
+    res.json(data ? data?.categories : []);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -200,7 +200,7 @@ exports.getCategoryById = async (req, res) => {
     const corporateId = req.query.corporateId || req.body.corporateId || req.user.corporateId;
     const corpAdminId = req.user.corpAdminId;
     const hub = await getPurchaseHub({ corpAdminId, corporateId });
-    const data = hub.corporateData.get(corporateId);
+    const data = hub?.corporateData?.get?.(corporateId);
     const category = data.categories.id(req.params.categoryId);
     if (!category) return res.status(404).json({ message: "Category not found" });
     res.status(200).json(category);
@@ -220,7 +220,7 @@ exports.addProduct = async (req, res) => {
       return res.status(400).json({ error: "productName, description, UoM and categoryId are required" });
 
     const hub = await getPurchaseHub({ corpAdminId, corporateId });
-    const data = hub.corporateData.get(corporateId);
+    const data = hub?.corporateData?.get?.(corporateId);
     const category = data.categories.id(categoryId);
     if (!category) return res.status(404).json({ error: "Category not found" });
 
@@ -245,7 +245,7 @@ exports.updateProduct = async (req, res) => {
     const corporateId = req.query.corporateId || req.body.corporateId || req.user.corporateId;
     const corpAdminId = req.user.corpAdminId;
     const hub = await getPurchaseHub({ corpAdminId, corporateId });
-    const data = hub.corporateData.get(corporateId);
+    const data = hub?.corporateData?.get?.(corporateId);
     const category = data.categories.id(categoryId);
     if (!category) return res.status(404).json({ error: "Category not found" });
     const product = category.products.id(productId);
@@ -272,7 +272,7 @@ exports.deleteProduct = async (req, res) => {
     const corporateId = req.query.corporateId || req.body.corporateId || req.user.corporateId;
     const corpAdminId = req.user.corpAdminId;
     const hub = await getPurchaseHub({ corpAdminId, corporateId });
-    const data = hub.corporateData.get(corporateId);
+    const data = hub?.corporateData?.get?.(corporateId);
     const category = data.categories.id(categoryId);
     if (!category) return res.status(404).json({ error: "Category not found" });
     const product = category.products.id(productId);
@@ -296,7 +296,7 @@ exports.addVendorRates = async (req, res) => {
     const corporateId = payload[0]?.corporateId || req.user.corporateId;
     const corpAdminId = req.user.corpAdminId;
     const hub = await getPurchaseHub({ corpAdminId, corporateId });
-    const data = hub.corporateData.get(corporateId);
+    const data = hub?.corporateData?.get?.(corporateId);
     
     for (const item of payload) {
       const { vendorId, categoryId, productId, price, UoM } = item;
@@ -335,7 +335,7 @@ exports.getVendorRatesById = async (req, res) => {
     const corporateId = req.query.corporateId || req.user.corporateId;
     const corpAdminId = req.user.corpAdminId;
     const hub = await getPurchaseHub({ corpAdminId, corporateId });
-    const data = hub.corporateData.get(corporateId);
+    const data = hub?.corporateData?.get?.(corporateId);
     if (!data) return res.status(404).json({ message: "Data Not Found for Corporate" });
 
     const vendor = data.vendors.id(vendorId);
@@ -381,7 +381,7 @@ exports.getVendorsByCategory = async (req, res) => {
     const corporateId = req.query.corporateId || req.user.corporateId;
     const corpAdminId = req.user.corpAdminId;
     const hub = await getPurchaseHub({ corpAdminId, corporateId });
-    const data = hub.corporateData.get(corporateId);
+    const data = hub?.corporateData?.get?.(corporateId);
     
     const matched = [];
     data.vendors.forEach(v => {
@@ -413,7 +413,7 @@ exports.getVendorRatesByCategory = async (req, res) => {
     const corporateId = req.query.corporateId || req.user.corporateId;
     const corpAdminId = req.user.corpAdminId;
     const hub = await getPurchaseHub({ corpAdminId, corporateId });
-    const data = hub.corporateData.get(corporateId);
+    const data = hub?.corporateData?.get?.(corporateId);
 
     const vendor = data.vendors.id(vendorId);
     if (!vendor) return res.status(404).json({ message: "Vendor not found in this corporate catalog" });
@@ -514,7 +514,7 @@ exports.uploadBulk = async (req, res) => {
     const corporateId = req.body.corporateId || req.user.corporateId;
     const corpAdminId = req.user.corpAdminId;
     const hub = await getPurchaseHub({ corpAdminId, corporateId });
-    const data = hub.corporateData.get(corporateId);
+    const data = hub?.corporateData?.get?.(corporateId);
 
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.load(req.file.buffer);

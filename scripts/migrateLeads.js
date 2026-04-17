@@ -28,8 +28,8 @@ async function migrate() {
       
       // Handle corporateData Map
       // In raw mongo, Map is stored as an object
-      if (hub.corporateData) {
-        for (const [cid, leads] of Object.entries(hub.corporateData)) {
+      if (hub?.corporateData) {
+        for (const [cid, leads] of Object.entries(hub?.corporateData || {})) {
           newCorporateData[cid] = {
             leads: leads,
             leadCounters: (hub.leadCounters && hub.leadCounters[cid]) ? hub.leadCounters[cid] : 0

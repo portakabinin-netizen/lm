@@ -12,7 +12,7 @@ async function enrichLineItems(items, corporateId, req) {
     const purchaseHub = await Purchase.findOne({ _id: corpAdminId });
     const cid = corporateId?.toString();
     const purchase = purchaseHub?.corporateData instanceof Map 
-        ? purchaseHub.corporateData.get(cid) 
+        ? purchaseHub?.corporateData?.get?.(cid) 
         : purchaseHub?.corporateData?.[cid];
     if (!purchase) return items;
 
@@ -58,8 +58,8 @@ async function getSalesBookHub(filters) {
         hub = await SalesBook.create({ corpAdminId, corporateData: {} });
     }
 
-    if (!hub.corporateData.has(corporateId)) {
-        hub.corporateData.set(corporateId, { 
+    if (!hub?.corporateData?.has?.(corporateId)) {
+        hub?.corporateData?.set?.(corporateId, { 
             quotations: [], purchaseOrders: [], taxInvoices: []
         });
         await hub.save();
@@ -78,8 +78,8 @@ async function generateQuoteNumber(corpAdminId, corporateId, quote_date) {
     const hub = await SalesBook.findOne({ corpAdminId }).lean();
     const cid = corporateId?.toString();
     const record = hub?.corporateData instanceof Map 
-        ? hub.corporateData.get(cid) 
-        : hub.corporateData?.[cid];
+        ? hub?.corporateData?.get?.(cid) 
+        : hub?.corporateData?.[cid];
     if (!record || !record.quotations) return `QT/${yr}/00001`;
 
     const allQuotes = record.quotations
@@ -106,8 +106,8 @@ async function generatePONumber(corpAdminId, corporateId, po_date) {
     const hub = await SalesBook.findOne({ corpAdminId }).lean();
     const cid = corporateId?.toString();
     const record = hub?.corporateData instanceof Map 
-        ? hub.corporateData.get(cid) 
-        : hub.corporateData?.[cid];
+        ? hub?.corporateData?.get?.(cid) 
+        : hub?.corporateData?.[cid];
     if (!record || !record.purchaseOrders) return `PO/${yr}/00001`;
 
     const allPOs = record.purchaseOrders
@@ -134,8 +134,8 @@ async function generateInvoiceNumber(corpAdminId, corporateId, invoice_date) {
     const hub = await SalesBook.findOne({ corpAdminId }).lean();
     const cid = corporateId?.toString();
     const record = hub?.corporateData instanceof Map 
-        ? hub.corporateData.get(cid) 
-        : hub.corporateData?.[cid];
+        ? hub?.corporateData?.get?.(cid) 
+        : hub?.corporateData?.[cid];
     if (!record || !record.taxInvoices) return `INV/${yr}/00001`;
 
     const allInvoices = record.taxInvoices
@@ -165,7 +165,7 @@ exports.createQuote = async (req, res) => {
     }
     
     const hub = await getSalesBookHub({ corpAdminId, corporateId });
-    const record = hub.corporateData.get(corporateId);
+    const record = hub?.corporateData?.get?.(corporateId);
     
     // Populate/Enrich multiple items
     if (offerData.items) {
@@ -193,7 +193,7 @@ exports.createPO = async (req, res) => {
         if (!poData.po_number) poData.po_number = await generatePONumber(corpAdminId, corporateId, poData.po_date);
 
         const hub = await getSalesBookHub({ corpAdminId, corporateId });
-        const record = hub.corporateData.get(corporateId);
+        const record = hub?.corporateData?.get?.(corporateId);
 
         if (poData.items) poData.items = await enrichLineItems(poData.items, corporateId, req);
 
@@ -219,7 +219,7 @@ exports.createInvoice = async (req, res) => {
         if (!invData.invoice_number) invData.invoice_number = await generateInvoiceNumber(corpAdminId, corporateId, invData.invoice_date);
 
         const hub = await getSalesBookHub({ corpAdminId, corporateId });
-        const record = hub.corporateData.get(corporateId);
+        const record = hub?.corporateData?.get?.(corporateId);
 
         if (invData.items) invData.items = await enrichLineItems(invData.items, corporateId, req);
 
@@ -245,8 +245,8 @@ exports.listQuotations = async (req, res) => {
     const hub = await SalesBook.findOne({ corpAdminId }).lean();
     const cid = corporateId?.toString();
     const data = hub?.corporateData instanceof Map 
-        ? hub.corporateData.get(cid) 
-        : hub.corporateData?.[cid];
+        ? hub?.corporateData?.get?.(cid) 
+        : hub?.corporateData?.[cid];
     
     if (!data) return res.json({ success: true, data: [] });
 
@@ -269,8 +269,8 @@ exports.listPOs = async (req, res) => {
         const hub = await SalesBook.findById(corpAdminId).lean();
         const cid = corporateId?.toString();
         const data = hub?.corporateData instanceof Map 
-            ? hub.corporateData.get(cid) 
-            : hub.corporateData?.[cid];
+            ? hub?.corporateData?.get?.(cid) 
+            : hub?.corporateData?.[cid];
 
         if (!data) return res.json({ success: true, data: [] });
 
@@ -293,8 +293,8 @@ exports.listInvoices = async (req, res) => {
         const hub = await SalesBook.findById(corpAdminId).lean();
         const cid = corporateId?.toString();
         const data = hub?.corporateData instanceof Map 
-            ? hub.corporateData.get(cid) 
-            : hub.corporateData?.[cid];
+            ? hub?.corporateData?.get?.(cid) 
+            : hub?.corporateData?.[cid];
 
         if (!data) return res.json({ success: true, data: [] });
 
@@ -317,8 +317,8 @@ exports.getQuote = async (req, res) => {
     const hub = await SalesBook.findOne({ corpAdminId }).lean();
     const cid = corporateId?.toString();
     const data = hub?.corporateData instanceof Map 
-        ? hub.corporateData.get(cid) 
-        : hub.corporateData?.[cid];
+        ? hub?.corporateData?.get?.(cid) 
+        : hub?.corporateData?.[cid];
     if (!data) return res.status(404).json({ success: false, message: "Corporate data not found" });
     
     const offer = data.quotations?.find(o => o._id.toString() === id);
@@ -339,8 +339,8 @@ exports.getPO = async (req, res) => {
     const hub = await SalesBook.findOne({ corpAdminId }).lean();
     const cid = corporateId?.toString();
     const data = hub?.corporateData instanceof Map 
-        ? hub.corporateData.get(cid) 
-        : hub.corporateData?.[cid];
+        ? hub?.corporateData?.get?.(cid) 
+        : hub?.corporateData?.[cid];
     if (!data) return res.status(404).json({ success: false, message: "Corporate data not found" });
     
     const po = data.purchaseOrders?.find(o => o._id.toString() === id);
@@ -361,8 +361,8 @@ exports.getInvoice = async (req, res) => {
     const hub = await SalesBook.findOne({ corpAdminId }).lean();
     const cid = corporateId?.toString();
     const data = hub?.corporateData instanceof Map 
-        ? hub.corporateData.get(cid) 
-        : hub.corporateData?.[cid];
+        ? hub?.corporateData?.get?.(cid) 
+        : hub?.corporateData?.[cid];
     if (!data) return res.status(404).json({ success: false, message: "Corporate data not found" });
     
     const inv = data.taxInvoices?.find(o => o._id.toString() === id);
@@ -383,7 +383,7 @@ exports.updateQuote = async (req, res) => {
         const updates = req.body;
         
         const hub = await getSalesBookHub({ corpAdminId, corporateId });
-        const record = hub.corporateData.get(corporateId);
+        const record = hub?.corporateData?.get?.(corporateId);
         
         const offerDoc = record.quotations.id(id);
         if (!offerDoc) return res.status(404).json({ success: false, message: "Quote not found" });
@@ -412,7 +412,7 @@ exports.updatePO = async (req, res) => {
         const updates = req.body;
         
         const hub = await getSalesBookHub({ corpAdminId, corporateId });
-        const record = hub.corporateData.get(corporateId);
+        const record = hub?.corporateData?.get?.(corporateId);
         
         const poDoc = record.purchaseOrders.id(id);
         if (!poDoc) return res.status(404).json({ success: false, message: "PO not found" });
@@ -437,7 +437,7 @@ exports.updateInvoice = async (req, res) => {
         const updates = req.body;
         
         const hub = await getSalesBookHub({ corpAdminId, corporateId });
-        const record = hub.corporateData.get(corporateId);
+        const record = hub?.corporateData?.get?.(corporateId);
         
         const invDoc = record.taxInvoices.id(id);
         if (!invDoc) return res.status(404).json({ success: false, message: "Invoice not found" });
@@ -460,7 +460,7 @@ exports.deleteQuote = async (req, res) => {
     const corporateId = req.query.corporateId || req.user.corporateId;
     const corpAdminId = req.user.corpAdminId;
     const hub = await getSalesBookHub({ corpAdminId, corporateId });
-    const record = hub.corporateData.get(corporateId);
+    const record = hub?.corporateData?.get?.(corporateId);
     
     record.quotations.pull({ _id: req.params.id });
     await hub.save();
@@ -476,7 +476,7 @@ exports.deletePO = async (req, res) => {
     const corporateId = req.query.corporateId || req.user.corporateId;
     const corpAdminId = req.user.corpAdminId;
     const hub = await getSalesBookHub({ corpAdminId, corporateId });
-    const record = hub.corporateData.get(corporateId);
+    const record = hub?.corporateData?.get?.(corporateId);
     
     record.purchaseOrders.pull({ _id: req.params.id });
     await hub.save();
@@ -492,7 +492,7 @@ exports.deleteInvoice = async (req, res) => {
     const corporateId = req.query.corporateId || req.user.corporateId;
     const corpAdminId = req.user.corpAdminId;
     const hub = await getSalesBookHub({ corpAdminId, corporateId });
-    const record = hub.corporateData.get(corporateId);
+    const record = hub?.corporateData?.get?.(corporateId);
     
     record.taxInvoices.pull({ _id: req.params.id });
     await hub.save();
@@ -511,8 +511,8 @@ exports.getFinanceAnalytics = async (req, res) => {
         const hub = await SalesBook.findById(corpAdminId).lean();
         const cid = corporateId?.toString();
         const record = hub?.corporateData instanceof Map 
-            ? hub.corporateData.get(cid) 
-            : hub.corporateData?.[cid];
+            ? hub?.corporateData?.get?.(cid) 
+            : hub?.corporateData?.[cid];
         
         if (!record) {
             return res.json({ 

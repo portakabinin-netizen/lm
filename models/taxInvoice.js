@@ -167,7 +167,9 @@ invoiceSchema.pre("save", async function (next) {
 
     if (parent && this.accessCorporate?.corporateId) {
         const corpIdStr = this.accessCorporate.corporateId.toString();
-        const corpData = parent.corporateData instanceof Map ? parent.corporateData.get(corpIdStr) : parent.corporateData[corpIdStr];
+        const corpData = parent?.corporateData instanceof Map 
+            ? parent?.corporateData?.get?.(corpIdStr) 
+            : parent?.corporateData?.[corpIdStr];
         
         if (corpData && corpData.invoices) {
             const allInvoices = corpData.invoices

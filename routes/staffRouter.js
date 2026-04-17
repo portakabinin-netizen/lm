@@ -27,4 +27,8 @@ router.put(   "/contact/:id",       ctrl.updateContact);
 router.delete("/contact/:id",       ctrl.deleteContact);
 router.get(   "/contact/ledger/:mobile", ctrl.getPartyLedger);  // Party Ledger by mobile
 
+// ── Attendance ────────────────────────────────────────────────────────────────
+router.post(  "/attendance/mark",   ctrl.markAttendance);
+router.get(   "/attendance/list",   ctrl.listAttendance);
+
 module.exports = router;

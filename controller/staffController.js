@@ -9,8 +9,8 @@ async function getHub(corpAdminId, corporateId) {
     const id = new mongoose.Types.ObjectId(corpAdminId);
     let hub = await StaffBook.findById(id);
     if (!hub) hub = new StaffBook({ _id: id, corporateData: new Map() });
-    if (!hub.corporateData.has(corporateId)) {
-        hub.corporateData.set(corporateId, { employees: [], transporters: [], contacts: [] });
+    if (!hub?.corporateData?.has?.(corporateId)) {
+        hub?.corporateData?.set?.(corporateId, { employees: [], transporters: [], contacts: [] });
     }
     return hub;
 }
@@ -27,7 +27,7 @@ exports.addEmployee = async (req, res) => {
         delete data.corporateId;
 
         const hub = await getHub(corpAdminId, corporateId);
-        const record = hub.corporateData.get(corporateId);
+        const record = hub?.corporateData?.get?.(corporateId);
         record.employees.push(data);
         await hub.save();
 
@@ -47,7 +47,7 @@ exports.listEmployees = async (req, res) => {
         const hub = await StaffBook.findById(new mongoose.Types.ObjectId(corpAdminId)).lean();
         const cid = corporateId?.toString();
         const record = hub?.corporateData instanceof Map
-            ? hub.corporateData.get(cid)
+            ? hub?.corporateData?.get?.(cid)
             : hub?.corporateData?.[cid];
 
         if (!record) return res.json({ success: true, data: [] });
@@ -70,7 +70,7 @@ exports.updateEmployee = async (req, res) => {
         const { id } = req.params;
 
         const hub = await getHub(corpAdminId, corporateId);
-        const record = hub.corporateData.get(corporateId);
+        const record = hub?.corporateData?.get?.(corporateId);
         const doc = record.employees.id(id);
         if (!doc) return res.status(404).json({ success: false, message: "Employee not found" });
 
@@ -90,7 +90,7 @@ exports.deleteEmployee = async (req, res) => {
         const corporateId = req.query.corporateId || req.user?.corporateId;
         const corpAdminId = req.user?.corpAdminId;
         const hub = await getHub(corpAdminId, corporateId);
-        const record = hub.corporateData.get(corporateId);
+        const record = hub?.corporateData?.get?.(corporateId);
         record.employees.pull({ _id: req.params.id });
         await hub.save();
         res.json({ success: true, message: "Employee deleted" });
@@ -111,7 +111,7 @@ exports.addTransporter = async (req, res) => {
         delete data.corporateId;
 
         const hub = await getHub(corpAdminId, corporateId);
-        const record = hub.corporateData.get(corporateId);
+        const record = hub?.corporateData?.get?.(corporateId);
         record.transporters.push(data);
         await hub.save();
 
@@ -131,7 +131,7 @@ exports.listTransporters = async (req, res) => {
         const hub = await StaffBook.findById(new mongoose.Types.ObjectId(corpAdminId)).lean();
         const cid = corporateId?.toString();
         const record = hub?.corporateData instanceof Map
-            ? hub.corporateData.get(cid)
+            ? hub?.corporateData?.get?.(cid)
             : hub?.corporateData?.[cid];
 
         if (!record) return res.json({ success: true, data: [] });
@@ -154,7 +154,7 @@ exports.updateTransporter = async (req, res) => {
         const { id } = req.params;
 
         const hub = await getHub(corpAdminId, corporateId);
-        const record = hub.corporateData.get(corporateId);
+        const record = hub?.corporateData?.get?.(corporateId);
         const doc = record.transporters.id(id);
         if (!doc) return res.status(404).json({ success: false, message: "Transporter not found" });
 
@@ -174,7 +174,7 @@ exports.deleteTransporter = async (req, res) => {
         const corporateId = req.query.corporateId || req.user?.corporateId;
         const corpAdminId = req.user?.corpAdminId;
         const hub = await getHub(corpAdminId, corporateId);
-        const record = hub.corporateData.get(corporateId);
+        const record = hub?.corporateData?.get?.(corporateId);
         record.transporters.pull({ _id: req.params.id });
         await hub.save();
         res.json({ success: true, message: "Transporter deleted" });
@@ -195,7 +195,7 @@ exports.getStaffPicker = async (req, res) => {
         const hub = await StaffBook.findById(new mongoose.Types.ObjectId(corpAdminId)).lean();
         const cid = corporateId?.toString();
         const record = hub?.corporateData instanceof Map
-            ? hub.corporateData.get(cid)
+            ? hub?.corporateData?.get?.(cid)
             : hub?.corporateData?.[cid];
 
         const employees    = (record?.employees    || []).filter(e => e.active !== false);
@@ -226,7 +226,7 @@ exports.addContact = async (req, res) => {
 
         // Prevent duplicate mobile within same corporate
         const hub = await getHub(corpAdminId, corporateId);
-        const record = hub.corporateData.get(corporateId);
+        const record = hub?.corporateData?.get?.(corporateId);
         const cleanMobile = data.mobile?.replace(/\D/g, '').slice(-10);
         const exists = record.contacts.find(c => c.mobile?.replace(/\D/g, '').slice(-10) === cleanMobile);
         if (exists) {
@@ -254,7 +254,7 @@ exports.listContacts = async (req, res) => {
         const hub = await StaffBook.findById(new mongoose.Types.ObjectId(corpAdminId)).lean();
         const cid = corporateId?.toString();
         const record = hub?.corporateData instanceof Map
-            ? hub.corporateData.get(cid)
+            ? hub?.corporateData?.get?.(cid)
             : hub?.corporateData?.[cid];
 
         if (!record) return res.json({ success: true, data: [] });
@@ -279,7 +279,7 @@ exports.updateContact = async (req, res) => {
         const { id } = req.params;
 
         const hub = await getHub(corpAdminId, corporateId);
-        const record = hub.corporateData.get(corporateId);
+        const record = hub?.corporateData?.get?.(corporateId);
         const doc = record.contacts.id(id);
         if (!doc) return res.status(404).json({ success: false, message: "Contact not found" });
 
@@ -299,7 +299,7 @@ exports.deleteContact = async (req, res) => {
         const corporateId = req.query.corporateId || req.user?.corporateId;
         const corpAdminId = req.user?.corpAdminId;
         const hub = await getHub(corpAdminId, corporateId);
-        const record = hub.corporateData.get(corporateId);
+        const record = hub?.corporateData?.get?.(corporateId);
         record.contacts.pull({ _id: req.params.id });
         hub.markModified("corporateData");
         await hub.save();
@@ -326,14 +326,14 @@ exports.getPartyLedger = async (req, res) => {
         const staffHub = await StaffBook.findById(new mongoose.Types.ObjectId(corpAdminId)).lean();
         const cid = corporateId?.toString();
         const staffRecord = staffHub?.corporateData instanceof Map
-            ? staffHub.corporateData.get(cid)
+            ? staffHub?.corporateData?.get?.(cid)
             : staffHub?.corporateData?.[cid];
         const contact = (staffRecord?.contacts || []).find(c => c.mobile?.replace(/\D/g, '').slice(-10) === cleanMobile);
 
         // 2. Get all transactions linked to this mobile from PaymentBook
         const payHub = await PaymentBook.findById(new mongoose.Types.ObjectId(corpAdminId)).lean();
         const payRecord = payHub?.corporateData instanceof Map
-            ? payHub.corporateData.get(cid)
+            ? payHub?.corporateData?.get?.(cid)
             : payHub?.corporateData?.[cid];
 
         const txns = (payRecord?.transactions || [])
@@ -359,6 +359,54 @@ exports.getPartyLedger = async (req, res) => {
                 txnCount: txns.length,
             }
         });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+};
+
+// ── Attendance ────────────────────────────────────────────────────────────────
+const AttendanceLog = require("../models/AttendanceLog");
+
+exports.markAttendance = async (req, res) => {
+    try {
+        const { employeeId, status, location, site_name, remarks } = req.body;
+        const corporateId = req.body.corporateId || req.user?.corporateId;
+        const corpAdminId = req.user?.corpAdminId;
+
+        const log = new AttendanceLog({
+            employeeId,
+            corporateId,
+            corpAdminId,
+            status,
+            location,
+            site_name,
+            remarks,
+            recorded_by: req.user?.userId,
+        });
+
+        await log.save();
+        res.status(201).json({ success: true, data: log });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+};
+
+exports.listAttendance = async (req, res) => {
+    try {
+        const corporateId = req.query.corporateId || req.user?.corporateId;
+        const corpAdminId = req.user?.corpAdminId;
+        const { from_date, to_date, employeeId } = req.query;
+
+        const query = { corporateId };
+        if (employeeId) query.employeeId = employeeId;
+        if (from_date || to_date) {
+            query.date = {};
+            if (from_date) query.date.$gte = new Date(from_date);
+            if (to_date)   query.date.$lte = new Date(to_date);
+        }
+
+        const list = await AttendanceLog.find(query).sort({ date: -1 }).populate("employeeId", "name role");
+        res.json({ success: true, data: list });
     } catch (err) {
         res.status(500).json({ success: false, message: err.message });
     }

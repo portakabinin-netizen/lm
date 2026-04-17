@@ -50,7 +50,7 @@ const resolveCorpAdmin = async (req) => {
 
   if (me.userRole === "CorpAdmin") return me;
 
-  if (me.accessCorporate?.corpAdminId) {
+  if (me.accessCorporate && me.accessCorporate.corpAdminId) {
     return Users.findById(me.accessCorporate.corpAdminId).lean();
   }
   return null;
@@ -284,12 +284,12 @@ const otherUser = {
       if (!admin) return res.status(404).json({ message: "CorpAdmin not found" });
 
       const query = {
-        userRole: { $in: ["Sales", "Project"] },
-        "accessCorporate.corpAdminId": admin._id,
+        userRole: { $in: ["Sales", "Project", "Finance"] },
+        "accessCorporate.corpAdminId": new mongoose.Types.ObjectId(admin._id)
       };
 
-      if (req.query.corporateId) {
-        query["accessCorporate.corporateId"] = req.query.corporateId;
+      if (req.query.corporateId && mongoose.Types.ObjectId.isValid(req.query.corporateId)) {
+        query["accessCorporate.linkedCorporates.corporateId"] = new mongoose.Types.ObjectId(req.query.corporateId);
       }
 
       const users = await Users.find(
@@ -318,15 +318,14 @@ const otherUser = {
       if (!mongoose.Types.ObjectId.isValid(id)) {
         return res.status(400).json({ message: "Invalid user id" });
       }
-
       const query = {
         _id:      id,
-        userRole: { $in: ["Sales", "Project"] },
-        "accessCorporate.corpAdminId": admin._id,
+        userRole: { $in: ["Sales", "Project", "Finance"] },
+        "accessCorporate.corpAdminId": admin._id
       };
 
       if (req.query.corporateId) {
-        query["accessCorporate.corporateId"] = req.query.corporateId;
+        query["accessCorporate.linkedCorporates.corporateId"] = req.query.corporateId;
       }
 
       const user = await Users.findOne(
@@ -354,15 +353,14 @@ const otherUser = {
         return res.status(400).json({ message: "Invalid user id" });
       }
 
-      // Safety check: the target user must belong to this admin
       const query = {
         _id:      id,
-        userRole: { $in: ["Sales", "Project"] },
-        "accessCorporate.corpAdminId": admin._id,
+        userRole: { $in: ["Sales", "Project", "Finance"] },
+        "accessCorporate.corpAdminId": admin._id
       };
 
       if (req.query.corporateId) {
-        query["accessCorporate.corporateId"] = req.query.corporateId;
+        query["accessCorporate.linkedCorporates.corporateId"] = req.query.corporateId;
       }
 
       const existing = await Users.findOne(query);
@@ -379,9 +377,24 @@ const otherUser = {
       if (typeof b.userActive === "boolean") $set.userActive = b.userActive;
       if (clean(b.userProfileImage)) $set.userProfileImage = clean(b.userProfileImage);
 
-      // Access grant/revoke
-      if (typeof b.accessAllow === "boolean") {
-        $set["accessCorporate.accessAllow"] = b.accessAllow;
+      // Access grant/revoke and corporate permissions
+      if (typeof b.accessAllow === "boolean" || Array.isArray(b.corporateIds)) {
+        const link = existing.accessCorporate || { corpAdminId: admin._id, linkedCorporates: [] };
+        
+        // If we have corporateIds, we rebuild the linkedCorporates array
+        if (Array.isArray(b.corporateIds)) {
+          link.linkedCorporates = b.corporateIds.map(cid => ({
+            corporateId: cid,
+            accessAllow: typeof b.accessAllow === "boolean" ? b.accessAllow : true // default to true if setting IDs
+          }));
+        } else if (typeof b.accessAllow === "boolean") {
+          // If only toggling accessAllow globally for this admin's corporates
+          link.linkedCorporates = (link.linkedCorporates || []).map(lc => ({
+            ...lc,
+            accessAllow: b.accessAllow
+          }));
+        }
+        $set.accessCorporate = link;
       }
 
       // Password reset (admin resets on behalf of user – no current-password check)
@@ -397,7 +410,10 @@ const otherUser = {
       const updated = await Users.findByIdAndUpdate(
         id,
         { $set },
-        { new: true, runValidators: true }
+        { 
+          new: true, 
+          runValidators: true
+        }
       ).lean();
 
       const { userPassword, ...safe } = updated;

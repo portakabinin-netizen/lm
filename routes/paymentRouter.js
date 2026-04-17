@@ -12,6 +12,7 @@ router.get("/lead-ledger/:leadId",   ctrl.getLeadLedger);            // GET: sin
 router.get("/by-lead/:leadId",       ctrl.getTransactionsByLead);    // GET: all PaymentBook txns for a lead
 
 // ── CRUD ─────────────────────────────────────────────────────────────────────
+router.post(  "/voucher/create", ctrl.createVoucher);
 router.post(  "/create",  ctrl.createTransaction);
 router.get(   "/list",    ctrl.listTransactions);
 router.get(   "/summary", ctrl.getPaymentSummary);
