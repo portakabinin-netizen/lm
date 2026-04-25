@@ -3,31 +3,22 @@ const http = require("http");
 const cors = require("cors");
 const mongoose = require("mongoose");
 const { Server } = require("socket.io");
-const cloudinary = require('cloudinary').v2;
 const helmet = require("helmet");
 require("dotenv").config();
 
 // ---------- Import Routers ----------
 const authRouter = require("./routes/authRouterNew");
-const serviceRouter = require("./routes/serviceRouter");
-const productsRouter = require("./routes/productsRouter");
+// const pdfRouter = require("./routes/generatePDF");
 // const pdfRouter = require("./routes/generatePDF");
 //const orderflows     = require("./routes/orderflows");
 const setting = require("./routes/settingRouter");
-const salesBookRouter = require("./routes/salesBookRouter");
 const uploadRouter = require("./routes/uploadRouter");
-const paymentRouter = require("./routes/paymentRouter");
-const staffRouter   = require("./routes/staffRouter");
+const UserCorpRouter = require("./routes/UserCorpRouter");
+const FinanceRouter = require("./routes/FinanceRouter");
+const dbConnector = require("./utils/dbConnector");
 const path = require("path");
 
 const app = express();
-
-// ---------- Cloudinary ----------
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET,
-});
 
 // ---------- Middleware ----------
 app.use(helmet());
@@ -37,25 +28,18 @@ app.use(express.urlencoded({ limit: "50mb", extended: true }));
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 // ---------- MongoDB with Retry logic ----------
-const connectWithRetry = () => {
-  console.log("MongoDB connection attempt...");
-  mongoose
-    .connect(process.env.MONGO_URI)
-    .then(() => console.log("MongoDB 🖇️ connected successfully"))
-    .catch((err) => {
-      console.error("❌ MongoDB connection error:", err.message);
-      console.log("Retrying in 5 seconds...");
-      setTimeout(connectWithRetry, 5000);
-    });
+const connectDB = async () => {
+  console.log("📡 Connecting to Main Database...");
+  try {
+    await dbConnector.getMainConnection();
+    console.log("✅ Main Database Connected [mainDatabase]");
+  } catch (err) {
+    console.error("❌ Main Database connection failed. Retrying in 5s...");
+    setTimeout(connectDB, 5000);
+  }
 };
 
-connectWithRetry();
-
-// Handle mongoose disconnection
-mongoose.connection.on("disconnected", () => {
-  console.log("❌ MongoDB disconnected! Attempting to reconnect...");
-  connectWithRetry();
-});
+connectDB();
 
 // ---------- HTTP + Socket.IO ----------
 const server = http.createServer(app);
@@ -64,8 +48,14 @@ const io = new Server(server, { cors: { origin: "*" } });
 app.use((req, res, next) => { req.io = io; next(); });
 
 io.on("connection", (socket) => {
-  console.log(`⚡ Socket connected: ${socket.id}`);
-  socket.on("disconnect", () => console.log(`❌ Socket disconnected: ${socket.id}`));
+  
+  socket.on("joinRoom", (dbName) => {
+    if (dbName) {
+      socket.join(dbName);
+    }
+  });
+
+  socket.on("disconnect", () => {});
 });
 
 // ---------- Health Route ----------
@@ -80,15 +70,19 @@ app.get("/", (req, res) => {
 
 // ---------- API Routes ----------
 app.use("/api/auth", authRouter);
-app.use("/api/service", serviceRouter);
-app.use("/api/product", productsRouter);
-// app.use("/api/pdf-generate", pdfRouter);
-//app.use("/api/orderflows",   orderflows);
 app.use("/api/setting", setting);
-app.use("/api/salesbook", salesBookRouter);
-app.use("/api/upload", uploadRouter);
-app.use("/api/payment", paymentRouter);
-app.use("/api/staff",   staffRouter);
+app.use("/api/service", UserCorpRouter);
+app.use("/api/finance", FinanceRouter);
+
+// Secure Uploads (Tenant Aware)
+const authMiddleware = require("./middleware/authMiddleware");
+const tenantMiddleware = require("./middleware/tenantMiddleware");
+const UserCorpController = require("./controller/UserCorpController");
+
+app.use("/api/upload", authMiddleware, tenantMiddleware, uploadRouter);
+
+// 🚀 LEGACY SUPPORT: Redirect old /readEmails to the new unified sync
+app.post("/api/readEmails", authMiddleware, tenantMiddleware, UserCorpController.manageLeads.readInbox);
 
 // ---------- 404 Handler ----------
 app.use((req, res) => {
@@ -109,5 +103,6 @@ app.use((err, req, res, next) => {
 // ---------- Start ----------
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, "0.0.0.0", () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`🚀 Server running on http://localhost:${PORT}`);
+  console.log(`📡 Environment: ${process.env.NODE_ENV || 'development'}`);
 });

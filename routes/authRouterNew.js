@@ -3,6 +3,7 @@ const router = express.Router();
 const authController = require("../controller/authController");
 const { validateAuth } = require("../middleware/validateAuth");
 const authMiddleware = require("../middleware/authMiddleware");
+const tenantMiddleware = require("../middleware/tenantMiddleware");
 
 /**
  * ==========================================
@@ -36,7 +37,9 @@ router.post("/verify-identity",validateAuth,authController.verifyIdentity);
 
 router.use(authMiddleware);
 router.post("/switch-corporate", authController.switchCorporate);
-router.post("/update-profile-image", authController.updateProfileImage);
-router.put("/url-configure/:id", authController.apiUrlsConfigureSave);
+router.post("/update-profile-image", tenantMiddleware, authController.updateProfileImage);
+router.put("/url-configure/:id", tenantMiddleware, authController.apiUrlsConfigureSave);
+router.post("/provision-tenant", authController.provisionTenant);
+router.post("/send-message", tenantMiddleware, authController.sendMessage);
 
 module.exports = router;

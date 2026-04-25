@@ -1,6 +1,6 @@
 const mongoose = require("mongoose");
-const bcrypt   = require("bcryptjs");
-const { Users } = require("../models/UsersCorporates");
+const bcrypt = require("bcryptjs");
+const userMaster = require("../models/userMaster");
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Utility helpers
@@ -34,24 +34,21 @@ const compact = (obj) => {
 //  • Sales/Project → their corpAdminId from accessCorporate
 // ─────────────────────────────────────────────────────────────────────────────
 const resolveCorpAdmin = async (req) => {
-  // 1. Explicitly passed from frontend mapping (query params)
-  const { corpAdminId } = req.query || {};
-  if (corpAdminId) {
-    return Users.findById(corpAdminId).lean();
+  // If we have a tenant connection, we can find the owner admin by dbName
+  if (req.tenantDbName) {
+    return userMaster.findOne({ "linkedCorporates.dbName": req.tenantDbName }).lean();
   }
 
-  // 2. Fallback: Infer from current authenticated token
-  // Middleware (authMiddleware.js) populates req.user as { _id, userId, userRole, ... }
   const uid = req.user?._id || req.user?.userId;
   if (!uid) return null;
 
-  const me = await Users.findById(uid).lean();
+  const me = await userMaster.findById(uid).lean();
   if (!me) return null;
 
   if (me.userRole === "CorpAdmin") return me;
 
-  if (me.accessCorporate && me.accessCorporate.corpAdminId) {
-    return Users.findById(me.accessCorporate.corpAdminId).lean();
+  if (me.accessCorporate && me.accessCorporate.dbName) {
+    return userMaster.findOne({ "linkedCorporates.dbName": me.accessCorporate.dbName }).lean();
   }
   return null;
 };
@@ -66,17 +63,16 @@ const updateCorporate = {
   // ── GET ────────────────────────────────────────────────────────────────────
   getCorporate: async (req, res) => {
     try {
-      const admin = await resolveCorpAdmin(req);
-      if (!admin) return res.status(404).json({ message: "CorpAdmin not found" });
+      const { ProfileMaster } = req.tenantModels || {};
+      if (!ProfileMaster) return res.status(500).json({ message: "Tenant connection not resolved" });
 
-      const corporateId = req.query.corporateId;
-      const corp = (admin.linkedCorporates || []).find(c => c._id.toString() === corporateId);
+      // Fetch authoritative profile from tenant DB
+      const profile = await ProfileMaster.findOne({}).lean();
 
       return res.status(200).json({
-        message: "Corporate data fetched",
+        message: "Corporate data fetched from isolated database",
         data: {
-          _id:              admin._id,
-          linkedCorporate:  corp ?? {},
+          linkedCorporate: profile ?? {},
         },
       });
     } catch (err) {
@@ -88,106 +84,89 @@ const updateCorporate = {
   // ── PUT ───────────────────────────────────────────────────────────────────
   postCorporate: async (req, res) => {
     try {
-      const admin = await resolveCorpAdmin(req);
-      if (!admin) return res.status(404).json({ message: "CorpAdmin not found" });
+      const { ProfileMaster } = req.tenantModels || {};
+      if (!ProfileMaster) return res.status(500).json({ message: "Tenant connection not resolved" });
 
-      const b = req.body; // already validated / shaped by the frontend
+      const b = req.body;
 
-      // Build $set paths for every provided field using dot-notation so we
-      // only touch what was sent (Mongoose partial update pattern).
-      const $set = {};
+      // 1. Update Authoritative Isolated Profile
+      const profileUpdates = {
+        corporateName:     clean(b.corporateName),
+        corporateTagName:  clean(b.corporateTagName),
+        corporateEmail:    clean(b.corporateEmail),
+        ownershipType:     b.ownershipType || "Proprietorship",
+        corporatePAN:      clean(b.corporatePAN)?.toUpperCase(),
+        corporateActive:   typeof b.corporateActive === "boolean" ? b.corporateActive : true,
+        CorpProfileImage:  clean(b.CorpProfileImage),
 
-      const maybeSet = (path, val, transform) => {
-        if (val !== undefined && val !== "") {
-          $set[`linkedCorporates.$.${path}`] = transform ? transform(val) : val;
-        }
+        centralRegistrations: {
+          cin:                clean(b.centralRegistrations?.cin),
+          tan:                clean(b.centralRegistrations?.tan),
+          iec:                clean(b.centralRegistrations?.iec),
+          msme_udyam:         clean(b.centralRegistrations?.msme_udyam),
+          fssai:              clean(b.centralRegistrations?.fssai),
+          drug_license:       clean(b.centralRegistrations?.drug_license),
+          import_export_code: clean(b.centralRegistrations?.import_export_code),
+          corporateMobile:    clean(b.centralRegistrations?.corporateMobile),
+          corporateTelephone: clean(b.centralRegistrations?.corporateTelephone),
+          Quotation_TC:       clean(b.centralRegistrations?.Quotation_TC),
+          TaxInvoiceTC:       clean(b.centralRegistrations?.TaxInvoiceTC),
+        },
+
+        locations: Array.isArray(b.locations) ? b.locations.map(loc => ({
+          locationName:       clean(loc.locationName) || "Office",
+          isRegisteredOffice: !!loc.isRegisteredOffice,
+          address: {
+            line1:   clean(loc.address?.line1),
+            city:    clean(loc.address?.city),
+            state:   clean(loc.address?.state),
+            pincode: clean(loc.address?.pincode),
+            country: clean(loc.address?.country) || "India",
+          },
+          gstin:              clean(loc.gstin)?.toUpperCase(),
+          bankDetails: {
+            bank_name:      clean(loc.bankDetails?.bank_name),
+            branch:         clean(loc.bankDetails?.branch),
+            account_number: clean(loc.bankDetails?.account_number),
+            ifsc_code:      clean(loc.bankDetails?.ifsc_code)?.toUpperCase(),
+            account_type:   clean(loc.bankDetails?.account_type) || "Current",
+            upi_id:         clean(loc.bankDetails?.upi_id),
+          },
+          contactPerson:      clean(loc.contactPerson),
+          contactMobile:      clean(loc.contactMobile),
+          contactEmail:       clean(loc.contactEmail),
+          active:             typeof loc.active === "boolean" ? loc.active : true,
+        })) : [],
+
+        authorizedSignatory: {
+          name:            clean(b.authorizedSignatory?.name),
+          designation:     clean(b.authorizedSignatory?.designation),
+          aadhar:          clean(b.authorizedSignatory?.aadhar),
+          signature_label: clean(b.authorizedSignatory?.signature_label) || "Authorised Signatory",
+        },
+
+        apiUrls: b.apiUrls || {}
       };
 
-      // ── Basic ──────────────────────────────────────────────────────────────
-      maybeSet("corporateName",     clean(b.corporateName));
-      maybeSet("corporateTagName",  clean(b.corporateTagName));
-      maybeSet("corporateEmail",    clean(b.corporateEmail));
-      maybeSet("corporateAddress",  clean(b.corporateAddress));
-      maybeSet("corporateCity",     clean(b.corporateCity));
-      maybeSet("corporateDistrict", clean(b.corporateDistrict));
-      maybeSet("corporateState",    clean(b.corporateState));
-      maybeSet("corporatePin",      clean(b.corporatePin));
-      maybeSet("corporatePAN",      clean(b.corporatePAN), v => v.toUpperCase());
-      maybeSet("bankDetails.corporateGST",      clean(b.corporateGST), v => v.toUpperCase());
-      maybeSet("taxRegistrations.corporateMobile",    clean(b.corporateMobile));
-      maybeSet("taxRegistrations.corporateTelephone", clean(b.corporateTelephone));
-      maybeSet("taxRegistrations.Quotation_TC",      clean(b.Quotation_TC));
-      maybeSet("taxRegistrations.TaxInvoiceTC",      clean(b.TaxInvoiceTC));
-
-      // corporateActive is boolean – always set when provided
-      if (typeof b.corporateActive === "boolean") {
-        $set["linkedCorporates.$.corporateActive"] = b.corporateActive;
-      }
-
-      // ── Tax registrations ──────────────────────────────────────────────────
-      const tr = b.taxRegistrations ?? {};
-      maybeSet("taxRegistrations.tan",                clean(tr.tan),                v => v.toUpperCase());
-      maybeSet("taxRegistrations.cin",                clean(tr.cin),                v => v.toUpperCase());
-      maybeSet("taxRegistrations.iec",                clean(tr.iec),                v => v.toUpperCase());
-      maybeSet("taxRegistrations.msme_udyam",         clean(tr.msme_udyam),         v => v.toUpperCase());
-      maybeSet("taxRegistrations.fssai",              clean(tr.fssai));
-      maybeSet("taxRegistrations.drug_license",       clean(tr.drug_license));
-      maybeSet("taxRegistrations.import_export_code", clean(tr.import_export_code));
-
-      // ── Bank details ───────────────────────────────────────────────────────
-      const bk = b.bankDetails ?? {};
-      maybeSet("bankDetails.bank_name",      clean(bk.bank_name));
-      maybeSet("bankDetails.branch",         clean(bk.branch));
-      maybeSet("bankDetails.account_number", clean(bk.account_number));
-      maybeSet("bankDetails.ifsc_code",      clean(bk.ifsc_code), v => v.toUpperCase());
-      maybeSet("bankDetails.account_type",   clean(bk.account_type) ?? "Current");
-      maybeSet("bankDetails.swift_code",     clean(bk.swift_code), v => v.toUpperCase());
-
-      // ── Authorized signatory ───────────────────────────────────────────────
-      const sg = b.authorizedSignatory ?? {};
-      maybeSet("authorizedSignatory.name",            clean(sg.name));
-      maybeSet("authorizedSignatory.designation",     clean(sg.designation));
-      maybeSet("authorizedSignatory.signature_label", clean(sg.signature_label) ?? "Authorised Signatory");
-
-      // ── API URLs ───────────────────────────────────────────────────────────
-      const ap = b.apiUrls ?? {};
-      maybeSet("apiUrls.SMS",       clean(ap.SMS));
-      maybeSet("apiUrls.Whatsapp",  clean(ap.Whatsapp));
-      maybeSet("apiUrls.IndiaMart", clean(ap.IndiaMart));
-      maybeSet("apiUrls.JustDial",  clean(ap.JustDial));
-
-      // ── Mail configure ─────────────────────────────────────────────────────
-      const mc = ap.mailConfigure ?? {};
-      maybeSet("apiUrls.mailConfigure.host",      clean(mc.host) ?? "imap.gmail.com");
-      maybeSet("apiUrls.mailConfigure.port",      mc.port ? parseInt(mc.port, 10) || 993 : undefined);
-      if (typeof mc.secure   === "boolean") $set["linkedCorporates.$.apiUrls.mailConfigure.secure"]   = mc.secure;
-      if (typeof mc.isActive === "boolean") $set["linkedCorporates.$.apiUrls.mailConfigure.isActive"] = mc.isActive;
-      maybeSet("apiUrls.mailConfigure.auth.user", clean(mc.auth?.user));
-      maybeSet("apiUrls.mailConfigure.auth.pass", clean(mc.auth?.pass));
-
-      // ── TradeIndia ─────────────────────────────────────────────────────────
-      const ti = b.tradeindia ?? {};
-      maybeSet("apiUrls.tradeindia.url",        clean(ti.url));
-      maybeSet("apiUrls.tradeindia.userid",     clean(ti.userid));
-      maybeSet("apiUrls.tradeindia.profile_id", clean(ti.profile_id));
-      maybeSet("apiUrls.tradeindia.key",        clean(ti.key));
-
-      if (Object.keys($set).length === 0) {
-        return res.status(400).json({ message: "No updatable fields provided" });
-      }
-
-      const corporateId = req.body.corporateId || req.query.corporateId;
-      if (!corporateId) return res.status(400).json({ message: "corporateId is required" });
-
-      const updated = await Users.findOneAndUpdate(
-        { _id: admin._id, "linkedCorporates._id": corporateId },
-        { $set },
-        { new: true, runValidators: true }
+      const updatedProfile = await ProfileMaster.findOneAndUpdate(
+        {},
+        { $set: profileUpdates },
+        { upsert: true, new: true }
       ).lean();
 
+      // 2. Synchronize Display Label in Identity Layer (userMaster)
+      const admin = await resolveCorpAdmin(req);
+      if (admin && clean(b.corporateName)) {
+        const corporateId = req.query.corporateId || b.corporateId;
+        await userMaster.updateOne(
+          { _id: admin._id, "linkedCorporates._id": corporateId },
+          { $set: { "linkedCorporates.$.corporateName": clean(b.corporateName) } }
+        );
+      }
+
       return res.status(200).json({
-        message: "Corporate updated successfully",
-        data: { linkedCorporate: updated.linkedCorporates.find(c => c._id.toString() === corporateId) },
+        message: "Corporate profile updated in isolated database and identity layer",
+        data: updatedProfile
       });
     } catch (err) {
       console.error("[postCorporate]", err);
@@ -223,28 +202,29 @@ const updateAdminUser = {
       const admin = await resolveCorpAdmin(req);
       if (!admin) return res.status(404).json({ message: "CorpAdmin not found" });
 
-      const b    = req.body;
+      const b = req.body;
       const $set = {};
 
       // Only allow safe profile fields – never role / accessCorporate
-      if (clean(b.userDisplayName))  $set.userDisplayName  = clean(b.userDisplayName);
-      if (clean(b.userEmail))        $set.userEmail        = clean(b.userEmail).toLowerCase();
-      if (clean(b.userMobile))       $set.userMobile       = clean(b.userMobile);
-      if (clean(b.userAadhar))       $set.userAadhar       = clean(b.userAadhar);
-      if (b.userDoB)                 $set.userDoB          = new Date(b.userDoB);
+      if (clean(b.userDisplayName)) $set.userDisplayName = clean(b.userDisplayName);
+      if (clean(b.userEmail)) $set.userEmail = clean(b.userEmail).toLowerCase();
+      if (clean(b.userMobile)) $set.userMobile = clean(b.userMobile);
+      if (clean(b.userAadhar)) $set.userAadhar = clean(b.userAadhar);
+      if (b.userDoB) $set.userDoB = new Date(b.userDoB);
       if (typeof b.userActive === "boolean") $set.userActive = b.userActive;
       if (clean(b.userProfileImage)) $set.userProfileImage = clean(b.userProfileImage);
+      if (b.addresses) $set.addresses = b.addresses;
 
       // ── Password change (optional) ─────────────────────────────────────────
       if (clean(b.newPassword)) {
         if (!clean(b.currentPassword)) {
           return res.status(400).json({ message: "currentPassword is required to change password" });
         }
-        const doc  = await Users.findById(admin._id); // need the document for bcrypt
-        const ok   = await bcrypt.compare(b.currentPassword, doc.userPassword);
+        const doc = await userMaster.findById(admin._id); // need the document for bcrypt
+        const ok = await bcrypt.compare(b.currentPassword, doc.userPassword);
         if (!ok) return res.status(401).json({ message: "Current password is incorrect" });
 
-        const salt      = await bcrypt.genSalt(10);
+        const salt = await bcrypt.genSalt(10);
         $set.userPassword = await bcrypt.hash(b.newPassword, salt);
       }
 
@@ -252,7 +232,7 @@ const updateAdminUser = {
         return res.status(400).json({ message: "No updatable fields provided" });
       }
 
-      const updated = await Users.findByIdAndUpdate(
+      const updated = await userMaster.findByIdAndUpdate(
         admin._id,
         { $set },
         { new: true, runValidators: true }
@@ -285,14 +265,10 @@ const otherUser = {
 
       const query = {
         userRole: { $in: ["Sales", "Project", "Finance"] },
-        "accessCorporate.corpAdminId": new mongoose.Types.ObjectId(admin._id)
+        "accessCorporate.dbName": req.tenantDbName || req.user.dbName
       };
 
-      if (req.query.corporateId && mongoose.Types.ObjectId.isValid(req.query.corporateId)) {
-        query["accessCorporate.linkedCorporates.corporateId"] = new mongoose.Types.ObjectId(req.query.corporateId);
-      }
-
-      const users = await Users.find(
+      const users = await userMaster.find(
         query,
         // projection – never expose hashed password
         "userDisplayName userEmail userMobile userRole userActive userProfileImage accessCorporate createdAt"
@@ -300,7 +276,7 @@ const otherUser = {
 
       return res.status(200).json({
         message: "Other users fetched",
-        data:    users,
+        data: users,
       });
     } catch (err) {
       console.error("[getOtherUser]", err);
@@ -319,16 +295,12 @@ const otherUser = {
         return res.status(400).json({ message: "Invalid user id" });
       }
       const query = {
-        _id:      id,
+        _id: id,
         userRole: { $in: ["Sales", "Project", "Finance"] },
-        "accessCorporate.corpAdminId": admin._id
+        "accessCorporate.dbName": req.tenantDbName || req.user.dbName
       };
 
-      if (req.query.corporateId) {
-        query["accessCorporate.linkedCorporates.corporateId"] = req.query.corporateId;
-      }
-
-      const user = await Users.findOne(
+      const user = await userMaster.findOne(
         query,
         "-userPassword"
       ).lean();
@@ -354,52 +326,37 @@ const otherUser = {
       }
 
       const query = {
-        _id:      id,
+        _id: id,
         userRole: { $in: ["Sales", "Project", "Finance"] },
-        "accessCorporate.corpAdminId": admin._id
+        "accessCorporate.dbName": req.tenantDbName || req.user.dbName
       };
 
-      if (req.query.corporateId) {
-        query["accessCorporate.linkedCorporates.corporateId"] = req.query.corporateId;
-      }
-
-      const existing = await Users.findOne(query);
+      const existing = await userMaster.findOne(query);
       if (!existing) return res.status(404).json({ message: "User not found or not authorized" });
 
-      const b    = req.body;
+      const b = req.body;
       const $set = {};
 
-      if (clean(b.userDisplayName))  $set.userDisplayName  = clean(b.userDisplayName);
-      if (clean(b.userEmail))        $set.userEmail        = clean(b.userEmail).toLowerCase();
-      if (clean(b.userMobile))       $set.userMobile       = clean(b.userMobile);
-      if (clean(b.userAadhar))       $set.userAadhar       = clean(b.userAadhar);
-      if (b.userDoB)                 $set.userDoB          = new Date(b.userDoB);
+      if (clean(b.userDisplayName)) $set.userDisplayName = clean(b.userDisplayName);
+      if (clean(b.userEmail)) $set.userEmail = clean(b.userEmail).toLowerCase();
+      if (clean(b.userMobile)) $set.userMobile = clean(b.userMobile);
+      if (clean(b.userAadhar)) $set.userAadhar = clean(b.userAadhar);
+      if (b.userDoB) $set.userDoB = new Date(b.userDoB);
       if (typeof b.userActive === "boolean") $set.userActive = b.userActive;
       if (clean(b.userProfileImage)) $set.userProfileImage = clean(b.userProfileImage);
+      if (b.addresses) $set.addresses = b.addresses;
 
-      // Access grant/revoke and corporate permissions
-      if (typeof b.accessAllow === "boolean" || Array.isArray(b.corporateIds)) {
-        const link = existing.accessCorporate || { corpAdminId: admin._id, linkedCorporates: [] };
-        
-        // If we have corporateIds, we rebuild the linkedCorporates array
-        if (Array.isArray(b.corporateIds)) {
-          link.linkedCorporates = b.corporateIds.map(cid => ({
-            corporateId: cid,
-            accessAllow: typeof b.accessAllow === "boolean" ? b.accessAllow : true // default to true if setting IDs
-          }));
-        } else if (typeof b.accessAllow === "boolean") {
-          // If only toggling accessAllow globally for this admin's corporates
-          link.linkedCorporates = (link.linkedCorporates || []).map(lc => ({
-            ...lc,
-            accessAllow: b.accessAllow
-          }));
-        }
-        $set.accessCorporate = link;
+      // Access grant/revoke and corporate permissions (Simplified to 1-to-1)
+      if (b.dbName) {
+        $set.accessCorporate = {
+          dbName: b.dbName,
+          locationId:  b.locationId ? new mongoose.Types.ObjectId(b.locationId) : undefined
+        };
       }
 
       // Password reset (admin resets on behalf of user – no current-password check)
       if (clean(b.newPassword)) {
-        const salt        = await bcrypt.genSalt(10);
+        const salt = await bcrypt.genSalt(10);
         $set.userPassword = await bcrypt.hash(b.newPassword, salt);
       }
 
@@ -407,11 +364,11 @@ const otherUser = {
         return res.status(400).json({ message: "No updatable fields provided" });
       }
 
-      const updated = await Users.findByIdAndUpdate(
+      const updated = await userMaster.findByIdAndUpdate(
         id,
         { $set },
-        { 
-          new: true, 
+        {
+          new: true,
           runValidators: true
         }
       ).lean();
@@ -420,6 +377,97 @@ const otherUser = {
       return res.status(200).json({ message: "User updated", data: safe });
     } catch (err) {
       console.error("[postOtherUser]", err);
+      return res.status(500).json({ message: "Server error", error: err.message });
+    }
+  },
+
+  // ── SEARCH USER ───────────────────────────────────────────────────────────
+  searchUser: async (req, res) => {
+    try {
+      const { query } = req.query;
+      if (!query || query.trim().length < 4) {
+        return res.status(400).json({ message: "Please enter at least 4 characters" });
+      }
+
+      const users = await userMaster.find({
+        $or: [
+          { userMobile: query.trim() },
+          { userAadhar: query.trim() }
+        ]
+      }, "userDisplayName userEmail userMobile userAadhar userRole userActive accessCorporate").lean();
+
+      if (!users || users.length === 0) {
+        return res.status(404).json({ message: "No user found with this mobile or aadhar" });
+      }
+
+      return res.status(200).json({ message: "User found", data: users[0] });
+    } catch (err) {
+      console.error("[searchUser]", err);
+      return res.status(500).json({ message: "Server error", error: err.message });
+    }
+  },
+
+  // ── ASSIGN CORPORATE ──────────────────────────────────────────────────────
+  assignCorporate: async (req, res) => {
+    try {
+      const admin = await resolveCorpAdmin(req);
+      if (!admin) return res.status(404).json({ message: "CorpAdmin not found" });
+
+      const { id } = req.params;
+      const { corporateIds } = req.body;
+
+      const targetUser = await userMaster.findById(id);
+      if (!targetUser) return res.status(404).json({ message: "User not found" });
+
+      if (targetUser.accessCorporate &&
+        targetUser.accessCorporate.corpAdminId &&
+        targetUser.accessCorporate.corpAdminId.toString() !== admin._id.toString()) {
+        return res.status(403).json({ message: "User is already linked to another administrator." });
+      }
+
+      const corpId = Array.isArray(corporateIds) && corporateIds.length > 0 ? corporateIds[0] : req.body.corporateId;
+
+      targetUser.accessCorporate = {
+        dbName: req.tenantDbName || req.body.dbName,
+        locationId:  req.body.locationId ? new mongoose.Types.ObjectId(req.body.locationId) : undefined
+      };
+
+      if (typeof req.body.userActive === "boolean") targetUser.userActive = req.body.userActive;
+
+      await targetUser.save();
+
+      return res.status(200).json({ message: "Corporate assignment updated", data: targetUser });
+    } catch (err) {
+      console.error("[assignCorporate]", err);
+      return res.status(500).json({ message: "Server error", error: err.message });
+    }
+  },
+
+  // ── UNASSIGN CORPORATE ────────────────────────────────────────────────────
+  unassignCorporate: async (req, res) => {
+    try {
+      const admin = await resolveCorpAdmin(req);
+      if (!admin) return res.status(404).json({ message: "CorpAdmin not found" });
+
+      const { id } = req.params;
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({ message: "Invalid user id" });
+      }
+
+      const targetUser = await userMaster.findById(id);
+      if (!targetUser) return res.status(404).json({ message: "User not found" });
+
+      if (!targetUser.accessCorporate ||
+        targetUser.accessCorporate.corpAdminId?.toString() !== admin._id.toString()) {
+        return res.status(403).json({ message: "User is not linked to your administration" });
+      }
+
+      targetUser.accessCorporate = undefined;
+      await targetUser.save();
+
+      return res.status(200).json({ message: "User unlinked from corporate successfully" });
+    } catch (err) {
+      console.error("[unassignCorporate]", err);
       return res.status(500).json({ message: "Server error", error: err.message });
     }
   },
