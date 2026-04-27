@@ -209,6 +209,7 @@ const corporateProfileSchema = new mongoose.Schema({
             cloud_name: { type: String, trim: true },
             api_key: { type: String, trim: true },
             api_secret: { type: String, trim: true },
+            api_url: { type: String, trim: true },
             isActive: { type: Boolean, default: false }
         },
         leadApis: [{

@@ -31,10 +31,22 @@ router.post("/cloudinary", upload.single("file"), async (req, res) => {
     try {
         if (!req.file) return res.status(400).json({ error: "No file uploaded" });
         const leadFolder = req.body.lead_no || "general";
+        const dbName = req.tenantDbName || req.user.dbName;
+        const subFolder = req.body.subFolder || "leads"; // Default to leads
         
+        const folderPath = subFolder === "leads" 
+            ? `hipk/${dbName}/leads/${leadFolder}`
+            : `hipk/${dbName}/${subFolder}`;
+
         const { ProfileMaster } = req.tenantModels || {};
         let customConfig = null;
-        if (ProfileMaster) {
+
+        // Primary account (.env) is strictly for AppAdmin / Global content.
+        // ALL Corporate content (profiles, leads, visits, process, etc.) use the secondary account.
+        const requesterRole = req.user?.userRole;
+        const isUserProfile = subFolder === "userProfile";
+
+        if (requesterRole !== "AppAdmin" && ProfileMaster) {
             const profile = await ProfileMaster.findOne({});
             if (profile?.apiUrls?.cloudinary?.isActive) {
                 customConfig = profile.apiUrls.cloudinary;
@@ -42,7 +54,7 @@ router.post("/cloudinary", upload.single("file"), async (req, res) => {
         }
 
         const result = await externalService.uploadMedia(req.file.path, {
-            folder: `hipk/${req.tenantDbName}/leads/${leadFolder}`,
+            folder: folderPath,
             resource_type: "auto",
             public_id: path.parse(req.file.originalname).name, 
             use_filename: true,

@@ -34,23 +34,29 @@ const compact = (obj) => {
 //  • Sales/Project → their corpAdminId from accessCorporate
 // ─────────────────────────────────────────────────────────────────────────────
 const resolveCorpAdmin = async (req) => {
-  // If we have a tenant connection, we can find the owner admin by dbName
-  if (req.tenantDbName) {
-    return userMaster.findOne({ "linkedCorporates.dbName": req.tenantDbName }).lean();
+  const tDb = req.tenantDbName || req.user?.dbName;
+  if (!tDb) {
+    console.warn("⚠️ [resolveCorpAdmin] No tDb found in req.tenantDbName or req.user.dbName");
+    return null;
   }
 
-  const uid = req.user?._id || req.user?.userId;
-  if (!uid) return null;
-
-  const me = await userMaster.findById(uid).lean();
-  if (!me) return null;
-
-  if (me.userRole === "CorpAdmin") return me;
-
-  if (me.accessCorporate && me.accessCorporate.dbName) {
-    return userMaster.findOne({ "linkedCorporates.dbName": me.accessCorporate.dbName }).lean();
+  // 1. If the current user IS a CorpAdmin, they ARE the admin for this context
+  if (req.user?.userRole === "CorpAdmin") {
+    const me = await userMaster.findOne({ _id: req.user.userId, userRole: "CorpAdmin" }).lean();
+    if (me) return me;
   }
-  return null;
+
+  // 2. Otherwise, find the CorpAdmin who owns this dbName
+  const admin = await userMaster.findOne({ 
+    "accessCorporate.dbName": tDb, 
+    userRole: "CorpAdmin" 
+  }).lean();
+
+  if (!admin) {
+    console.warn(`⚠️ [resolveCorpAdmin] No CorpAdmin found for dbName: ${tDb}. User: ${req.user?.userId} [${req.user?.userRole}]`);
+  }
+
+  return admin;
 };
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -72,7 +78,7 @@ const updateCorporate = {
       return res.status(200).json({
         message: "Corporate data fetched from isolated database",
         data: {
-          linkedCorporate: profile ?? {},
+          accessCorporate: profile ?? {},
         },
       });
     } catch (err) {
@@ -156,12 +162,22 @@ const updateCorporate = {
 
       // 2. Synchronize Display Label in Identity Layer (userMaster)
       const admin = await resolveCorpAdmin(req);
-      if (admin && clean(b.corporateName)) {
-        const corporateId = req.query.corporateId || b.corporateId;
-        await userMaster.updateOne(
-          { _id: admin._id, "linkedCorporates._id": corporateId },
-          { $set: { "linkedCorporates.$.corporateName": clean(b.corporateName) } }
+      const tDb = req.tenantDbName || req.user?.dbName;
+
+      if (tDb && (clean(b.corporateName) || clean(b.CorpProfileImage))) {
+        const updateFields = {};
+        if (clean(b.corporateName)) updateFields["accessCorporate.$.corporateName"] = clean(b.corporateName);
+        if (clean(b.CorpProfileImage)) updateFields["accessCorporate.$.CorpProfileImage"] = clean(b.CorpProfileImage);
+
+        await userMaster.updateMany(
+          { "accessCorporate.dbName": tDb },
+          { $set: updateFields }
         );
+      }
+
+      // 🚀 REAL-TIME: Notify all clients in the tenant room
+      if (req.io && req.tenantDbName) {
+        req.io.to(req.tenantDbName).emit("corp:updated", { data: updatedProfile });
       }
 
       return res.status(200).json({
@@ -173,6 +189,87 @@ const updateCorporate = {
       return res.status(500).json({ message: "Server error", error: err.message });
     }
   },
+
+  // ── POST ADD NEW ───────────────────────────────────────────────────────────
+  addCorporate: async (req, res) => {
+    try {
+      if (req.user.userRole !== "CorpAdmin") {
+        return res.status(403).json({ message: "Only CorpAdmin can add new corporates" });
+      }
+
+      const b = req.body;
+      const pan = clean(b.corporatePAN)?.toUpperCase();
+      const cName = clean(b.corporateName);
+
+      if (!cName) return res.status(400).json({ message: "Corporate Name is required" });
+      
+      const validation = require("../utils/validationHelper");
+      if (!validation.isValidPAN(pan)) {
+        return res.status(400).json({ message: "A valid 10-character Corporate PAN is required for database isolation." });
+      }
+
+      const tenantSecurity = require("../utils/tenantSecurity");
+      const dbName = tenantSecurity.encodeDbName(pan);
+      
+      // 🚀 ISOLATION CHECK: One CorpAdmin per Database/PAN
+      const existingOwner = await userMaster.findOne({ 
+        "accessCorporate.dbName": dbName, 
+        userRole: "CorpAdmin" 
+      });
+
+      if (existingOwner) {
+        return res.status(400).json({ message: `Corporate with PAN ${pan} is already registered to ${existingOwner._id === req.user.userId ? 'your' : 'an'} account.` });
+      }
+
+      // 1. Check if user already has this corporate (redundant but safe)
+      const user = await userMaster.findById(req.user.userId);
+      if (!user) return res.status(404).json({ message: "User not found" });
+
+      if (user.accessCorporate.some(c => c.dbName === dbName)) {
+        return res.status(400).json({ message: "This corporate is already linked to your account" });
+      }
+
+      // 2. Prepare seeding data for the new isolated DB
+      const profileData = {
+        corporateName: cName,
+        corporateTagName: clean(b.corporateTagName),
+        corporateEmail: clean(b.corporateEmail),
+        corporatePAN: pan,
+        ownershipType: b.ownershipType || "Proprietorship",
+        corporateActive: true,
+        centralRegistrations: {
+          corporateMobile: clean(b.centralRegistrations?.corporateMobile),
+          corporateTelephone: clean(b.centralRegistrations?.corporateTelephone),
+        },
+        authorizedSignatory: {
+          name: clean(b.authorizedSignatory?.name),
+          designation: clean(b.authorizedSignatory?.designation),
+        }
+      };
+
+      // 3. Provision Infrastructure
+      const provisioner = require("../utils/mongoProvisioner");
+      await provisioner.provisionDatabase(dbName, profileData);
+
+      // 4. Link to User Profile
+      user.accessCorporate.push({
+        dbName,
+        corporateName: cName,
+        corporatePAN: pan,
+        CorpProfileImage: clean(b.CorpProfileImage) || "",
+        isActive: true
+      });
+      await user.save();
+
+      return res.status(201).json({
+        message: "New corporate added and infrastructure provisioned successfully",
+        data: { dbName, corporateName: cName }
+      });
+    } catch (err) {
+      console.error("[addCorporate]", err);
+      return res.status(500).json({ message: "Server error", error: err.message });
+    }
+  }
 };
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -197,10 +294,13 @@ const updateAdminUser = {
   },
 
   // ── PUT ───────────────────────────────────────────────────────────────────
-  postAdminUser: async (req, res) => {
+    postAdminUser: async (req, res) => {
     try {
       const admin = await resolveCorpAdmin(req);
-      if (!admin) return res.status(404).json({ message: "CorpAdmin not found" });
+      if (!admin) {
+        console.warn("⚠️ [postAdminUser] resolveCorpAdmin failed to find admin for user:", req.user?.userId);
+        return res.status(404).json({ message: "CorpAdmin not found" });
+      }
 
       const b = req.body;
       const $set = {};
@@ -215,12 +315,18 @@ const updateAdminUser = {
       if (clean(b.userProfileImage)) $set.userProfileImage = clean(b.userProfileImage);
       if (b.addresses) $set.addresses = b.addresses;
 
+      console.log(`📝 [postAdminUser] Updating admin ${admin._id} [${admin.userRole}] with fields:`, Object.keys($set));
+
       // ── Password change (optional) ─────────────────────────────────────────
       if (clean(b.newPassword)) {
         if (!clean(b.currentPassword)) {
           return res.status(400).json({ message: "currentPassword is required to change password" });
         }
         const doc = await userMaster.findById(admin._id); // need the document for bcrypt
+        if (!doc) {
+           console.error(`❌ [postAdminUser] Document not found for ID ${admin._id}`);
+           return res.status(404).json({ message: "User document not found" });
+        }
         const ok = await bcrypt.compare(b.currentPassword, doc.userPassword);
         if (!ok) return res.status(401).json({ message: "Current password is incorrect" });
 
@@ -238,11 +344,22 @@ const updateAdminUser = {
         { new: true, runValidators: true }
       ).lean();
 
+      if (!updated) {
+          console.error(`❌ [postAdminUser] findByIdAndUpdate returned null for ${admin._id}`);
+          return res.status(500).json({ message: "Failed to update user document" });
+      }
+
       const { userPassword, ...safe } = updated;
       return res.status(200).json({ message: "Admin user updated", data: safe });
     } catch (err) {
-      console.error("[postAdminUser]", err);
-      return res.status(500).json({ message: "Server error", error: err.message });
+      console.error("🔴 [postAdminUser] Critical Error:", err);
+      if (err.name === 'ValidationError') {
+          return res.status(400).json({ message: "Validation failed", errors: err.errors });
+      }
+      if (err.code === 11000) {
+          return res.status(409).json({ message: "Duplicate record: Aadhar or Mobile already exists" });
+      }
+      return res.status(500).json({ message: "Server error during profile update", error: err.message });
     }
   },
 };
@@ -346,12 +463,29 @@ const otherUser = {
       if (clean(b.userProfileImage)) $set.userProfileImage = clean(b.userProfileImage);
       if (b.addresses) $set.addresses = b.addresses;
 
-      // Access grant/revoke and corporate permissions (Simplified to 1-to-1)
-      if (b.dbName) {
-        $set.accessCorporate = {
-          dbName: b.dbName,
-          locationId:  b.locationId ? new mongoose.Types.ObjectId(b.locationId) : undefined
-        };
+      // Access grant/revoke and corporate permissions
+      const tDb = req.tenantDbName || req.user.dbName;
+      if (tDb) {
+        // Ensure the user has an entry for this corporate in their array
+        const userWithLink = await userMaster.findOne({ _id: id, "accessCorporate.dbName": tDb });
+        
+        if (userWithLink) {
+          $set["accessCorporate.$.locationId"] = b.locationId ? new mongoose.Types.ObjectId(b.locationId) : undefined;
+        } else {
+          // If for some reason they don't have it, push it
+          await userMaster.updateOne(
+            { _id: id },
+            { 
+              $push: { 
+                accessCorporate: { 
+                  dbName: tDb, 
+                  locationId: b.locationId ? new mongoose.Types.ObjectId(b.locationId) : undefined,
+                  isActive: true
+                } 
+              } 
+            }
+          );
+        }
       }
 
       // Password reset (admin resets on behalf of user – no current-password check)
@@ -407,32 +541,49 @@ const otherUser = {
     }
   },
 
-  // ── ASSIGN CORPORATE ──────────────────────────────────────────────────────
   assignCorporate: async (req, res) => {
     try {
       const admin = await resolveCorpAdmin(req);
       if (!admin) return res.status(404).json({ message: "CorpAdmin not found" });
 
       const { id } = req.params;
-      const { corporateIds } = req.body;
+      const { corporateIds, userActive, accessAllow } = req.body;
 
       const targetUser = await userMaster.findById(id);
       if (!targetUser) return res.status(404).json({ message: "User not found" });
 
-      if (targetUser.accessCorporate &&
-        targetUser.accessCorporate.corpAdminId &&
-        targetUser.accessCorporate.corpAdminId.toString() !== admin._id.toString()) {
-        return res.status(403).json({ message: "User is already linked to another administrator." });
+      // 1. If accessAllow is false, we might want to keep current links but mark them inactive?
+      // Or just clear them? Usually "Linking" means adding to the list.
+      
+      if (!accessAllow) {
+          // If the admin unchecks "Master Access", we might want to clear links for THIS admin's corporates.
+          // For now, we follow the UI's lead.
       }
 
-      const corpId = Array.isArray(corporateIds) && corporateIds.length > 0 ? corporateIds[0] : req.body.corporateId;
+      // 2. Map corporateIds (which are _ids of admin's accessCorporate) to actual dbName objects
+      const newAccessList = [...(targetUser.accessCorporate || [])];
 
-      targetUser.accessCorporate = {
-        dbName: req.tenantDbName || req.body.dbName,
-        locationId:  req.body.locationId ? new mongoose.Types.ObjectId(req.body.locationId) : undefined
-      };
+      if (Array.isArray(corporateIds)) {
+          // Remove all links that belong to THIS admin's known corporates so we can re-add the selected ones
+          const adminCorpDbs = admin.accessCorporate.map(c => c.dbName);
+          const otherAdminLinks = newAccessList.filter(c => !adminCorpDbs.includes(c.dbName));
+          
+          const selectedLinks = corporateIds.map(corpId => {
+              const adminLink = admin.accessCorporate.find(c => String(c._id) === String(corpId) || c.dbName === corpId);
+              if (!adminLink) return null;
+              return {
+                  dbName: adminLink.dbName,
+                  corporateName: adminLink.corporateName,
+                  corporatePAN: adminLink.corporatePAN,
+                  locationId: req.body.locationId ? new mongoose.Types.ObjectId(req.body.locationId) : undefined,
+                  isActive: true
+              };
+          }).filter(Boolean);
 
-      if (typeof req.body.userActive === "boolean") targetUser.userActive = req.body.userActive;
+          targetUser.accessCorporate = [...otherAdminLinks, ...selectedLinks];
+      }
+
+      if (typeof userActive === "boolean") targetUser.userActive = userActive;
 
       await targetUser.save();
 
@@ -457,12 +608,8 @@ const otherUser = {
       const targetUser = await userMaster.findById(id);
       if (!targetUser) return res.status(404).json({ message: "User not found" });
 
-      if (!targetUser.accessCorporate ||
-        targetUser.accessCorporate.corpAdminId?.toString() !== admin._id.toString()) {
-        return res.status(403).json({ message: "User is not linked to your administration" });
-      }
-
-      targetUser.accessCorporate = undefined;
+      const targetDb = req.tenantDbName || req.user.dbName;
+      targetUser.accessCorporate = (targetUser.accessCorporate || []).filter(c => c.dbName !== targetDb);
       await targetUser.save();
 
       return res.status(200).json({ message: "User unlinked from corporate successfully" });

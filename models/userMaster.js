@@ -7,14 +7,6 @@ const bcrypt = require("bcryptjs");
  * Purpose: Identity layer and tenant connection resolver.
  */
 
-const linkedCorporateSchema = new mongoose.Schema({
-    corporateName: { type: String, required: true }, // Display Label for UI Switcher
-    // ── Tenant Routing Metadata ────────────────────
-    dbName: { type: String, required: true },
-    dbPassword: { type: String, required: true },
-    isActive: { type: Boolean, default: true }
-}, { _id: true });
-
 const userMasterSchema = new mongoose.Schema({
     userDisplayName: { type: String, required: true, trim: true },
     userEmail: { type: String, trim: true, lowercase: true },
@@ -43,14 +35,14 @@ const userMasterSchema = new mongoose.Schema({
     // 🛡️ Security / Locking (Disabled for now as requested)
     isLocked: { type: Boolean, default: false },
 
-    // For CorpAdmin: Their owned corporates and DB credentials
-    linkedCorporates: [linkedCorporateSchema],
-
-    // For non-admins: Their assigned corporate identity
-    accessCorporate: {
-        dbName:     { type: String },
-        locationId:  { type: mongoose.Schema.Types.ObjectId }
-    }
+    accessCorporate: [{
+        corporateName: { type: String },
+        corporatePAN:  { type: String },
+        dbName:        { type: String },
+        locationId:    { type: mongoose.Schema.Types.ObjectId },
+        CorpProfileImage: { type: String },
+        isActive:      { type: Boolean, default: true }
+    }]
 }, { 
     timestamps: true,
     collection: "userMaster" 

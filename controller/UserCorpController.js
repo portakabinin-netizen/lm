@@ -237,12 +237,16 @@ exports.manageLeads = {
             
             try {
                 // Isolated search using externalService
-                const searchRes = await externalService.searchLeadsMedia(req.tenantDbName);
+                const cloudConfig = profile?.apiUrls?.cloudinary || null;
+                const searchRes = await externalService.searchLeadsMedia(req.tenantDbName, cloudConfig);
                 const mediaMap = {};
                 searchRes.resources.forEach(a => {
                     // Path: hipk/<dbName>/leads/<lead_no>/<filename>
-                    const leadNo = a.public_id.split('/')[3];
-                    if (leadNo) { 
+                    // Split gives: ["hipk", "<dbName>", "leads", "<lead_no>", "<filename>"]
+                    const parts = a.public_id.split('/');
+                    const leadsIdx = parts.indexOf("leads");
+                    if (leadsIdx !== -1 && parts[leadsIdx + 1]) {
+                        const leadNo = parts[leadsIdx + 1];
                         if (!mediaMap[leadNo]) mediaMap[leadNo] = []; 
                         mediaMap[leadNo].push(a.secure_url); 
                     }

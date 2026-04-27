@@ -447,20 +447,31 @@ const externalService = {
         }
     },
 
+    /**
+     * ☁️ Cloudinary: Resolve Options (Tenant-Specific or Fallback)
+     */
+    getCloudinaryOptions: (customConfig = null) => {
+        // 1. Check if tenant has active custom Cloudinary config
+        if (customConfig && (customConfig.cloud_name || customConfig.api_url) && customConfig.isActive) {
+            if (customConfig.api_url) {
+                return { cloudinary_url: customConfig.api_url };
+            } else {
+                return {
+                    cloud_name: customConfig.cloud_name,
+                    api_key:    customConfig.api_key,
+                    api_secret: customConfig.api_secret,
+                    secure:     true
+                };
+            }
+        }
+        // 2. Fallback to default (uses .env)
+        return {};
+    },
+
     uploadMedia: async (fileSource, options = {}, customConfig = null) => {
         try {
-            let uploader = cloudinary;
-            if (customConfig && customConfig.cloud_name && customConfig.isActive) {
-                // Create a temporary local config if custom provided
-                uploader = require("cloudinary").v2;
-                uploader.config({
-                    cloud_name: customConfig.cloud_name,
-                    api_key: customConfig.api_key,
-                    api_secret: customConfig.api_secret,
-                    secure: true
-                });
-            }
-            const result = await uploader.uploader.upload(fileSource, options);
+            const configOverrides = externalService.getCloudinaryOptions(customConfig);
+            const result = await cloudinary.uploader.upload(fileSource, { ...options, ...configOverrides });
             return { success: true, url: result.secure_url, public_id: result.public_id, raw: result };
         } catch (err) {
             console.error("🔴 Cloudinary Upload Error:", err.message);
@@ -473,21 +484,48 @@ const externalService = {
      */
     searchLeadsMedia: async (tenantDbName, customConfig = null) => {
         try {
-            let searcher = cloudinary;
-            if (customConfig && customConfig.cloud_name && customConfig.isActive) {
-                searcher = require("cloudinary").v2;
-                searcher.config({
-                    cloud_name: customConfig.cloud_name,
-                    api_key: customConfig.api_key,
-                    api_secret: customConfig.api_secret,
-                    secure: true
-                });
-            }
-            return await searcher.search.expression(`folder:hipk/${tenantDbName}/leads/*`).execute();
+            const configOverrides = externalService.getCloudinaryOptions(customConfig);
+            
+            // Search API execute() accepts config overrides directly in the Node SDK
+            const result = await cloudinary.search
+                .expression(`folder:hipk/${tenantDbName}/leads/*`)
+                .sort_by('created_at', 'desc')
+                .execute(configOverrides);
+            
+            return result;
         } catch (err) {
-            console.error("🔴 Cloudinary Search Error:", err.message);
+            console.error("🔴 Cloudinary Search Leads Error:", err.message);
             throw err;
         }
+    },
+    /**
+     * 📂 Cloudinary: Fetch Files from Folder (Gallery/History)
+     */
+    fetchFolderMedia: async (folderPath, customConfig = null) => {
+        try {
+            const configOverrides = externalService.getCloudinaryOptions(customConfig);
+            
+            // Search API execute() accepts config overrides directly in the Node SDK
+            const result = await cloudinary.search
+                .expression(`folder:${folderPath}`)
+                .sort_by('created_at', 'desc')
+                .max_results(30)
+                .execute(configOverrides);
+            
+            return (result.resources || []).map(r => ({
+                url: r.secure_url,
+                public_id: r.public_id,
+                created_at: r.created_at
+            }));
+        } catch (err) {
+            console.error("🔴 Cloudinary Fetch Folder Error:", err.message);
+            throw err;
+        }
+    },
+
+    /** Alias for uploadMedia to support authController usage */
+    uploadImage: async (fileSource, folder, customConfig = null) => {
+        return await externalService.uploadMedia(fileSource, { folder }, customConfig);
     }
 };
 

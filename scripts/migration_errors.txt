@@ -1,0 +1,22 @@
+❌ Validation Error details:
+  - corporateData.6984d40db02c9d553f90e6c0.groups.0.nature: `Liability` is not a valid enum value for path `nature`.
+  - corporateData.6984d40db02c9d553f90e6c0.groups.1.nature: `Liability` is not a valid enum value for path `nature`.
+  - corporateData.6984d40db02c9d553f90e6c0.groups.2.nature: `Liability` is not a valid enum value for path `nature`.
+  - corporateData.6984d40db02c9d553f90e6c0.groups.3.nature: `Liability` is not a valid enum value for path `nature`.
+  - corporateData.6984d40db02c9d553f90e6c0.groups.4.nature: `Liability` is not a valid enum value for path `nature`.
+  - corporateData.6984d40db02c9d553f90e6c0.groups.5.nature: `Liability` is not a valid enum value for path `nature`.
+  - corporateData.6984d40db02c9d553f90e6c0.groups.6.nature: `Asset` is not a valid enum value for path `nature`.
+  - corporateData.6984d40db02c9d553f90e6c0.groups.7.nature: `Asset` is not a valid enum value for path `nature`.
+  - corporateData.6984d40db02c9d553f90e6c0.groups.8.nature: `Asset` is not a valid enum value for path `nature`.
+  - corporateData.6984d40db02c9d553f90e6c0.groups.9.nature: `Asset` is not a valid enum value for path `nature`.
+  - corporateData.6984d40db02c9d553f90e6c0.groups.10.nature: `Asset` is not a valid enum value for path `nature`.
+  - corporateData.6984d40db02c9d553f90e6c0.groups.11.nature: `Asset` is not a valid enum value for path `nature`.
+  - corporateData.6984d40db02c9d553f90e6c0.groups.12.nature: `Asset` is not a valid enum value for path `nature`.
+  - corporateData.6984d40db02c9d553f90e6c0.groups.13.nature: `Asset` is not a valid enum value for path `nature`.
+  - corporateData.6984d40db02c9d553f90e6c0.groups.17.nature: `Expense` is not a valid enum value for path `nature`.
+  - corporateData.6984d40db02c9d553f90e6c0.groups.18.nature: `Expense` is not a valid enum value for path `nature`.
+  - corporateData.6984d40db02c9d553f90e6c0.groups.19.nature: `Expense` is not a valid enum value for path `nature`.
+  - corporateData.6984d40db02c9d553f90e6c0.ledgers.0.name: Path `name` is required.
+  - corporateData.6984d40db02c9d553f90e6c0.ledgers.1.name: Path `name` is required.
+  - corporateData.6984d40db02c9d553f90e6c0.ledgers.2.name: Path `name` is required.
+  - corporateData.6984d40db02c9d553f90e6c0.ledgers.3.name: Path `name` is required.

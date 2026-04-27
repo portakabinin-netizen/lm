@@ -30,7 +30,7 @@ const tenantMiddleware = async (req, res, next) => {
         if (req.user && req.user.userRole !== "CorpAdmin") {
             const profile = await req.tenantModels.ProfileMaster.findOne({}).lean();
             const locations = profile?.locations || [];
-            const myLocId = req.user.accessCorporate?.locationId;
+            const myLocId = req.user.locationId;
 
             if (myLocId) {
                 const myLoc = locations.find(l => String(l._id) === String(myLocId));
