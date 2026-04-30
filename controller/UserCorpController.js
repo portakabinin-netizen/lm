@@ -471,17 +471,127 @@ exports.manageEmployees = {
             const { Employees } = req.tenantModels;
             const emp = new Employees(req.body);
             await emp.save();
+
+            // 🚀 Auto-create Ledger
+            try {
+                const FinanceController = require('./FinanceController');
+                await FinanceController.ensureLedgerFolioInternal(req.tenantModels, {
+                    name: emp.name,
+                    group: "Account Payables",
+                    parentGroup: "Current Liabilities",
+                    refId: emp._id,
+                    refType: "Staff"
+                });
+            } catch (err) { console.error("Employee-Ledger Auto Init Failed:", err.message); }
+
             res.status(201).json({ success: true, data: emp });
         } catch (err) { res.status(500).json({ success: false, message: err.message }); }
     },
-    update: (req, res) => manageSpoke.update(req, res, "Employees"),
+    update: async (req, res) => {
+        try {
+            const { Employees } = req.tenantModels;
+            const emp = await Employees.findByIdAndUpdate(req.params.id, req.body, { new: true });
+            if (!emp) return res.status(404).json({ success: false, message: "Employee not found" });
+
+            // 🚀 Auto-create/Update Ledger Name
+            try {
+                const FinanceController = require('./FinanceController');
+                // Ensure ledger exists (postSalaryJournal logic handles existence)
+                // We don't want to post a 0 journal every update, so maybe we need a dedicated ensureLedger logic
+                // But the user said "create employee ledger if not exit", so I'll just use a dedicated helper if I add one.
+                // Actually, I'll just use ensureLedgerFolioInternal for simplicity if available.
+                await FinanceController.ensureLedgerFolioInternal(req.tenantModels, {
+                    name: emp.name,
+                    group: "Account Payables",
+                    refId: emp._id,
+                    refType: "Staff",
+                    nature: "Cr"
+                });
+            } catch (err) { console.error("Employee-Ledger Auto Sync Failed:", err.message); }
+
+            res.json({ success: true, data: emp });
+        } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+    },
     delete: (req, res) => manageSpoke.delete(req, res, "Employees"),
+    listAttendance: async (req, res) => {
+        try {
+            const { Attendance } = req.tenantModels;
+            const { from_date, to_date } = req.query;
+            const q = {};
+            if (from_date || to_date) {
+                q.date = {};
+                if (from_date) q.date.$gte = new Date(from_date);
+                if (to_date) q.date.$lte = new Date(to_date);
+            }
+            const data = await Attendance.find(q).lean();
+            res.json({ success: true, data });
+        } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+    },
     markAttendance: async (req, res) => {
         try {
             const { Attendance } = req.tenantModels;
-            const record = new Attendance({ ...req.body, date: req.body.date || new Date() });
+            const { employeeId, leadId, status, dutyLevel, rate, date, site_name, remarks,
+                    dutyStart, dutyEnd, forcedOff, forcedOffReason, clientId, location, geoHistory } = req.body;
+            const record = new Attendance({
+                employeeId,
+                leadId,
+                clientId: clientId || null,
+                status: status || "Present",
+                dutyLevel: dutyLevel ?? 1,
+                rate: rate || 0,
+                date: date || new Date(),
+                site_name,
+                remarks,
+                dutyStart: dutyStart ? new Date(dutyStart) : new Date(),
+                dutyEnd: dutyEnd ? new Date(dutyEnd) : undefined,
+                forcedOff: !!forcedOff,
+                forcedOffReason: forcedOffReason || "",
+                location,
+                geoHistory: geoHistory || []
+            });
             await record.save();
-            res.status(201).json({ success: true, message: "Attendance recorded" });
+            res.status(201).json({ success: true, message: "Attendance recorded", data: record });
+        } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+    },
+    deleteAttendance: (req, res) => manageSpoke.delete(req, res, "Attendance"),
+    updateAttendance: async (req, res) => {
+        try {
+            const { Attendance } = req.tenantModels;
+            const allowed = ['dutyEnd', 'forcedOff', 'forcedOffReason', 'status', 'rate', 'location', 'geoHistory'];
+            const update = {};
+            
+            // Handle standard fields
+            allowed.forEach(k => { if (req.body[k] !== undefined) update[k] = req.body[k]; });
+            
+            // Handle $push explicitly for geoHistory if sent in body (for cleaner array appending)
+            const mongoUpdate = { ...update };
+            if (req.body.$push) mongoUpdate.$push = req.body.$push;
+
+            // Auto-calculate hours worked
+            if (update.dutyEnd) {
+                const existing = await Attendance.findById(req.params.id).select('dutyStart').lean();
+                if (existing?.dutyStart) {
+                    update.hoursWorked = parseFloat(((new Date(update.dutyEnd) - new Date(existing.dutyStart)) / 3600000).toFixed(2));
+                }
+            }
+            const record = await Attendance.findByIdAndUpdate(req.params.id, mongoUpdate, { new: true });
+            if (!record) return res.status(404).json({ success: false, message: 'Record not found' });
+            res.json({ success: true, data: record });
+        } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+    },
+    getRateLookup: async (req, res) => {
+        try {
+            const { Attendance } = req.tenantModels;
+            const { employeeId, leadId } = req.query;
+            if (!employeeId || !leadId) {
+                return res.status(400).json({ success: false, message: "employeeId and leadId required" });
+            }
+            const last = await Attendance
+                .findOne({ employeeId, leadId, rate: { $gt: 0 } })
+                .sort({ createdAt: -1 })
+                .select("rate")
+                .lean();
+            res.json({ success: true, rate: last?.rate || null });
         } catch (err) { res.status(500).json({ success: false, message: err.message }); }
     }
 };

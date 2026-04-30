@@ -56,7 +56,12 @@ router.get("/hr/employees",      ctrl.manageEmployees.list);
 router.post("/hr/employees",     ctrl.manageEmployees.create);
 router.put("/hr/employees/:id",  ctrl.manageEmployees.update);
 router.delete("/hr/employees/:id", ctrl.manageEmployees.delete);
+router.get("/hr/attendance",     ctrl.manageEmployees.listAttendance);
 router.post("/hr/attendance",    ctrl.manageEmployees.markAttendance);
+router.put("/hr/attendance/:id", ctrl.manageEmployees.updateAttendance);
+router.delete("/hr/attendance/:id", ctrl.manageEmployees.deleteAttendance);
+router.get("/hr/rate-lookup",   ctrl.manageEmployees.getRateLookup);
+
 
 // --- 👥 PARTIES (Clients & Suppliers) ---
 router.get("/parties/clients",   ctrl.manageClients.list);

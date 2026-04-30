@@ -24,7 +24,7 @@ const dbConnector = {
             // Robustly replace the database name in the URI (prevents "doubling" names)
             const baseUri = uri.replace(/\/[^/?]+(?=\?|$)/, "/mainDatabase");
 
-            await mongoose.connect(baseUri);
+            await mongoose.connect(baseUri, { family: 4 });
             mainConnection = mongoose.connection;
             return mainConnection;
         } catch (err) {
@@ -52,7 +52,7 @@ const dbConnector = {
         let tenantUri = masterUri.replace(/\/[^/?]+(?=\?|$)/, `/${dbName}`);
 
         try {
-            const tenantConn = await mongoose.createConnection(tenantUri).asPromise();
+            const tenantConn = await mongoose.createConnection(tenantUri, { family: 4 }).asPromise();
             connections.set(dbName, tenantConn);
             return tenantConn;
         } catch (err) {

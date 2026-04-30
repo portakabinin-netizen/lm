@@ -22,7 +22,7 @@ const isDev = process.env.NODE_ENV === 'development' || (typeof __DEV__ !== 'und
 
 // 4. Build URL with safety check
 const api_url = isDev
-  ? `http://${expoHost}:5000/api`
+  ? `http://${expoHost}:5001/api`
   : `${productionURL}/api`;
 
 

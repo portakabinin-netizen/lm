@@ -47,6 +47,7 @@ router.post("/reset-password", authController.resetPassword);
 router.use(authMiddleware);
 router.post("/switch-corporate", authController.switchCorporate);
 router.post("/update-profile-image", tenantMiddleware, authController.updateProfileImage);
+router.post("/delete-profile-image", tenantMiddleware, authController.deleteProfileImage);
 router.get("/get-profile-history", tenantMiddleware, authController.getProfileHistory);
 router.put("/url-configure/:id", tenantMiddleware, authController.apiUrlsConfigureSave);
 router.post("/provision-tenant", authController.provisionTenant);

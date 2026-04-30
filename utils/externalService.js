@@ -479,6 +479,17 @@ const externalService = {
         }
     },
 
+    deleteMedia: async (publicId, customConfig = null) => {
+        try {
+            const configOverrides = externalService.getCloudinaryOptions(customConfig);
+            const result = await cloudinary.uploader.destroy(publicId, configOverrides);
+            return result;
+        } catch (err) {
+            console.error("🔴 Cloudinary Delete Error:", err.message);
+            throw err;
+        }
+    },
+
     /**
      * 🔍 Cloudinary: Search Media for Leads
      */

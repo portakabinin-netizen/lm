@@ -20,6 +20,7 @@ router.use(tenant); // ⬅️ Resolve tenant connection for accounting routes
 
 // --- 📊 MASTER ---
 router.get("/master",           ctrl.getAccountingMaster);
+router.get("/analytics",        ctrl.getAnalytics);
 
 // --- 📑 GROUPS ---
 router.get("/groups",           ctrl.manageGroups.list);
@@ -38,6 +39,12 @@ router.delete("/ledgers/:id",    ctrl.manageLedgers.delete);
 router.get("/vouchers",          ctrl.manageVouchers.list);
 router.get("/vouchers/ledger/:ledgerId", ctrl.manageVouchers.getByLedger);
 router.post("/vouchers",         ctrl.manageVouchers.create);
+router.put("/vouchers/:id",      ctrl.manageVouchers.update);
+
+// --- 💸 SALARY & PAYROLL ---
+router.get("/salary/voucher",      ctrl.getSalaryVoucher);
+router.post("/salary/post-journal", ctrl.postSalaryJournal);
+router.post("/salary/post-payment", ctrl.postSalaryPayment);
 
 // --- 📄 QUOTATIONS ---
 router.get("/quotations",        ctrl.manageQuotations.list);

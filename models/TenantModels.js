@@ -53,12 +53,15 @@ const partySchema = new mongoose.Schema({
 // 4. Employees
 const employeeSchema = new mongoose.Schema({
     name: { type: String, required: true, trim: true },
+    father_name: { type: String, trim: true },
     role: { type: String, trim: true },
     mobile: { type: String, trim: true },
     email: { type: String, trim: true, lowercase: true },
     pan: { type: String, trim: true, uppercase: true },
     aadhar: { type: String, trim: true },
+    aadhar_no: { type: String, trim: true },
     dob: { type: Date },
+    joinDate: { type: Date },
     gender: { type: String, enum: ["Male", "Female", "Transgender"], default: "Male" },
     photo_url: { type: String, trim: true },
     daily_rate: { type: Number, default: 0 },
@@ -89,6 +92,12 @@ const leadSchema = new mongoose.Schema({
         metadata: { type: mongoose.Schema.Types.Mixed }
     }, { _id: false })],
     locationId: { type: mongoose.Schema.Types.ObjectId }, // Link to ProfileMaster.locations._id
+    // ── Site Geo Location ──
+    location: {
+        lat: { type: Number },
+        long: { type: Number },
+        address: { type: String }
+    },
 }, { timestamps: true });
 
 // 6. Attendance
@@ -96,9 +105,35 @@ const attendanceSchema = new mongoose.Schema({
     employeeId: { type: mongoose.Schema.Types.ObjectId, required: true },
     date: { type: Date, required: true },
     status: { type: String, enum: ["Present", "Absent", "Leave"], default: "Present" },
+    dutyLevel: { type: Number, default: 1 },
+    rate: { type: Number, default: 0 },
+    site_name: { type: String, trim: true },
+    remarks: { type: String, trim: true },
     siteId: { type: String },
     leadId: { type: mongoose.Schema.Types.ObjectId },
-    locationId: { type: mongoose.Schema.Types.ObjectId }, // Link to ProfileMaster.locations._id
+    clientId: { type: mongoose.Schema.Types.ObjectId }, // Denormalized from lead for quick lookup
+    locationId: { type: mongoose.Schema.Types.ObjectId },
+    // ── Duty Toggle Fields ──
+    dutyStart: { type: Date },         // When ON-duty was toggled
+    dutyEnd: { type: Date },           // When OFF-duty (normal or forced)
+    hoursWorked: { type: Number, default: 0 },
+    forcedOff: { type: Boolean, default: false },          // true = ended before 8hr lock
+    forcedOffReason: { type: String, trim: true },         // Reason captured on forced off-duty
+    // ── Geo & Tracking ──
+    location: {
+        lat: { type: Number },
+        long: { type: Number },
+        address: { type: String }
+    },
+    geoHistory: [{
+        lat: { type: Number },
+        long: { type: Number },
+        address: { type: String },
+        type: { type: String, enum: ['start', 'end', 'tick'] },
+        time: { type: Date, default: Date.now }
+    }],
+    isPosted: { type: Boolean, default: false },
+    voucherId: { type: mongoose.Schema.Types.ObjectId, ref: "Vouchers" },
 }, { timestamps: true });
 
 // 7. Accounting
@@ -129,6 +164,7 @@ const voucherSchema = new mongoose.Schema({
         debit: { type: Number, default: 0 },
         credit: { type: Number, default: 0 },
     }, { _id: false })],
+    legacyMetadata: { type: mongoose.Schema.Types.Mixed }, // Stores flat transaction data for legacy FinanceDashboard
     leadId: { type: mongoose.Schema.Types.ObjectId },
 }, { timestamps: true });
 

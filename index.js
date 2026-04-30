@@ -1,3 +1,6 @@
+// Auto-free port 5001 if occupied (silent — no output)
+try { const {execSync}=require('child_process'); const m=execSync('netstat -ano').toString().match(/0\.0\.0\.0:5001\s+\S+\s+LISTENING\s+(\d+)/); if(m) execSync(`taskkill /PID ${m[1]} /F`); } catch(e){}
+
 const express = require("express");
 const http = require("http");
 const cors = require("cors");
@@ -8,9 +11,6 @@ require("dotenv").config();
 
 // ---------- Import Routers ----------
 const authRouter = require("./routes/authRouterNew");
-// const pdfRouter = require("./routes/generatePDF");
-// const pdfRouter = require("./routes/generatePDF");
-//const orderflows     = require("./routes/orderflows");
 const setting = require("./routes/settingRouter");
 const uploadRouter = require("./routes/uploadRouter");
 const UserCorpRouter = require("./routes/UserCorpRouter");
@@ -29,10 +29,8 @@ app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 // ---------- MongoDB with Retry logic ----------
 const connectDB = async () => {
-  console.log("📡 Connecting to Main Database...");
   try {
     await dbConnector.getMainConnection();
-    console.log("✅ Main Database Connected [mainDatabase]");
   } catch (err) {
     console.error("❌ Main Database connection failed. Retrying in 5s...");
     setTimeout(connectDB, 5000);
@@ -48,21 +46,21 @@ const io = new Server(server, { cors: { origin: "*" } });
 app.use((req, res, next) => { req.io = io; next(); });
 
 io.on("connection", (socket) => {
-  
+
   socket.on("joinRoom", (dbName) => {
     if (dbName) {
       socket.join(dbName);
     }
   });
 
-  socket.on("disconnect", () => {});
+  socket.on("disconnect", () => { });
 });
 
 // ---------- Health Route ----------
 app.get("/", (req, res) => {
   res.status(200).json({
     success: true,
-    message: "🚀 LeadManager API is active [v1.0.1-salesbook]",
+    message: "🚀 LeadManager API is active",
     uptime: process.uptime(),
     timestamp: new Date(),
   });
@@ -73,6 +71,10 @@ app.use("/api/auth", authRouter);
 app.use("/api/setting", setting);
 app.use("/api/service", UserCorpRouter);
 app.use("/api/finance", FinanceRouter);
+
+// 🚀 LEGACY DASHBOARD ADAPTER ROUTES
+app.use("/api/payment", require("./routes/paymentRouter"));
+app.use("/api/staff", require("./routes/staffRouter"));
 
 // Secure Uploads (Tenant Aware)
 const authMiddleware = require("./middleware/authMiddleware");
@@ -101,8 +103,16 @@ app.use((err, req, res, next) => {
 });
 
 // ---------- Start ----------
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 5000;
 server.listen(PORT, "0.0.0.0", () => {
-  console.log(`🚀 Server running on http://localhost:${PORT}`);
-  console.log(`📡 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`✅ Server running on port ${PORT}`);
 });
+
+server.on("error", (err) => {
+  if (err.code === "EADDRINUSE") {
+    console.error(`❌ Port ${PORT} is already in use. Kill the existing process and restart.`);
+    process.exit(1);
+  } else {
+    throw err;
+  }
+});

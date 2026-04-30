@@ -9,7 +9,7 @@ const mongoProvisioner = require("../utils/mongoProvisioner");
 const messagingService = require("../utils/messagingService");
 const emailService = require("../utils/emailService");
 
-const otpStore = {}; 
+const otpStore = {};
 
 function generateOtp(length = 6) {
     return Math.floor(Math.pow(10, length - 1) + Math.random() * 9 * Math.pow(10, length - 1)).toString();
@@ -60,21 +60,21 @@ exports.sendOtp = async (req, res) => {
         }
 
         otpStore[formatted] = { otp, expiresAt: Date.now() + 5 * 60 * 1000, purpose };
-        
+
         const result = await sendOTPExternal(formatted, otp, "whatsapp", config);
-        
+
         if (!result.success) {
             return res.status(500).json({ error: result.message || "Failed to send OTP" });
         }
 
-        return res.json({ 
-            success: true, 
-            message: result.message, 
-            toast: result.message 
+        return res.json({
+            success: true,
+            message: result.message,
+            toast: result.message
         });
-    } catch (err) { 
+    } catch (err) {
         console.error("🔴 sendOtp Error:", err.message);
-        return res.status(500).json({ error: err.message }); 
+        return res.status(500).json({ error: err.message });
     }
 };
 
@@ -83,12 +83,12 @@ exports.verifyOtp = (req, res) => {
         const { mobile, otp } = req.body;
         const formatted = formatMobile(mobile).with91;
         const record = otpStore[formatted];
-        
+
         if (!record || record.otp !== otp) {
             console.log(`❌ OTP Verification FAILED for ${formatted}. Expected: ${record?.otp}, Got: ${otp}`);
             return res.status(400).json({ error: "Invalid OTP" });
         }
-        
+
         console.log(`✅ OTP Verified successfully for ${formatted}`);
         delete otpStore[formatted];
         return res.json({ success: true });
@@ -99,9 +99,9 @@ exports.searchlinkCorp = async (req, res) => {
     try {
         const { query } = req.body;
         const results = await userMaster.find(
-            { 
-                userRole: "CorpAdmin", 
-                "accessCorporate.corporateName": { $regex: new RegExp(query, "i") } 
+            {
+                userRole: "CorpAdmin",
+                "accessCorporate.corporateName": { $regex: new RegExp(query, "i") }
             },
             { "accessCorporate.$": 1, userDisplayName: 1, userEmail: 1 }
         ).lean();
@@ -121,7 +121,7 @@ exports.searchlinkCorp = async (req, res) => {
 exports.register = async (req, res) => {
     try {
         const data = req.body;
-        
+
         // 🚀 NORMALIZE: Ensure mobile is exactly 10 digits for consistent duplicate checking
         const cleanMobile = String(data.userMobile || "").replace(/\D/g, "").slice(-10);
         if (cleanMobile.length !== 10) return res.status(400).json({ success: false, message: "Invalid mobile number" });
@@ -131,33 +131,33 @@ exports.register = async (req, res) => {
         }
 
         let newUserPayload = { ...data, userMobile: cleanMobile, userActive: true };
-        
+
         // Normalize: if frontend sends nested accessCorporate or linkedCorporate, pull it to top for logic
         const corpData = data.accessCorporate || data.linkedCorporate || {};
 
         if (data.userRole === "CorpAdmin") {
             const pan = corpData.corporatePAN || data.corporatePAN || "DEFAULT_PAN";
-            
+
             const validation = require("../utils/validationHelper");
             if (!validation.isValidPAN(pan)) {
                 return res.status(400).json({ success: false, message: "Valid 10-character PAN required for Corporate registration" });
             }
 
             const dbName = tenantSecurity.encodeDbName(pan);
-            
+
             // 🚀 ISOLATION CHECK: One CorpAdmin per Database/PAN
-            const existing = await userMaster.findOne({ 
-                "accessCorporate.dbName": dbName, 
-                userRole: "CorpAdmin" 
+            const existing = await userMaster.findOne({
+                "accessCorporate.dbName": dbName,
+                userRole: "CorpAdmin"
             });
             if (existing) {
-                return res.status(400).json({ 
-                    success: false, 
-                    message: `A Corporate with PAN ${pan} is already registered. Please Login or use a different PAN.` 
+                return res.status(400).json({
+                    success: false,
+                    message: `A Corporate with PAN ${pan} is already registered. Please Login or use a different PAN.`
                 });
             }
 
-            newUserPayload.accessCorporate = [{ 
+            newUserPayload.accessCorporate = [{
                 corporateName: corpData.corporateName || data.corporateName,
                 corporatePAN: pan,
                 dbName: dbName,
@@ -170,16 +170,16 @@ exports.register = async (req, res) => {
 
             if (pan) {
                 targetDbName = tenantSecurity.encodeDbName(pan);
-                const owner = await userMaster.findOne({ 
-                    "accessCorporate.dbName": targetDbName, 
-                    userRole: "CorpAdmin" 
+                const owner = await userMaster.findOne({
+                    "accessCorporate.dbName": targetDbName,
+                    userRole: "CorpAdmin"
                 }).lean();
-                
+
                 if (!owner) {
                     return res.status(400).json({ success: false, message: "Invalid Corporate PAN. Company not found." });
                 }
 
-                newUserPayload.accessCorporate = [{ 
+                newUserPayload.accessCorporate = [{
                     corporateName: owner.accessCorporate?.[0]?.corporateName,
                     corporatePAN: pan,
                     dbName: targetDbName,
@@ -190,7 +190,7 @@ exports.register = async (req, res) => {
                 return res.status(400).json({ success: false, message: "Corporate PAN required for staff registration" });
             }
         }
-        
+
         const newUser = new userMaster(newUserPayload);
         await newUser.save();
 
@@ -199,7 +199,7 @@ exports.register = async (req, res) => {
             try {
                 const pan = data.corporatePAN || "DEFAULT_PAN";
                 const dbName = tenantSecurity.encodeDbName(pan);
-                
+
                 const profileData = {
                     corporateName: data.corporateName,
                     corporatePAN: pan,
@@ -216,9 +216,9 @@ exports.register = async (req, res) => {
         }
 
         return res.status(201).json({ success: true, message: "User registered", userId: newUser._id });
-    } catch (err) { 
+    } catch (err) {
         console.error("🔴 Registration Error:", err);
-        return res.status(500).json({ success: false, message: err.message }); 
+        return res.status(500).json({ success: false, message: err.message });
     }
 };
 
@@ -229,7 +229,7 @@ exports.login = async (req, res) => {
 
         const cleanMobile = String(mobile || "").replace(/\D/g, "").slice(-10);
         const user = await userMaster.findOne({ userMobile: cleanMobile, userActive: true });
-        
+
         if (!user || !user.userPassword) return res.status(401).json({ success: false, message: "Invalid credentials" });
 
         const isMatch = await bcrypt.compare(password, user.userPassword);
@@ -244,34 +244,36 @@ exports.login = async (req, res) => {
             activeLink = list.find(l => String(l._id) === String(targetCorpId) || l.dbName === targetCorpId) || list[0];
         }
 
-        const token = jwt.sign({ 
-            userId: String(user._id), 
-            userRole: user.userRole, 
+        const token = jwt.sign({
+            userId: String(user._id),
+            userRole: user.userRole,
             dbName: activeLink.dbName,
             locationId: activeLink.locationId || null,
             corporateName: activeLink.corporateName || "",
             userEmail: user.userEmail || "",
             userDisplayName: user.userDisplayName || "",
-            accessAllow: true 
+            accessAllow: true
         }, process.env.JWT_SECRET, { expiresIn: "90d" });
 
-        return res.json({ success: true, token, userSession: { 
-            token,
-            userId: String(user._id),
-            userRole: user.userRole,
-            dbName: activeLink.dbName,
-            corporateName: activeLink.corporateName || "",
-            corporatePAN: activeLink.corporatePAN || "",
-            CorpProfileImage: activeLink.CorpProfileImage || "",
-            locationId: activeLink.locationId || null,
-            userDisplayName: user.userDisplayName,
-            userProfileImage: user.userProfileImage || "",
-            accessCorporate: list, // Return all so UI can switch
-            accessAllow: true
-        }});
-    } catch (err) { 
+        return res.json({
+            success: true, token, userSession: {
+                token,
+                userId: String(user._id),
+                userRole: user.userRole,
+                dbName: activeLink.dbName,
+                corporateName: activeLink.corporateName || "",
+                corporatePAN: activeLink.corporatePAN || "",
+                CorpProfileImage: activeLink.CorpProfileImage || "",
+                locationId: activeLink.locationId || null,
+                userDisplayName: user.userDisplayName,
+                userProfileImage: user.userProfileImage || "",
+                accessCorporate: list, // Return all so UI can switch
+                accessAllow: true
+            }
+        });
+    } catch (err) {
         console.error("Login Error:", err.message);
-        return res.status(500).json({ success: false, message: err.message }); 
+        return res.status(500).json({ success: false, message: err.message });
     }
 };
 
@@ -283,37 +285,39 @@ exports.switchCorporate = async (req, res) => {
 
         const list = user.accessCorporate || [];
         const activeLink = list.find(l => String(l._id) === String(corporateId) || l.dbName === corporateId);
-        
+
         if (!activeLink) return res.status(403).json({ success: false, message: "Target corporate not found or unauthorized" });
 
-        const token = jwt.sign({ 
-            userId: String(user._id), 
-            userRole: user.userRole, 
+        const token = jwt.sign({
+            userId: String(user._id),
+            userRole: user.userRole,
             dbName: activeLink.dbName,
             locationId: activeLink.locationId || null,
             corporateName: activeLink.corporateName || "",
             userEmail: user.userEmail || "",
             userDisplayName: user.userDisplayName || "",
-            accessAllow: true 
+            accessAllow: true
         }, process.env.JWT_SECRET, { expiresIn: "90d" });
 
-        return res.json({ success: true, token, userSession: { 
-            token,
-            userId: String(user._id),
-            userRole: user.userRole,
-            dbName: activeLink.dbName,
-            corporateName: activeLink.corporateName || "",
-            corporatePAN: activeLink.corporatePAN || "",
-            CorpProfileImage: activeLink.CorpProfileImage || "",
-            locationId: activeLink.locationId || null,
-            userDisplayName: user.userDisplayName,
-            userProfileImage: user.userProfileImage || "",
-            accessCorporate: list,
-            accessAllow: true
-        }});
-    } catch (err) { 
+        return res.json({
+            success: true, token, userSession: {
+                token,
+                userId: String(user._id),
+                userRole: user.userRole,
+                dbName: activeLink.dbName,
+                corporateName: activeLink.corporateName || "",
+                corporatePAN: activeLink.corporatePAN || "",
+                CorpProfileImage: activeLink.CorpProfileImage || "",
+                locationId: activeLink.locationId || null,
+                userDisplayName: user.userDisplayName,
+                userProfileImage: user.userProfileImage || "",
+                accessCorporate: list,
+                accessAllow: true
+            }
+        });
+    } catch (err) {
         console.error("🔴 Switch Corporate Error:", err);
-        return res.status(500).json({ success: false, message: "Internal Error" }); 
+        return res.status(500).json({ success: false, message: "Internal Error" });
     }
 };
 
@@ -327,50 +331,7 @@ exports.checkUnique = async (req, res) => {
     } catch (err) { return res.status(500).json({ error: err.message }); }
 };
 
-exports.updateProfileImage = async (req, res) => {
-    try {
-        const { userId, imageBase64, fieldToUpdate } = req.body;
-        const { ProfileMaster } = req.tenantModels || {};
-        const requesterId = req.user.userId;
-        const requesterRole = req.user.userRole;
-        const dbName = req.tenantDbName || req.user.dbName;
-
-        // 1. Authorization
-        if (fieldToUpdate === "userProfileImage") {
-            if (requesterId.toString() !== userId?.toString()) {
-                return res.status(403).json({ success: false, message: "You can only update your own profile image" });
-            }
-        } else if (fieldToUpdate === "CorpProfileImage") {
-            if (requesterRole !== "CorpAdmin") {
-                return res.status(403).json({ success: false, message: "Only CorpAdmin can update corporate profile image" });
-            }
-        }
-
-        // 2. Resolve Config
-        let customConfig = null;
-        if (requesterRole !== "AppAdmin" && ProfileMaster) {
-            const profile = await ProfileMaster.findOne({});
-            if (profile?.apiUrls?.cloudinary?.isActive) {
-                customConfig = profile.apiUrls.cloudinary;
-            }
-        }
-
-        const subFolder = fieldToUpdate === "CorpProfileImage" ? "corporateProfile" : `userProfile/${userId}`;
-        const folderPath = `hipk/${dbName}/${subFolder}`;
-
-        const isUrl = imageBase64.startsWith('http');
-        const fileSource = isUrl ? imageBase64 : (imageBase64.startsWith('data:image') ? imageBase64 : `data:image/jpeg;base64,${imageBase64}`);
-        const uploadRes = await externalService.uploadMedia(fileSource, { folder: folderPath }, customConfig);
-        
-        // 🚀 CRITICAL: We NO LONGER save the URL to MongoDB. 
-        // The UI will fetch the latest image directly from Cloudinary via getProfileHistory.
-
-        return res.json({ success: true, url: uploadRes.url });
-    } catch (err) { 
-        console.error("🔴 Update Profile Image Error:", err);
-        return res.status(500).json({ success: false, message: err.message }); 
-    }
-};
+// Removed duplicate updateProfileImage
 
 exports.getProfileHistory = async (req, res) => {
     try {
@@ -401,9 +362,9 @@ exports.verifyIdentity = async (req, res) => {
     try {
         const { aadhaar, role, pan } = req.body;
         const user = await userMaster.findOne({ userAadhar: aadhaar, userActive: true });
-        
+
         if (!user) return res.status(404).json({ success: false, message: "Identity not found. Please check Aadhaar." });
-        
+
         // 1. Check Role Match
         // "User" is a catch-all for all types of users (including admins).
         // "CorpAdmin" is specific and requires PAN check.
@@ -439,17 +400,17 @@ exports.verifyIdentity = async (req, res) => {
         }
 
         otpStore[formatted] = { otp, expiresAt: Date.now() + 5 * 60 * 1000, purpose: "reset" };
-        
+
         const result = await sendOTPExternal(formatted, otp, "whatsapp", config);
         if (!result.success) {
             return res.status(500).json({ success: false, message: result.message || "Failed to send OTP" });
         }
 
-        return res.json({ 
-            success: true, 
+        return res.json({
+            success: true,
             message: `Identity Verified. ${result.message}`,
             tempMobile: mobile,
-            toast: result.message 
+            toast: result.message
         });
     } catch (err) {
         console.error("🔴 Verify Identity Error:", err.message);
@@ -512,7 +473,7 @@ exports.provisionTenant = async (req, res) => {
 
         // 3. Generate Credentials if missing
         let { dbName, dbPassword } = corporate.apiUrls?.tenantDb || {};
-        
+
         if (!dbName || !dbPassword) {
             const pan = corporate.corporatePAN || "DEFAULT_PAN";
             const dob = admin.userDoB || new Date(); // Use admin DOB as fallback
@@ -527,7 +488,7 @@ exports.provisionTenant = async (req, res) => {
 
         // 4. Trigger Provisioning
         console.log(`🚀 Manual Provisioning for ${dbName}...`);
-        
+
         const profileData = {
             corporateName: corporate.corporateName,
             corporatePAN: corporate.corporatePAN,
@@ -537,10 +498,10 @@ exports.provisionTenant = async (req, res) => {
 
         const result = await mongoProvisioner.provisionDatabase(dbName, profileData);
 
-        res.json({ 
-            success: true, 
-            message: "Infrastructure provisioned successfully", 
-            dbName: result.dbName 
+        res.json({
+            success: true,
+            message: "Infrastructure provisioned successfully",
+            dbName: result.dbName
         });
 
     } catch (err) {
@@ -565,15 +526,15 @@ exports.sendMessage = async (req, res) => {
 
         if (type === "whatsapp") {
             const tid = templateId || config?.msg91?.whatsapp_template_id;
-            const finalPlaceholders = pdfUrl 
-                ? { ...placeholders, pdf_url: pdfUrl } 
+            const finalPlaceholders = pdfUrl
+                ? { ...placeholders, pdf_url: pdfUrl }
                 : (placeholders || { message: finalMessage });
-            
+
             result = await messagingService.sendWhatsApp(mobile, tid, finalPlaceholders, config);
         } else if (type === "email") {
             if (!email) return res.status(400).json({ error: "Email address required for email type" });
-            const emailBody = pdfUrl 
-                ? `${message || 'Please find the document attached or linked below.'}<br><br><a href="${pdfUrl}">View PDF Document</a>` 
+            const emailBody = pdfUrl
+                ? `${message || 'Please find the document attached or linked below.'}<br><br><a href="${pdfUrl}">View PDF Document</a>`
                 : message;
             result = await emailService.sendEmail(email, subject || "Message from HIPK", emailBody, config);
         } else {
@@ -597,37 +558,88 @@ exports.updateProfileImage = async (req, res) => {
     try {
         const { userId, fieldToUpdate, imageBase64 } = req.body;
         const dbName = req.tenantDbName || req.user?.dbName;
-        const { userRole } = req.user;
+        const { userRole, userId: requesterId } = req.user;
 
         if (!imageBase64) return res.status(400).json({ success: false, message: "No image data provided" });
         if (!dbName) return res.status(400).json({ success: false, message: "Tenant context missing" });
 
         // 🛡️ PERMISSION CHECK
-        if (fieldToUpdate === "CorpProfileImage" && userRole !== "CorpAdmin") {
+        if (fieldToUpdate === "userProfileImage") {
+            if (requesterId.toString() !== userId?.toString()) {
+                return res.status(403).json({ success: false, message: "You can only update your own profile image" });
+            }
+        } else if (fieldToUpdate === "CorpProfileImage" && userRole !== "CorpAdmin") {
             return res.status(403).json({ success: false, message: "Unauthorized: Only CorpAdmin can update corporate profile" });
         }
 
-        // Identify folder path
-        // 🚀 ISOLATION: User profiles are unique per userId, Corporate profiles are tenant-wide
-        const folder = fieldToUpdate === "userProfileImage" ? `user-profile/${userId}` : "corp-profile";
-        const folderPath = `hipk/${dbName}/${folder}`;
+        let finalUrl = imageBase64;
 
-        // Get Cloudinary config from tenant
-        const { ProfileMaster } = req.tenantModels;
-        const profile = await ProfileMaster.findOne({}).lean();
-        const config = profile?.apiUrls?.cloudinary;
+        // If it's not an existing URL, we upload it
+        if (!imageBase64.startsWith('http')) {
+            const folder = fieldToUpdate === "userProfileImage" ? `user-profile/${userId}` : "corp-profile";
+            const folderPath = `hipk/${dbName}/${folder}`;
 
-        // Cloudinary uploader.upload accepts base64 data URI
-        const result = await externalService.uploadImage(imageBase64, folderPath, config);
+            const { ProfileMaster } = req.tenantModels;
+            const profile = await ProfileMaster.findOne({}).lean();
+            const config = profile?.apiUrls?.cloudinary;
 
-        res.json({ 
-            success: true, 
+            const fileSource = imageBase64.startsWith('data:image') ? imageBase64 : `data:image/jpeg;base64,${imageBase64}`;
+            const result = await externalService.uploadImage(fileSource, folderPath, config);
+            finalUrl = result.secure_url || result.url;
+        }
+
+        // Save URL to MongoDB to persist choice natively
+        if (fieldToUpdate === "userProfileImage") {
+            await userMaster.findByIdAndUpdate(userId, { userProfileImage: finalUrl });
+        } else if (fieldToUpdate === "CorpProfileImage") {
+            await userMaster.updateMany(
+                { "accessCorporate.dbName": dbName },
+                { $set: { "accessCorporate.$[elem].CorpProfileImage": finalUrl } },
+                { arrayFilters: [{ "elem.dbName": dbName }] }
+            );
+        }
+
+        res.json({
+            success: true,
             message: "Profile image updated successfully",
-            url: result.secure_url || result.url 
+            url: finalUrl
         });
 
     } catch (err) {
         console.error("🔴 Update Profile Image Error:", err.message);
+        res.status(500).json({ success: false, message: err.message });
+    }
+};
+
+/**
+ * 🗑️ deleteProfileImage
+ * Deletes an image from Cloudinary
+ */
+exports.deleteProfileImage = async (req, res) => {
+    try {
+        const { publicId, url } = req.body;
+        const dbName = req.tenantDbName || req.user?.dbName;
+        if (!dbName) return res.status(400).json({ error: "Tenant context missing" });
+
+        const { ProfileMaster } = req.tenantModels;
+        const profile = await ProfileMaster.findOne({}).lean();
+        const config = profile?.apiUrls?.cloudinary;
+
+        let pid = publicId;
+        if (!pid && url) {
+            // Extract public_id from Cloudinary URL if not provided
+            const parts = url.split('/');
+            const filename = parts.pop();
+            const folderPath = parts.slice(parts.indexOf('upload') + 2).join('/');
+            pid = folderPath ? `${folderPath}/${filename.split('.')[0]}` : filename.split('.')[0];
+        }
+
+        if (!pid) return res.status(400).json({ error: "No public_id or url provided" });
+
+        await externalService.deleteMedia(pid, config);
+        res.json({ success: true, message: "Image deleted" });
+    } catch (err) {
+        console.error("🔴 Delete Profile Image Error:", err.message);
         res.status(500).json({ success: false, message: err.message });
     }
 };
@@ -638,7 +650,11 @@ exports.updateProfileImage = async (req, res) => {
  */
 exports.getProfileHistory = async (req, res) => {
     try {
-        const { userId, type } = req.query; // type: 'user' or 'corp'
+        const { type } = req.query;
+        let { userId } = req.query;
+        if (userId === "undefined" || !userId) {
+            userId = req.user?.userId;
+        }
         const dbName = req.tenantDbName || req.user?.dbName;
 
         if (!dbName) return res.status(400).json({ error: "Tenant context missing" });
@@ -654,7 +670,11 @@ exports.getProfileHistory = async (req, res) => {
 
         const resources = await externalService.fetchFolderMedia(folderPath, config);
 
-        res.json({ success: true, resources });
+        // Fetch actual active DB profile image
+        const me = await userMaster.findById(userId).lean();
+        const activeUrl = type === "user" ? me?.userProfileImage : me?.accessCorporate?.find(c => c.dbName === dbName)?.CorpProfileImage;
+
+        res.json({ success: true, resources, activeUrl });
 
     } catch (err) {
         console.error("🔴 Get Profile History Error:", err.message);
