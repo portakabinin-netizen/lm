@@ -276,6 +276,43 @@ exports.manageLeads = {
         } catch (err) { res.status(500).json({ success: false, message: err.message }); }
     },
 
+    logSiteVisit: async (req, res) => {
+        try {
+            const { Leads } = req.tenantModels;
+            const { selfie_url, location, remarks } = req.body;
+            
+            const activityEntry = {
+                action: "Site Visit",
+                byUser: req.user.userDisplayName,
+                date: new Date(),
+                metadata: { selfie_url, location, remarks }
+            };
+
+            const updateQuery = {
+                $push: { activity: activityEntry }
+            };
+
+            // Capture first-time location as anchor
+            const lead = await Leads.findById(req.params.id);
+            if (!lead) return res.status(404).json({ success: false, message: "Lead not found" });
+
+            if (!lead.location || !lead.location.lat) {
+                updateQuery.$set = {
+                    location: {
+                        lat: location?.latitude || location?.lat,
+                        long: location?.longitude || location?.long,
+                        address: location?.formattedAddress || location?.address
+                    }
+                };
+            }
+
+            const updatedLead = await Leads.findByIdAndUpdate(req.params.id, updateQuery, { new: true });
+            req.io.to(req.tenantDbName).emit("lead:updated", { data: updatedLead });
+
+            res.json({ success: true, data: updatedLead });
+        } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+    },
+
     download: async (req, res) => {
         try {
             const { Leads } = req.tenantModels;
@@ -523,7 +560,7 @@ exports.manageEmployees = {
                 if (from_date) q.date.$gte = new Date(from_date);
                 if (to_date) q.date.$lte = new Date(to_date);
             }
-            const data = await Attendance.find(q).lean();
+            const data = await Attendance.find(q).populate("employeeId").lean();
             res.json({ success: true, data });
         } catch (err) { res.status(500).json({ success: false, message: err.message }); }
     },

@@ -60,6 +60,7 @@ const employeeSchema = new mongoose.Schema({
     pan: { type: String, trim: true, uppercase: true },
     aadhar: { type: String, trim: true },
     aadhar_no: { type: String, trim: true },
+    enrollment_no: { type: String, trim: true },
     dob: { type: Date },
     joinDate: { type: Date },
     gender: { type: String, enum: ["Male", "Female", "Transgender"], default: "Male" },
@@ -68,6 +69,7 @@ const employeeSchema = new mongoose.Schema({
     monthly_rate: { type: Number, default: 0 },
     bank: bankAccountSchema,
     addresses: employeeAddressSchema,
+    shiftEndTime: { type: String, trim: true }, // Default end time (e.g. "18:00")
     active: { type: Boolean, default: true }
 }, { timestamps: true });
 
@@ -116,6 +118,7 @@ const attendanceSchema = new mongoose.Schema({
     // ── Duty Toggle Fields ──
     dutyStart: { type: Date },         // When ON-duty was toggled
     dutyEnd: { type: Date },           // When OFF-duty (normal or forced)
+    dutyEndScheduled: { type: Date },  // Expected end time
     hoursWorked: { type: Number, default: 0 },
     forcedOff: { type: Boolean, default: false },          // true = ended before 8hr lock
     forcedOffReason: { type: String, trim: true },         // Reason captured on forced off-duty

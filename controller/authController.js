@@ -384,6 +384,7 @@ exports.verifyIdentity = async (req, res) => {
         const otp = generateOtp(6);
         const mobileData = formatMobile(mobile);
         const formatted = mobileData.with91;
+        const cleanMobile = mobileData.plain;
 
         // Resolve Tenant Config
         let config = null;
