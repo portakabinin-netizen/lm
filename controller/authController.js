@@ -46,22 +46,55 @@ exports.sendOtp = async (req, res) => {
             }
         }
 
-        // Resolve Tenant Config for MSG91
+        // 🚀 RESOLVE TENANT: Identify which corporate this user belongs to
+        let targetDbName = dbName;
+        if (!targetDbName) {
+            const user = await userMaster.findOne({ userMobile: cleanMobile }).lean();
+            if (user && user.accessCorporate && user.accessCorporate.length > 0) {
+                targetDbName = user.accessCorporate[0].dbName;
+            }
+        }
+
+        // 1. Try to fetch Tenant Config from MongoDB
         let config = null;
-        if (dbName) {
+        if (targetDbName) {
             try {
                 const dbConnector = require("../utils/dbConnector");
                 const { getTenantModels } = require("../models/TenantModels");
-                const conn = await dbConnector.getTenantConnection(dbName);
+                const conn = await dbConnector.getTenantConnection(targetDbName);
                 const { ProfileMaster } = getTenantModels(conn);
                 const profile = await ProfileMaster.findOne({}).lean();
                 config = profile?.apiUrls || null;
-            } catch (terr) { console.log("⚠️ Tenant config skip:", terr.message); }
+            } catch (terr) { 
+                console.log(`⚠️ Tenant config lookup failed for ${targetDbName}:`, terr.message); 
+            }
+        }
+
+        // 2. 🚀 GLOBAL FALLBACK: If no tenant config or inactive, use .env (Registration/Reset ONLY)
+        if (!config || !config.whatsapp_meta?.isActive) {
+            config = {
+                whatsapp_meta: {
+                    token: process.env.WHATSAPP_TOKEN,
+                    phone_number_id: process.env.PHONE_NUMBER_ID,
+                    url: process.env.WHATSAPP_URL || "https://graph.facebook.com/v25.0",
+                    templates: [
+                        { purpose: "register", template_id: process.env.WHATSAPP_REGISTER_TEMPLATE || process.env.MSG91_WHATSAPP_TEMPLATE_ID || "hipk_singup" },
+                        { purpose: "reset", template_id: process.env.WHATSAPP_RESET_TEMPLATE || process.env.MSG91_WHATSAPP_TEMPLATE_ID || "hipk_singup" }
+                    ],
+                    isActive: !!process.env.WHATSAPP_TOKEN
+                },
+                msg91: {
+                    authkey: process.env.MSG91_API_KEY,
+                    sender_id: process.env.MSG91_SENDER_ID || "portakabin",
+                    template_id: process.env.MSG91_TEMPLATE_ID,
+                    isActive: !!process.env.MSG91_API_KEY
+                }
+            };
         }
 
         otpStore[formatted] = { otp, expiresAt: Date.now() + 5 * 60 * 1000, purpose };
-
-        const result = await sendOTPExternal(formatted, otp, "whatsapp", config);
+        
+        const result = await sendOTPExternal(formatted, otp, "whatsapp", config, purpose);
 
         if (!result.success) {
             return res.status(500).json({ error: result.message || "Failed to send OTP" });
@@ -386,9 +419,10 @@ exports.verifyIdentity = async (req, res) => {
         const formatted = mobileData.with91;
         const cleanMobile = mobileData.plain;
 
-        // Resolve Tenant Config
+        // 1. Try to fetch Tenant Config from MongoDB
         let config = null;
-        const dbName = req.tenantDbName || req.user?.dbName || (user.accessCorporate?.[0]?.dbName);
+        let dbName = req.tenantDbName || req.user?.dbName || (user.accessCorporate?.[0]?.dbName);
+        
         if (dbName) {
             try {
                 const dbConnector = require("../utils/dbConnector");
@@ -397,12 +431,36 @@ exports.verifyIdentity = async (req, res) => {
                 const { ProfileMaster } = getTenantModels(conn);
                 const profile = await ProfileMaster.findOne({}).lean();
                 config = profile?.apiUrls || null;
-            } catch (terr) { console.log("⚠️ Identity config skip:", terr.message); }
+            } catch (terr) { 
+                console.log(`⚠️ Identity tenant config lookup failed for ${dbName}:`, terr.message); 
+            }
+        }
+
+        // 2. 🚀 GLOBAL FALLBACK: If no tenant config or inactive, use .env (Registration/Reset ONLY)
+        if (!config || !config.whatsapp_meta?.isActive) {
+            config = {
+                whatsapp_meta: {
+                    token: process.env.WHATSAPP_TOKEN,
+                    phone_number_id: process.env.PHONE_NUMBER_ID,
+                    url: process.env.WHATSAPP_URL || "https://graph.facebook.com/v25.0",
+                    templates: [
+                        { purpose: "register", template_id: process.env.WHATSAPP_REGISTER_TEMPLATE || process.env.MSG91_WHATSAPP_TEMPLATE_ID || "hipk_singup" },
+                        { purpose: "reset", template_id: process.env.WHATSAPP_RESET_TEMPLATE || process.env.MSG91_WHATSAPP_TEMPLATE_ID || "hipk_singup" }
+                    ],
+                    isActive: !!process.env.WHATSAPP_TOKEN
+                },
+                msg91: {
+                    authkey: process.env.MSG91_API_KEY,
+                    sender_id: process.env.MSG91_SENDER_ID || "portakabin",
+                    template_id: process.env.MSG91_TEMPLATE_ID,
+                    isActive: !!process.env.MSG91_API_KEY
+                }
+            };
         }
 
         otpStore[formatted] = { otp, expiresAt: Date.now() + 5 * 60 * 1000, purpose: "reset" };
 
-        const result = await sendOTPExternal(formatted, otp, "whatsapp", config);
+        const result = await sendOTPExternal(formatted, otp, "whatsapp", config, "reset");
         if (!result.success) {
             return res.status(500).json({ success: false, message: result.message || "Failed to send OTP" });
         }

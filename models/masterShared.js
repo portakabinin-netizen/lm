@@ -203,6 +203,18 @@ const corporateProfileSchema = new mongoose.Schema({
             sender_id: { type: String, trim: true },
             template_id: { type: String, trim: true },
             whatsapp_template_id: { type: String, trim: true },
+            url: { type: String, trim: true },
+            isActive: { type: Boolean, default: false }
+        },
+        whatsapp_meta: {
+            token: { type: String, trim: true },
+            phone_number_id: { type: String, trim: true },
+            waba_id: { type: String, trim: true },
+            url: { type: String, trim: true },
+            templates: [{
+                purpose: { type: String, trim: true }, // e.g., "register", "login", "reset"
+                template_id: { type: String, trim: true }
+            }],
             isActive: { type: Boolean, default: false }
         },
         cloudinary: {

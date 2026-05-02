@@ -9,14 +9,23 @@ const messagingService = {
      */
     sendSMS: async (mobile, message, config = null) => {
         try {
-            if (process.env.MSG_SIMULATION === "true") {
-                return { success: true, message: "(Simulated) SMS sent" };
+
+
+            // 🚀 SMS Configuration (STRICT: Read from profileMaster only)
+            const msg91Config = config?.msg91;
+
+            if (!msg91Config || !msg91Config.isActive) {
+                return { success: false, message: "SMS (MSG91) is not configured or active for this corporate" };
             }
 
-            const authKey = config?.msg91?.authkey || process.env.MSG91_API_KEY;
-            const senderId = config?.msg91?.sender_id || process.env.MSG91_SENDER_ID;
-            
-            const url = `https://api.msg91.com/api/v2/sendsms`;
+            const authKey = msg91Config.authkey;
+            const senderId = msg91Config.sender_id;
+
+            if (!authKey || !senderId) {
+                return { success: false, message: "SMS configuration is incomplete in profileMaster" };
+            }
+
+            const url = msg91Config.url || `https://api.msg91.com/api/v2/sendsms`;
             const payload = {
                 sender: senderId,
                 route: "4",
@@ -41,23 +50,25 @@ const messagingService = {
      */
     sendWhatsApp: async (mobile, templateId, placeholders = {}, config = null) => {
         try {
-            if (process.env.MSG_SIMULATION === "true") {
-                return { success: true, message: "(Simulated) WhatsApp message initiated" };
+
+
+            // 🚀 Meta Direct API Configuration (STRICT: Read from profileMaster only)
+            const metaConfig = config?.whatsapp_meta;
+
+            if (!metaConfig || !metaConfig.isActive) {
+                return { success: false, message: "WhatsApp (Meta) is not configured or active for this corporate" };
             }
 
-            // 🚀 Meta Direct API Configuration
-            const token = process.env.WHATSAPP_TOKEN;
-            const phoneNumberId = process.env.PHONE_NUMBER_ID?.trim().replace('+', ''); // Remove leading + if any
-            const baseUrl = process.env.WHATSAPP_URL || "https://graph.facebook.com/v25.0";
-            
+            const token = metaConfig.token;
+            const phoneNumberIdRaw = metaConfig.phone_number_id;
+            const phoneNumberId = phoneNumberIdRaw?.trim().replace('+', '');
+            const baseUrl = metaConfig.url || "https://graph.facebook.com/v25.0";
+
             if (!token || !phoneNumberId) {
-                return { success: false, message: "WhatsApp configuration missing" };
+                return { success: false, message: "WhatsApp Meta configuration is incomplete in profileMaster" };
             }
 
-            // 🚀 SANDBOX OVERRIDE: Redirect all messages to a verified number if override is ON
-            const recipient = process.env.WHATSAPP_SANDBOX_OVERRIDE === "true" 
-                ? "918368333343" 
-                : (mobile.startsWith('91') ? mobile : `91${mobile}`);
+            const recipient = mobile.startsWith('91') ? mobile : `91${mobile}`;
 
             const url = `${baseUrl}/${phoneNumberId}/messages`;
             const payload = {
@@ -66,14 +77,14 @@ const messagingService = {
                 type: "template",
                 template: {
                     name: templateId,
-                    language: { code: "en" }
+                    language: { code: templateId === "hello_world" ? "en_US" : "en" }
                 }
             };
 
             // Only add parameters if it's NOT the static hello_world template
             if (templateId !== "hello_world" && Object.keys(placeholders).length > 0) {
                 const otpValue = String(placeholders["1"] || Object.values(placeholders)[0]);
-                
+
                 payload.template.components = [
                     {
                         type: "body",
@@ -94,20 +105,20 @@ const messagingService = {
 
             const response = await fetch(url, {
                 method: "POST",
-                headers: { 
-                    "Content-Type": "application/json", 
-                    "Authorization": `Bearer ${token}` 
+                headers: {
+                    "Content-Type": "application/json",
+                    "Authorization": `Bearer ${token}`
                 },
                 body: JSON.stringify(payload)
             });
 
             const data = await response.json();
-            
+
             if (data.error) {
                 return { success: false, message: data.error.message };
             }
 
-            return { success: true, message: "WhatsApp message sent via Meta API", messageId: data.messages?.[0]?.id };
+            return { success: true, channel: "whatsapp", message: "WhatsApp message sent via Meta API", messageId: data.messages?.[0]?.id };
         } catch (err) {
             return { success: false, message: err.message };
         }
@@ -116,42 +127,61 @@ const messagingService = {
     /**
      * Send OTP via Meta WhatsApp or MSG91 SMS fallback
      */
-    sendOTP: async (mobile, otp, channel = "whatsapp", config = null) => {
+    sendOTP: async (mobile, otp, channel = "whatsapp", config = null, purpose = "register") => {
         try {
-            if (process.env.MSG_SIMULATION === "true") {
-                return { success: true, channel: channel, message: "(Simulated) OTP sent" };
-            }
+
 
             if (channel === "whatsapp") {
-                const templateId = config?.msg91?.whatsapp_template_id || process.env.MSG91_WHATSAPP_TEMPLATE_ID || "hello_world";
-                const result = await messagingService.sendWhatsApp(mobile, templateId, { "1": otp });
-                
+                // 1. Try to find purpose-specific template in whatsapp_meta
+                let templateId = config?.whatsapp_meta?.templates?.find(t => t.purpose === purpose)?.template_id;
+
+                // 2. Fallback to any whatsapp_template_id in msg91 block (Legacy)
+                if (!templateId) {
+                    templateId = config?.msg91?.whatsapp_template_id;
+                }
+
+                if (!templateId) {
+                    return { success: false, message: `WhatsApp template for purpose "${purpose}" not configured in profileMaster` };
+                }
+
+                const result = await messagingService.sendWhatsApp(mobile, templateId, { "1": otp }, config);
+
                 if (result.success) return result;
             }
 
-            // SMS Fallback via MSG91 (if still needed/available)
-            const authKey = config?.msg91?.authkey || process.env.MSG91_API_KEY;
-            const templateId = config?.msg91?.template_id || process.env.MSG91_TEMPLATE_ID;
+            // SMS Fallback via MSG91 (STRICT: Read from profileMaster only)
+            const msg91Config = config?.msg91;
+            if (!msg91Config || !msg91Config.isActive) {
+                return { success: false, message: "SMS fallback is not configured or active for this corporate" };
+            }
+
+            const authKey = msg91Config.authkey;
+            const templateId = msg91Config.template_id;
+
+            if (!authKey || !templateId) {
+                return { success: false, message: "SMS fallback configuration is incomplete in profileMaster" };
+            }
 
             const payload = {
                 template_id: templateId,
                 mobile, otp, otp_length: "6", otp_expiry: "5"
             };
 
-            const response = await fetch("https://api.msg91.com/api/v5/otp", {
+            const url = msg91Config.url || "https://api.msg91.com/api/v5/otp";
+            const response = await fetch(url, {
                 method: "POST",
                 headers: { "Content-Type": "application/json", "Authkey": authKey },
                 body: JSON.stringify(payload)
             });
             const data = await response.json();
 
-            return { 
-                success: data.type === "success", 
+            return {
+                success: data.type === "success",
                 channel: "sms",
-                message: data.type === "success" ? `OTP sent via SMS` : data.message 
+                message: data.type === "success" ? `OTP sent via SMS` : data.message
             };
-        } catch (err) { 
-            return { success: false, message: err.message }; 
+        } catch (err) {
+            return { success: false, message: err.message };
         }
     }
 };
