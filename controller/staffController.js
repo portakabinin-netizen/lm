@@ -1,5 +1,6 @@
 const { StaffBook } = require("../models/StaffBook");
 const mongoose = require("mongoose");
+const { resolveDatePreset } = require("../utils/dateUtils");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPER — resolve / create hub + corporate slot
@@ -400,9 +401,16 @@ exports.listAttendance = async (req, res) => {
         const query = { corporateId };
         if (employeeId) query.employeeId = employeeId;
         if (from_date || to_date) {
-            query.date = {};
-            if (from_date) query.date.$gte = new Date(from_date);
-            if (to_date)   query.date.$lte = new Date(to_date);
+            const dateQuery = {};
+            if (from_date) {
+                const d = resolveDatePreset(from_date);
+                if (d instanceof Date && !isNaN(d.getTime())) dateQuery.$gte = d;
+            }
+            if (to_date) {
+                const d = resolveDatePreset(to_date);
+                if (d instanceof Date && !isNaN(d.getTime())) dateQuery.$lte = d;
+            }
+            if (Object.keys(dateQuery).length > 0) query.date = dateQuery;
         }
 
         const list = await AttendanceLog.find(query).sort({ date: -1 }).populate("employeeId", "name role");

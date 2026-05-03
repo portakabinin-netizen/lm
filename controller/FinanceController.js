@@ -152,6 +152,30 @@ exports.getAnalytics = async (req, res) => {
         let poAmount = 0;
         pList.forEach(p => poAmount += (p.totals?.grandTotal || 0));
 
+        // Month-wise Aggregation (Last 6 Months)
+        const sixMonthsAgo = new Date();
+        sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+
+        const monthWiseAgg = await TaxInvoices.aggregate([
+            { $match: { date: { $gte: sixMonthsAgo } } },
+            { 
+                $group: { 
+                    _id: { $dateToString: { format: "%Y-%m", date: "$date" } }, 
+                    tax: { $sum: "$totals.total_tax" },
+                    revenue: { $sum: "$totals.grand_total" }
+                } 
+            },
+            { $sort: { _id: 1 } },
+            { 
+                $project: { 
+                    month: "$_id", 
+                    tax: 1, 
+                    revenue: 1, 
+                    _id: 0 
+                } 
+            }
+        ]);
+
         res.json({
             success: true,
             data: {
@@ -172,7 +196,8 @@ exports.getAnalytics = async (req, res) => {
                 pendingComparison: [
                     { label: "Pending Bills", value: poAmount * 0.1 },
                     { label: "Pending Inv", value: invoiceAmount * 0.2 }
-                ]
+                ],
+                financeTrend: monthWiseAgg
             }
         });
     } catch (err) {

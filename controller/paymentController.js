@@ -1,6 +1,7 @@
 const { PaymentBook, PAYMENT_TYPES, RECEIPT_TYPES } = require("../models/PaymentBook");
 const { LeadsLedgers } = require("../models/LeadsLedgers");
 const mongoose = require("mongoose");
+const { resolveDatePreset } = require("../utils/dateUtils");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LEAD-LINKED txn types — when these are recorded, a voucher is also posted
@@ -315,8 +316,14 @@ exports.listTransactions = async (req, res) => {
         if (status)       txns = txns.filter(t => t.status === status);
         if (ref_lead_id)  txns = txns.filter(t => t.ref_lead_id?.toString() === ref_lead_id);
         if (party_name)   txns = txns.filter(t => t.party_name?.toLowerCase().includes(party_name.toLowerCase()));
-        if (from_date)    txns = txns.filter(t => new Date(t.txn_date) >= new Date(from_date));
-        if (to_date)      txns = txns.filter(t => new Date(t.txn_date) <= new Date(to_date));
+        if (from_date) {
+            const d = resolveDatePreset(from_date);
+            if (d instanceof Date && !isNaN(d.getTime())) txns = txns.filter(t => new Date(t.txn_date) >= d);
+        }
+        if (to_date) {
+            const d = resolveDatePreset(to_date);
+            if (d instanceof Date && !isNaN(d.getTime())) txns = txns.filter(t => new Date(t.txn_date) <= d);
+        }
 
         txns.sort((a, b) => new Date(b.txn_date) - new Date(a.txn_date));
 
@@ -427,8 +434,14 @@ exports.getPaymentSummary = async (req, res) => {
         if (!record) return res.json({ success: true, data: empty });
 
         let txns = record.transactions || [];
-        if (from_date) txns = txns.filter(t => new Date(t.txn_date) >= new Date(from_date));
-        if (to_date)   txns = txns.filter(t => new Date(t.txn_date) <= new Date(to_date));
+        if (from_date) {
+            const d = resolveDatePreset(from_date);
+            if (d instanceof Date && !isNaN(d.getTime())) txns = txns.filter(t => new Date(t.txn_date) >= d);
+        }
+        if (to_date) {
+            const d = resolveDatePreset(to_date);
+            if (d instanceof Date && !isNaN(d.getTime())) txns = txns.filter(t => new Date(t.txn_date) <= d);
+        }
 
         const cleared = txns.filter(t => t.status !== "Cancelled");
 

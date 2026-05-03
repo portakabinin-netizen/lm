@@ -143,7 +143,6 @@ const externalService = {
             let url = `${baseUrl}?userid=${config.userid}&key=${config.key}&from_date=${sDate}&to_date=${eDate}&limit=100&page_no=1`;
             if (config.profile_id) url += `&profile_id=${config.profile_id}`;
 
-            console.log(`📡 [${tenantDbName}] TradeIndia: Fetching inquiries since ${sDate}...`);
             const initialStats = { totalFetched: 0, uniqueCount: 0, duplicateCount: 0 };
             externalService.emitProgress(io, tenantDbName, baseProgress + (scale * 0.1), "Fetching inquiries from TradeIndia...", "tradeindia", initialStats);
 
@@ -160,7 +159,6 @@ const externalService = {
                 ? response.data
                 : (response.data.data || response.data.RESPONSE || []);
 
-            console.log(`📡 [${tenantDbName}] TradeIndia: Found ${rawLeads.length} raw records.`);
             const normalized = rawLeads.map(item => externalService.normalizeLead(item, "TradeIndia"));
 
             // Emit progress update with fetched count
@@ -250,14 +248,12 @@ const externalService = {
                 }
 
                 if (allUids.length === 0) {
-                    console.log(`📧 [${tenantDbName}] No new emails found.`);
                     if (lock) lock.release();
                     await client.logout();
                     return [];
                 }
 
                 // PHASE 2 & 3: Fetch Bodies and Extract Values (30-60%)
-                console.log(`📧 [${tenantDbName}] Processing ${allUids.length} emails...`);
                 for (let i = 0; i < allUids.length; i++) {
                     const { uid, sender } = allUids[i];
                     const subPercent = 0.3 + ((i / allUids.length) * 0.7); // Remaining 70% of scale
@@ -529,7 +525,6 @@ const externalService = {
                 created_at: r.created_at
             }));
         } catch (err) {
-            console.error("🔴 Cloudinary Fetch Folder Error:", err.message);
             throw err;
         }
     },

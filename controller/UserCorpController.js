@@ -10,6 +10,7 @@ const userMaster = require("../models/userMaster");
 const mongoose = require("mongoose");
 const ExcelJS = require("exceljs");
 const externalService = require("../utils/externalService");
+const { resolveDatePreset } = require("../utils/dateUtils");
 
 // Constants
 const SENDERS = require('../models/senders.json');
@@ -124,35 +125,76 @@ exports.manageLeads = {
         try {
             const { Leads } = req.tenantModels;
             const { fromDate, toDate, source } = req.query;
-            
             const q = {};
             
-            // 1. Location Filtering
-            const accessibleIds = req.user?.accessibleLocationIds;
-            if (req.user?.userRole !== "CorpAdmin" && accessibleIds?.length > 0) {
-                q.locationId = { $in: accessibleIds };
-            }
-
-            // 2. Date/Source Filtering
             if (fromDate || toDate) {
-                q.generated_date = {};
-                if (fromDate) q.generated_date.$gte = new Date(fromDate);
-                if (toDate)   q.generated_date.$lte = new Date(toDate);
+                const dateQuery = {};
+                if (fromDate) {
+                    const d = resolveDatePreset(fromDate);
+                    if (d instanceof Date && !isNaN(d.getTime())) dateQuery.$gte = d;
+                }
+                if (toDate) {
+                    const d = resolveDatePreset(toDate);
+                    if (d instanceof Date && !isNaN(d.getTime())) dateQuery.$lte = d;
+                }
+                if (Object.keys(dateQuery).length > 0) q.generated_date = dateQuery;
             }
             if (source) q.source = source;
 
-            // 3. Status Aggregation
+            // 1. Status Aggregation (Summary)
             const statusAgg = await Leads.aggregate([
                 { $match: q },
                 { $group: { _id: "$status", value: { $sum: 1 } } },
                 { $project: { label: "$_id", value: 1, _id: 0 } }
             ]);
 
-            // 4. Source Aggregation
+            // 2. Source-wise Grouping (Strict Quadrant Metrics)
             const sourceAgg = await Leads.aggregate([
                 { $match: q },
-                { $group: { _id: "$source", value: { $sum: 1 } } },
-                { $project: { label: { $ifNull: ["$_id", "Unknown"] }, value: 1, _id: 0 } }
+                {
+                    $group: {
+                        _id: "$source",
+                        totalLeads: { $sum: 1 },
+                        posCount: {
+                            $sum: {
+                                $cond: [
+                                    { $in: ["$status", ["Tax Invoice", "Fully Paid"]] },
+                                    1,
+                                    0
+                                ]
+                            }
+                        },
+                        recycleCount: {
+                            $sum: {
+                                $cond: [
+                                    { $in: ["$status", ["Recycle", "Recycled", "recycled"]] },
+                                    1,
+                                    0
+                                ]
+                            }
+                        },
+                        pendingCount: {
+                            $sum: {
+                                $cond: [
+                                    { $in: ["$status", ["Recent", "Engaged", "Accepted"]] },
+                                    1,
+                                    0
+                                ]
+                            }
+                        }
+                    }
+                },
+                { 
+                    $project: { 
+                        label: { $ifNull: ["$_id", "Other"] }, 
+                        total: "$totalLeads", 
+                        posCount: 1,
+                        recycleCount: 1,
+                        pendingCount: 1,
+                        _id: 0 
+                    } 
+                },
+                { $sort: { total: -1 } }
             ]);
 
             const total = await Leads.countDocuments(q);
@@ -557,8 +599,15 @@ exports.manageEmployees = {
             const q = {};
             if (from_date || to_date) {
                 q.date = {};
-                if (from_date) q.date.$gte = new Date(from_date);
-                if (to_date) q.date.$lte = new Date(to_date);
+                if (from_date) {
+                    const d = resolveDatePreset(from_date);
+                    if (d) q.date.$gte = d;
+                }
+                if (to_date) {
+                    const d = resolveDatePreset(to_date);
+                    if (d) q.date.$lte = d;
+                }
+                if (Object.keys(q.date).length === 0) delete q.date;
             }
             const data = await Attendance.find(q).populate("employeeId").lean();
             res.json({ success: true, data });

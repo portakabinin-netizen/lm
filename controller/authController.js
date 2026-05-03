@@ -313,13 +313,21 @@ exports.login = async (req, res) => {
 exports.switchCorporate = async (req, res) => {
     try {
         const { corporateId } = req.body;
+        
         const user = await userMaster.findById(req.user.userId);
-        if (!user) return res.status(404).json({ success: false, message: "User not found" });
+        if (!user) {
+            console.log("❌ [Switch] User not found in database");
+            return res.status(404).json({ success: false, message: "User not found" });
+        }
 
         const list = user.accessCorporate || [];
         const activeLink = list.find(l => String(l._id) === String(corporateId) || l.dbName === corporateId);
 
-        if (!activeLink) return res.status(403).json({ success: false, message: "Target corporate not found or unauthorized" });
+        if (!activeLink) {
+            console.log(`❌ [Switch] Target ${corporateId} not found in user's access list. Available:`, list.map(l => l.dbName));
+            return res.status(403).json({ success: false, message: "Target corporate not found or unauthorized" });
+        }
+
 
         const token = jwt.sign({
             userId: String(user._id),
@@ -386,7 +394,6 @@ exports.getProfileHistory = async (req, res) => {
         const resources = await externalService.fetchFolderMedia(folderPath, customConfig);
         return res.json({ success: true, resources });
     } catch (err) {
-        console.error("🔴 Get Profile History Error:", err);
         return res.status(500).json({ success: false, message: err.message });
     }
 };
@@ -736,7 +743,6 @@ exports.getProfileHistory = async (req, res) => {
         res.json({ success: true, resources, activeUrl });
 
     } catch (err) {
-        console.error("🔴 Get Profile History Error:", err.message);
         res.status(500).json({ success: false, message: err.message });
     }
 };
