@@ -26,6 +26,8 @@ const authMiddleware = (req, res, next) => {
       corporateIds: decoded.corporateIds || [],
       corporateName: decoded.corporateName,
       userEmail: decoded.userEmail,
+      userDisplayName: decoded.userDisplayName, // 👤 Essential for activity logging
+      ownMobile: decoded.ownMobile, // 📱 For Guest Role resolution
     };
 
     next();

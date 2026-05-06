@@ -310,6 +310,123 @@ exports.login = async (req, res) => {
     }
 };
 
+exports.unregisteredLogin = async (req, res) => {
+    try {
+        const { mobile, password } = req.body; // username=own mobile, password=ref mobile
+        if (!mobile || !password) return res.status(400).json({ success: false, message: "Mobile and reference number required" });
+
+        const cleanMobile = String(mobile || "").replace(/\D/g, "").slice(-10);
+        const cleanRef = String(password || "").replace(/\D/g, "").slice(-10);
+
+        // 1. Identify Database using reference number (Must be a non-admin user for unambiguous mapping)
+        const refUser = await userMaster.findOne({ 
+            userMobile: cleanRef, 
+            userRole: { $ne: "CorpAdmin" } 
+        });
+
+        if (!refUser || !refUser.accessCorporate?.[0]?.dbName) {
+            console.log(`❌ Unregistered Login: Reference Mobile ${cleanRef} NOT FOUND or is an Admin (Ambiguous)`);
+            return res.status(404).json({ 
+                success: false, 
+                message: "Reference number must be a registered staff member of the corporate." 
+            });
+        }
+
+        const dbName = refUser.accessCorporate[0].dbName;
+        
+        // Generate a Guest Authorized Token
+        const token = jwt.sign({
+            userId: cleanMobile, // Placeholder
+            userRole: "Guest",
+            dbName: dbName,
+            userDisplayName: "Guest User",
+            accessAllow: true,
+            isGuest: true,
+            ownMobile: cleanMobile
+        }, process.env.JWT_SECRET, { expiresIn: "90d" });
+
+        console.log(`✅ Guest Token Generated for ${cleanMobile} in ${dbName}`);
+
+        return res.json({
+            success: true,
+            token,
+            userSession: {
+                token,
+                userId: cleanMobile,
+                userRole: "Guest",
+                dbName: dbName,
+                corporateName: refUser.accessCorporate[0].corporateName,
+                corporateTagName: refUser.accessCorporate[0].corporateTagName || "",
+                userDisplayName: "Guest User",
+                CorpProfileImage: refUser.accessCorporate[0].CorpProfileImage || "",
+                userProfileImage: "",
+                isGuest: true,
+                accessAllow: true
+            }
+        });
+
+    } catch (err) {
+        console.error("Unregistered Login Error:", err.message);
+        return res.status(500).json({ success: false, message: err.message });
+    }
+};
+
+exports.resolveGuestRole = async (req, res) => {
+    try {
+        const { dbName, ownMobile } = req.user;
+        if (!dbName || !ownMobile) return res.status(400).json({ success: false, message: "Invalid guest token context" });
+
+        const { getTenantModels } = require("../models/TenantModels");
+        const dbConnector = require("../utils/dbConnector");
+        const conn = await dbConnector.getTenantConnection(dbName);
+        const models = getTenantModels(conn);
+
+        // 📱 Handle multiple mobile formats for robust matching
+        const clean10 = ownMobile.slice(-10);
+        const formats = [clean10, `0${clean10}`, `91${clean10}`, `+91${clean10}`];
+        const query = { mobile: { $in: formats }, active: true };
+
+        let role = null;
+        let userData = null;
+
+        // 1. Search Staff
+        userData = await models.Employees.findOne(query).lean();
+        if (userData) role = "Staff";
+
+        // 2. Search Vendor
+        if (!userData) {
+            userData = await models.Parties.findOne({ ...query, type: "Supplier" }).lean();
+            if (userData) role = "Vendor";
+        }
+
+        // 3. Search Client
+        if (!userData) {
+            userData = await models.Parties.findOne({ ...query, type: "Client" }).lean();
+            if (userData) role = "Client";
+        }
+
+        if (!userData) {
+            console.log(`❌ Guest Access Denied: ${clean10} not found in collections of ${dbName}`);
+            return res.status(404).json({ 
+                success: false, 
+                message: "Access Denied: Your mobile is not linked to this corporate. Please use a reference mobile of a registered user from your company." 
+            });
+        }
+
+        console.log(`✅ Guest Resolved: ${clean10} found as ${role} in ${dbName}`);
+        return res.json({
+            success: true,
+            role,
+            userDisplayName: userData.name,
+            userId: String(userData._id),
+            userProfileImage: userData.photo_url || userData.userProfileImage || ""
+        });
+    } catch (err) {
+        console.error("Guest Resolution Error:", err.message);
+        return res.status(500).json({ success: false, message: err.message });
+    }
+};
+
 exports.switchCorporate = async (req, res) => {
     try {
         const { corporateId } = req.body;
@@ -378,13 +495,21 @@ exports.getProfileHistory = async (req, res) => {
     try {
         const { userId, type } = req.query; // type: "user" or "corp"
         const { ProfileMaster } = req.tenantModels || {};
-        const dbName = req.tenantDbName || req.user.dbName;
+        const dbName = req.tenantDbName || req.user?.dbName;
+
+        if (!dbName) {
+            return res.status(400).json({ success: false, message: "Missing tenant identification" });
+        }
 
         let customConfig = null;
         if (ProfileMaster) {
-            const profile = await ProfileMaster.findOne({});
-            if (profile?.apiUrls?.cloudinary?.isActive) {
-                customConfig = profile.apiUrls.cloudinary;
+            try {
+                const profile = await ProfileMaster.findOne({}).lean();
+                if (profile?.apiUrls?.cloudinary?.isActive) {
+                    customConfig = profile.apiUrls.cloudinary;
+                }
+            } catch (err) {
+                console.error("ProfileMaster Query Error:", err.message);
             }
         }
 

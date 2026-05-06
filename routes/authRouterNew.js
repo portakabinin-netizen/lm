@@ -27,9 +27,10 @@ router.get('/health-check', authController.healthCheck);
 router.post("/send-otp",authController.sendOtp);
 router.post("/search",authController.searchlinkCorp);
 router.post("/verify-otp", authController.verifyOtp);
-router.post("/check-unique", validateAuth, authController.checkUnique);
+router.post("/check-unique", authController.checkUnique);
 router.post("/register", validateAuth, authController.register);
 router.post("/login", validateAuth, authController.login);
+router.post("/unregistered-login", authController.unregisteredLogin);
 router.post("/verify-identity",validateAuth,authController.verifyIdentity);
 router.post("/reset-password", authController.resetPassword);
 
@@ -45,6 +46,7 @@ router.post("/reset-password", authController.resetPassword);
 // Apply authMiddleware to all routes defined below this point
 
 router.use(authMiddleware);
+router.post("/resolve-guest", authController.resolveGuestRole);
 router.post("/switch-corporate", authController.switchCorporate);
 router.post("/update-profile-image", tenantMiddleware, authController.updateProfileImage);
 router.post("/delete-profile-image", tenantMiddleware, authController.deleteProfileImage);

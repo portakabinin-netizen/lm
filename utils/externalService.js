@@ -514,7 +514,7 @@ const externalService = {
             
             // Search API execute() accepts config overrides directly in the Node SDK
             const result = await cloudinary.search
-                .expression(`folder:${folderPath}`)
+                .expression(`folder:"${folderPath}"`)
                 .sort_by('created_at', 'desc')
                 .max_results(30)
                 .execute(configOverrides);

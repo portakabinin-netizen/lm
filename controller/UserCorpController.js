@@ -306,8 +306,9 @@ exports.manageLeads = {
     addActivity: async (req, res) => {
         try {
             const { Leads } = req.tenantModels;
+            const byUser = req.user?.userDisplayName || req.body.byUser || "System";
             const item = await Leads.findByIdAndUpdate(req.params.id, { 
-                $push: { activity: { ...req.body, date: new Date(), byUser: req.user.userDisplayName } } 
+                $push: { activity: { ...req.body, date: new Date(), byUser } } 
             }, { new: true });
             if (!item) return res.status(404).json({ success: false, message: "Lead not found" });
             
@@ -325,7 +326,7 @@ exports.manageLeads = {
             
             const activityEntry = {
                 action: "Site Visit",
-                byUser: req.user.userDisplayName,
+                byUser: req.user?.userDisplayName || "System",
                 date: new Date(),
                 metadata: { selfie_url, location, remarks }
             };
