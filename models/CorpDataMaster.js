@@ -79,6 +79,7 @@ const corporateProfileSchema = new mongoose.Schema({
             profile_id: { type: String, trim: true },
             key: { type: String, trim: true },
         },
+        cloudPlaybackUrl: { type: String, trim: true },
         key: { type: String, trim: true },
     },
 }, { _id: false });
@@ -149,9 +150,7 @@ const leadSchema = new mongoose.Schema({
     product_name: { type: String, trim: true },
     source: { type: String, trim: true },
     source_id: { type: String, trim: true },
-    subject: { type: String, trim: true },
-    message: { type: String, trim: true },
-    status: { type: String, default: "Recent" },
+    status: { type: String, default: "Engaged" },
     generated_date: { type: Date, default: Date.now },
     clientId: { type: mongoose.Schema.Types.ObjectId },
     activity: [new mongoose.Schema({

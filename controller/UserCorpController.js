@@ -476,6 +476,26 @@ exports.manageLeads = {
 };
 
 /**
+ * 🏢 CORPORATE PROFILE MANAGEMENT
+ */
+exports.manageProfile = {
+    get: async (req, res) => {
+        try {
+            const { ProfileMaster } = req.tenantModels;
+            const profile = await ProfileMaster.findOne({}).lean();
+            res.json({ success: true, data: profile });
+        } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+    },
+    update: async (req, res) => {
+        try {
+            const { ProfileMaster } = req.tenantModels;
+            const profile = await ProfileMaster.findOneAndUpdate({}, req.body, { new: true, upsert: true });
+            res.json({ success: true, data: profile });
+        } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+    }
+};
+
+/**
  * 📦 CATALOG & PRODUCTS
  */
 exports.manageCatalog = {

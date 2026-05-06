@@ -84,7 +84,7 @@ const leadSchema = new mongoose.Schema({
     product_name: { type: String, trim: true },
     source: { type: String, trim: true },
     source_id: { type: String, trim: true, unique: true },
-    status: { type: String, default: "Recent" },
+    status: { type: String, default: "Engaged" },
     generated_date: { type: Date, default: Date.now },
     clientId: { type: mongoose.Schema.Types.ObjectId },
     activity: [new mongoose.Schema({

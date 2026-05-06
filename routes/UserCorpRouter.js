@@ -81,4 +81,8 @@ router.post("/staff",            ctrl.manageStaff.create);
 router.put("/staff/:id",         ctrl.manageStaff.update);
 router.delete("/staff/:id",      ctrl.manageStaff.delete);
 
+// --- 🏢 CORPORATE PROFILE ---
+router.get("/profile",           ctrl.manageProfile.get);
+router.put("/profile",           ctrl.manageProfile.update);
+
 module.exports = router;
