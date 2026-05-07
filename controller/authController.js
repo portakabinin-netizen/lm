@@ -122,7 +122,6 @@ exports.verifyOtp = (req, res) => {
             return res.status(400).json({ error: "Invalid OTP" });
         }
 
-        console.log(`✅ OTP Verified successfully for ${formatted}`);
         delete otpStore[formatted];
         return res.json({ success: true });
     } catch (err) { return res.status(500).json({ error: err.message }); }
@@ -241,7 +240,6 @@ exports.register = async (req, res) => {
                 };
 
                 await mongoProvisioner.provisionDatabase(dbName, profileData);
-                console.log(`✅ Provisioned and Seeded DB ${dbName} for admin ${newUser.userDisplayName}`);
             } catch (perr) {
                 console.error("Critical: Provisioning failed:", perr.message);
                 // We proceed but log the error - the admin might need to retry setup from UI
@@ -332,34 +330,96 @@ exports.unregisteredLogin = async (req, res) => {
             });
         }
 
-        const dbName = refUser.accessCorporate[0].dbName;
-        
-        // Generate a Guest Authorized Token
+        const dbConnector = require("../utils/dbConnector");
+        const { getTenantModels } = require("../models/TenantModels");
+
+        const clean10 = cleanMobile.slice(-10);
+        const formats = [clean10, `0${clean10}`, `91${clean10}`, `+91${clean10}`];
+        const query = { mobile: { $in: formats }, active: true };
+
+        let role = "Client"; 
+        let userData = { name: "Guest User", _id: cleanMobile, photo_url: "" };
+        let finalDbName = null;
+
+        // 🚀 Loop through all corporates linked to the reference user
+        for (const corp of refUser.accessCorporate) {
+            if (!corp.isActive) continue;
+            
+            const dbName = corp.dbName;
+            const mobileRegex = new RegExp(cleanMobile.slice(-10) + "$");
+            
+            const tenantConnection = await dbConnector.getTenantConnection(dbName);
+            const models = getTenantModels(tenantConnection);
+            
+            // 1. Search Staff (Try finding even if inactive first for debugging)
+            const staff = await models.Employees.findOne({ mobile: mobileRegex }).lean();
+            if (staff) {
+                if (staff.active !== false) {
+                    role = "Staff";
+                    userData = { name: staff.name, _id: staff._id, photo_url: staff.photo_url };
+                    finalDbName = dbName;
+                    break;
+                }
+            }
+
+            // 2. Search Vendor
+            const vendor = await models.Parties.findOne({ mobile: mobileRegex, type: "Supplier" }).lean();
+            if (vendor) {
+                role = "Vendor";
+                userData = { name: vendor.name, _id: vendor._id, photo_url: "" };
+                finalDbName = dbName;
+                break;
+            }
+
+            // 3. Search Client (Parties)
+            const client = await models.Parties.findOne({ mobile: mobileRegex, type: "Client" }).lean();
+            if (client) {
+                role = "Client";
+                userData = { name: client.name, _id: client._id, photo_url: "" };
+                finalDbName = dbName;
+                break;
+            }
+
+            // 4. Search Client (Leads)
+            const lead = await models.Leads.findOne({ sender_mobile: { $in: formats } }).lean();
+            if (lead) {
+                role = "Client";
+                userData = { name: lead.sender_name, _id: lead._id, photo_url: "" };
+                finalDbName = dbName;
+                break;
+            }
+        }
+
+        if (!finalDbName) {
+            // Default to first corp if not found anywhere (Legacy behavior)
+            finalDbName = refUser.accessCorporate[0].dbName;
+        }
+
+        // Generate a Authorized Token with the resolved role
         const token = jwt.sign({
-            userId: cleanMobile, // Placeholder
-            userRole: "Guest",
-            dbName: dbName,
-            userDisplayName: "Guest User",
+            userId: String(userData._id),
+            userRole: role,
+            dbName: finalDbName,
+            userDisplayName: userData.name,
             accessAllow: true,
             isGuest: true,
             ownMobile: cleanMobile
         }, process.env.JWT_SECRET, { expiresIn: "90d" });
 
-        console.log(`✅ Guest Token Generated for ${cleanMobile} in ${dbName}`);
 
         return res.json({
             success: true,
             token,
             userSession: {
                 token,
-                userId: cleanMobile,
-                userRole: "Guest",
-                dbName: dbName,
+                userId: String(userData._id),
+                userRole: role,
+                dbName: finalDbName,
                 corporateName: refUser.accessCorporate[0].corporateName,
                 corporateTagName: refUser.accessCorporate[0].corporateTagName || "",
-                userDisplayName: "Guest User",
+                userDisplayName: userData.name,
                 CorpProfileImage: refUser.accessCorporate[0].CorpProfileImage || "",
-                userProfileImage: "",
+                userProfileImage: userData.photo_url || "",
                 isGuest: true,
                 accessAllow: true
             }
@@ -399,21 +459,20 @@ exports.resolveGuestRole = async (req, res) => {
             if (userData) role = "Vendor";
         }
 
-        // 3. Search Client
+        // 4. Search Client (Leads)
         if (!userData) {
-            userData = await models.Parties.findOne({ ...query, type: "Client" }).lean();
-            if (userData) role = "Client";
+            userData = await models.Leads.findOne({ sender_mobile: { $in: formats } }).lean();
+            if (userData) {
+                role = "Client";
+                userData.name = userData.sender_name;
+            }
         }
 
         if (!userData) {
-            console.log(`❌ Guest Access Denied: ${clean10} not found in collections of ${dbName}`);
-            return res.status(404).json({ 
-                success: false, 
-                message: "Access Denied: Your mobile is not linked to this corporate. Please use a reference mobile of a registered user from your company." 
-            });
+            role = "Client";
+            userData = { name: "Guest User", _id: clean10 };
         }
 
-        console.log(`✅ Guest Resolved: ${clean10} found as ${role} in ${dbName}`);
         return res.json({
             success: true,
             role,
@@ -516,9 +575,16 @@ exports.getProfileHistory = async (req, res) => {
         const subFolder = type === "corp" ? "corporateProfile" : `userProfile/${userId}`;
         const folderPath = `hipk/${dbName}/${subFolder}`;
 
-        const resources = await externalService.fetchFolderMedia(folderPath, customConfig);
-        return res.json({ success: true, resources });
+        try {
+            const resources = await externalService.fetchFolderMedia(folderPath, customConfig);
+            return res.json({ success: true, resources });
+        } catch (err) {
+            console.error("Image History Fetch Error:", err.message);
+            // 🚀 Return empty instead of 500 to keep UI alive
+            return res.json({ success: true, resources: [] });
+        }
     } catch (err) {
+        console.error("Profile History Context Error:", err.message);
         return res.status(500).json({ success: false, message: err.message });
     }
 };
@@ -678,7 +744,6 @@ exports.provisionTenant = async (req, res) => {
         }
 
         // 4. Trigger Provisioning
-        console.log(`🚀 Manual Provisioning for ${dbName}...`);
 
         const profileData = {
             corporateName: corporate.corporateName,
@@ -859,11 +924,14 @@ exports.getProfileHistory = async (req, res) => {
         const profile = await ProfileMaster.findOne({}).lean();
         const config = profile?.apiUrls?.cloudinary;
 
-        const resources = await externalService.fetchFolderMedia(folderPath, config);
+        const resources = await externalService.fetchFolderMedia(folderPath, config).catch(() => []);
 
         // Fetch actual active DB profile image
-        const me = await userMaster.findById(userId).lean();
-        const activeUrl = type === "user" ? me?.userProfileImage : me?.accessCorporate?.find(c => c.dbName === dbName)?.CorpProfileImage;
+        let activeUrl = null;
+        if (mongoose.Types.ObjectId.isValid(userId)) {
+            const me = await userMaster.findById(userId).lean();
+            activeUrl = type === "user" ? me?.userProfileImage : me?.accessCorporate?.find(c => c.dbName === dbName)?.CorpProfileImage;
+        }
 
         res.json({ success: true, resources, activeUrl });
 

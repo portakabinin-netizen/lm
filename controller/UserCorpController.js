@@ -37,8 +37,12 @@ const manageSpoke = {
     },
     getById: async (req, res, modelName) => {
         try {
+            const { id } = req.params;
+            if (!mongoose.Types.ObjectId.isValid(id)) {
+                return res.status(400).json({ success: false, message: "Invalid ID format" });
+            }
             const Model = req.tenantModels[modelName];
-            const item = await Model.findById(req.params.id);
+            const item = await Model.findById(id);
             if (!item) return res.status(404).json({ success: false, message: "Entity not found" });
             res.json({ success: true, data: item });
         } catch (err) { res.status(500).json({ success: false, message: err.message }); }
@@ -321,7 +325,7 @@ exports.manageLeads = {
 
     logSiteVisit: async (req, res) => {
         try {
-            const { Leads } = req.tenantModels;
+            const { Leads, Attendance } = req.tenantModels;
             const { selfie_url, location, remarks } = req.body;
             
             const activityEntry = {
@@ -350,8 +354,24 @@ exports.manageLeads = {
             }
 
             const updatedLead = await Leads.findByIdAndUpdate(req.params.id, updateQuery, { new: true });
-            req.io.to(req.tenantDbName).emit("lead:updated", { data: updatedLead });
+            
+            // 🚀 Also append to active attendance geoHistory if session exists
+            const userId = req.user._id;
+            const active = await Attendance.findOne({
+                employeeId: userId,
+                $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }]
+            });
+            if (active) {
+                active.geoHistory.push({
+                    lat: location?.latitude || location?.lat,
+                    long: location?.longitude || location?.long,
+                    timestamp: new Date(),
+                    note: `Site Visit: ${lead.sender_name}`
+                });
+                await active.save();
+            }
 
+            req.io.to(req.tenantDbName).emit("lead:updated", { data: updatedLead });
             res.json({ success: true, data: updatedLead });
         } catch (err) { res.status(500).json({ success: false, message: err.message }); }
     },
@@ -371,7 +391,6 @@ exports.manageLeads = {
 
             emit(10, "Fetching leads from database...");
             const leads = await Leads.find(q).sort({ lead_no: -1 }).lean();
-            console.log(`📊 [${req.tenantDbName}] Found ${leads.length} leads for export.`);
 
             if (leads.length === 0) {
                 console.warn(`⚠️ [${req.tenantDbName}] Export failed: No leads found.`);
@@ -379,7 +398,6 @@ exports.manageLeads = {
             }
 
             emit(30, `Preparing Excel workbook for ${leads.length} leads...`);
-            console.log(`📝 [${req.tenantDbName}] Generating Excel workbook...`);
             const workbook = new ExcelJS.Workbook();
             const sheet = workbook.addWorksheet("Leads");
             
@@ -566,6 +584,7 @@ exports.manageProducts = {
  */
 exports.manageEmployees = {
     list: (req, res) => manageSpoke.list(req, res, "Employees"),
+    get: (req, res) => manageSpoke.getById(req, res, "Employees"),
     create: async (req, res) => {
         try {
             const { Employees } = req.tenantModels;
@@ -617,18 +636,28 @@ exports.manageEmployees = {
         try {
             const { Attendance } = req.tenantModels;
             const { from_date, to_date } = req.query;
-            const q = {};
+            let q = {};
             if (from_date || to_date) {
-                q.date = {};
+                const dateFilter = {};
                 if (from_date) {
                     const d = resolveDatePreset(from_date);
-                    if (d) q.date.$gte = d;
+                    if (d) dateFilter.$gte = d;
                 }
                 if (to_date) {
                     const d = resolveDatePreset(to_date);
-                    if (d) q.date.$lte = d;
+                    if (d) dateFilter.$lte = d;
                 }
-                if (Object.keys(q.date).length === 0) delete q.date;
+                
+                if (Object.keys(dateFilter).length > 0) {
+                    // Include either the date range OR anything that is still "On Duty"
+                    q = {
+                        $or: [
+                            { date: dateFilter },
+                            { dutyEnd: { $exists: false } },
+                            { dutyEnd: null }
+                        ]
+                    };
+                }
             }
             const data = await Attendance.find(q).populate("employeeId").lean();
             res.json({ success: true, data });
@@ -699,6 +728,114 @@ exports.manageEmployees = {
                 .select("rate")
                 .lean();
             res.json({ success: true, rate: last?.rate || null });
+        } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+    },
+    getActiveAttendance: async (req, res) => {
+        try {
+            const { Attendance } = req.tenantModels;
+            const { employeeId } = req.query;
+            if (!employeeId) return res.status(400).json({ success: false, message: "employeeId required" });
+
+            // Find an open session (dutyEnd not exists or null)
+            const active = await Attendance.findOne({
+                employeeId,
+                $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }]
+            }).sort({ dutyStart: -1 }).lean();
+
+            res.json({ success: true, data: active || null });
+        } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+    },
+    toggleAttendance: async (req, res) => {
+        try {
+            const { Attendance } = req.tenantModels;
+            const { employeeId, type, lat, long } = req.body;
+            if (!employeeId || !type) return res.status(400).json({ success: false, message: "Missing params" });
+
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+
+            // Find session for today
+            let record = await Attendance.findOne({
+                employeeId,
+                date: { $gte: today }
+            });
+
+            if (type === 'ON') {
+                if (record) {
+                    // Re-opening today's session
+                    if (record.dutyEnd) {
+                        // Calculate break
+                        const breakEntry = {
+                            start: record.dutyEnd,
+                            end: new Date(),
+                            reason: "Toggle Re-On"
+                        };
+                        record.breaks.push(breakEntry);
+                        record.dutyEnd = null; // Re-open
+                        await record.save();
+                    }
+                } else {
+                    // Start New Session
+                    record = new Attendance({
+                        employeeId,
+                        date: new Date(),
+                        dutyStart: new Date(),
+                        location: { lat, long },
+                        status: 'Present',
+                        site_name: 'HQ/Remote Duty'
+                    });
+                    await record.save();
+                }
+                return res.json({ success: true, data: record });
+            } else {
+                // End Session
+                if (!record) return res.status(404).json({ success: false, message: "No session found for today" });
+                
+                record.dutyEnd = new Date();
+                record.location = { ...record.location, endLat: lat, endLong: long };
+                
+                // Total duration minus total breaks
+                let totalMillis = record.dutyEnd - record.dutyStart;
+                (record.breaks || []).forEach(b => {
+                    if (b.end && b.start) totalMillis -= (b.end - b.start);
+                });
+                
+                record.hoursWorked = parseFloat((totalMillis / 3600000).toFixed(2));
+                await record.save();
+                return res.json({ success: true, data: record });
+            }
+        } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+    },
+
+    listActiveStaff: async (req, res) => {
+        try {
+            const { Attendance, Employees } = req.tenantModels;
+            
+            // Find all attendance records without dutyEnd (Active)
+            const active = await Attendance.find({
+                $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }]
+            }).lean();
+
+            // Fetch names/photos from both Employees and Users (Staff)
+            const employeeIds = active.map(a => a.employeeId);
+            const emps = await Employees.find({ _id: { $in: employeeIds } }).select("name photo_url role").lean();
+            
+            // Also check UserMaster for registered staff (since employeeId could be userId)
+            const userMaster = req.tenantModels.UserMaster || require("../models/UserMaster"); // Handle dynamic model reference
+            const users = await userMaster.find({ _id: { $in: employeeIds } }).select("userDisplayName userProfileImage userRole").lean();
+
+            const data = active.map(a => {
+                const emp = emps.find(e => String(e._id) === String(a.employeeId));
+                const user = users.find(u => String(u._id) === String(a.employeeId));
+                return {
+                    ...a,
+                    displayName: emp?.name || user?.userDisplayName || "Unknown",
+                    photo: emp?.photo_url || user?.userProfileImage || null,
+                    role: emp?.role || user?.userRole || "Staff"
+                };
+            });
+
+            res.json({ success: true, data });
         } catch (err) { res.status(500).json({ success: false, message: err.message }); }
     }
 };

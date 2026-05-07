@@ -315,7 +315,6 @@ const updateAdminUser = {
       if (clean(b.userProfileImage)) $set.userProfileImage = clean(b.userProfileImage);
       if (b.addresses) $set.addresses = b.addresses;
 
-      console.log(`📝 [postAdminUser] Updating admin ${admin._id} [${admin.userRole}] with fields:`, Object.keys($set));
 
       // ── Password change (optional) ─────────────────────────────────────────
       if (clean(b.newPassword)) {

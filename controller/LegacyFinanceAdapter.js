@@ -319,24 +319,53 @@ exports.getLeadLedger = async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 exports.getContactLedger = async (req, res) => {
     try {
-        const { Vouchers, Parties } = req.tenantModels;
+        const { Vouchers, Parties, Employees, Ledgers } = req.tenantModels;
         const mobile = req.params.mobile;
         
-        const party = await Parties.findOne({ mobile }).lean();
-        if (!party) return res.json({ success: true, data: { ledger: [] } });
+        // 1. Resolve Entity (Staff or Party)
+        let entity = await Employees.findOne({ mobile }).lean();
+        let refType = "Staff";
+        
+        if (!entity) {
+            entity = await Parties.findOne({ mobile }).lean();
+            refType = "Manual"; // Standard parties use Manual or specific types
+        }
 
-        const vouchers = await Vouchers.find({ "legacyMetadata.contact_mobile": mobile }).sort({ date: 1 }).lean();
+        if (!entity) return res.json({ success: true, data: { balance: 0, ledger: [] } });
+
+        // 2. Find associated Ledger
+        const ledgerDoc = await Ledgers.findOne({ refId: entity._id }).lean();
         
-        const ledger = vouchers.map(v => ({
-            _id: v._id,
-            voucherDate: v.date,
-            paymentType: v.legacyMetadata.direction === "PAYMENT" ? "Dr" : "Cr",
-            amt: v.legacyMetadata.amount,
-            voucherNarration: v.narration || v.legacyMetadata.description
-        }));
+        let vouchers = [];
+        if (ledgerDoc) {
+            // Find by double-entry ledger link
+            vouchers = await Vouchers.find({ "entries.ledgerId": ledgerDoc._id }).sort({ date: 1 }).lean();
+        } else {
+            // Fallback: search by legacy metadata mobile
+            vouchers = await Vouchers.find({ "legacyMetadata.contact_mobile": mobile }).sort({ date: 1 }).lean();
+        }
         
-        res.json({ success: true, data: { ledger } });
+        let balance = 0;
+        const ledger = vouchers.map(v => {
+            const entry = v.entries?.find(e => String(e.ledgerId) === String(ledgerDoc?._id)) || {};
+            const amt = entry.debit || entry.credit || v.legacyMetadata?.amount || 0;
+            const type = entry.debit > 0 ? "Dr" : (entry.credit > 0 ? "Cr" : (v.legacyMetadata?.direction === "PAYMENT" ? "Dr" : "Cr"));
+            
+            if (type === "Dr") balance += amt;
+            else balance -= amt;
+
+            return {
+                _id: v._id,
+                voucherDate: v.date,
+                paymentType: type,
+                amt: amt,
+                voucherNarration: v.narration || v.legacyMetadata?.description || "Transaction"
+            };
+        });
+        
+        res.json({ success: true, data: { balance, ledger } });
     } catch (err) {
+        console.error("🔴 getContactLedger Error:", err.message);
         res.status(500).json({ success: false, message: err.message });
     }
 };

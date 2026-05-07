@@ -54,10 +54,14 @@ router.delete("/catalog/products/:id", ctrl.manageProducts.delete);
 
 // --- 👷 HR (Employees & Attendance) ---
 router.get("/hr/employees",      ctrl.manageEmployees.list);
+router.get("/hr/employees/:id",  ctrl.manageEmployees.get);
 router.post("/hr/employees",     ctrl.manageEmployees.create);
 router.put("/hr/employees/:id",  ctrl.manageEmployees.update);
 router.delete("/hr/employees/:id", ctrl.manageEmployees.delete);
 router.get("/hr/attendance",     ctrl.manageEmployees.listAttendance);
+router.get("/hr/attendance/active", ctrl.manageEmployees.getActiveAttendance);
+router.get("/hr/attendance/active-staff", ctrl.manageEmployees.listActiveStaff);
+router.post("/hr/attendance/toggle", ctrl.manageEmployees.toggleAttendance);
 router.post("/hr/attendance",    ctrl.manageEmployees.markAttendance);
 router.put("/hr/attendance/:id", ctrl.manageEmployees.updateAttendance);
 router.delete("/hr/attendance/:id", ctrl.manageEmployees.deleteAttendance);

@@ -197,6 +197,28 @@ const attendanceSchema = new mongoose.Schema({
     employeeId: { type: mongoose.Schema.Types.ObjectId, required: true },
     date: { type: Date, required: true },
     status: { type: String, enum: ["Present", "Absent", "Leave"], default: "Present" },
+    dutyStart: { type: Date },
+    dutyEnd: { type: Date },
+    hoursWorked: { type: Number, default: 0 },
+    location: {
+        lat: Number,
+        long: Number,
+        address: String,
+        endLat: Number,
+        endLong: Number
+    },
+    geoHistory: [new mongoose.Schema({
+        lat: Number,
+        long: Number,
+        timestamp: { type: Date, default: Date.now },
+        note: String
+    }, { _id: false })],
+    breaks: [new mongoose.Schema({
+        start: Date,
+        end: Date,
+        reason: String
+    }, { _id: false })],
+    site_name: { type: String },
     siteId: { type: String },
     leadId: { type: mongoose.Schema.Types.ObjectId },
 }, { _id: true, timestamps: true });

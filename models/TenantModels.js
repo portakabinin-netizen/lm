@@ -104,7 +104,7 @@ const leadSchema = new mongoose.Schema({
 
 // 6. Attendance
 const attendanceSchema = new mongoose.Schema({
-    employeeId: { type: mongoose.Schema.Types.ObjectId, required: true },
+    employeeId: { type: mongoose.Schema.Types.ObjectId, ref: 'Employees', required: true },
     date: { type: Date, required: true },
     status: { type: String, enum: ["Present", "Absent", "Leave"], default: "Present" },
     dutyLevel: { type: Number, default: 1 },
