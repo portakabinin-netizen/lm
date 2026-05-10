@@ -506,6 +506,27 @@ const externalService = {
         }
     },
     /**
+     * 📂 Cloudinary: Fetch Files from Folder using Prefix (Works on all plans!)
+     */
+    fetchLeadsMedia: async (tenantDbName, customConfig = null) => {
+        try {
+            const configOverrides = externalService.getCloudinaryOptions(customConfig);
+            const cloudinaryInstance = require("cloudinary").v2;
+            cloudinaryInstance.config(configOverrides);
+            
+            const result = await cloudinaryInstance.api.resources({
+                type: 'upload',
+                prefix: `hipk/${tenantDbName}/leads/`,
+                max_results: 100
+            });
+            
+            return result;
+        } catch (err) {
+            console.error("🔴 Cloudinary Fetch Leads Error:", err.message);
+            throw err;
+        }
+    },
+    /**
      * 📂 Cloudinary: Fetch Files from Folder (Gallery/History)
      */
     fetchFolderMedia: async (folderPath, customConfig = null) => {

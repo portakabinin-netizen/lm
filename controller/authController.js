@@ -65,8 +65,8 @@ exports.sendOtp = async (req, res) => {
                 const { ProfileMaster } = getTenantModels(conn);
                 const profile = await ProfileMaster.findOne({}).lean();
                 config = profile?.apiUrls || null;
-            } catch (terr) { 
-                console.log(`⚠️ Tenant config lookup failed for ${targetDbName}:`, terr.message); 
+            } catch (terr) {
+                console.error(`⚠️ Tenant config lookup failed for ${targetDbName}:`, terr.message);
             }
         }
 
@@ -93,7 +93,7 @@ exports.sendOtp = async (req, res) => {
         }
 
         otpStore[formatted] = { otp, expiresAt: Date.now() + 5 * 60 * 1000, purpose };
-        
+
         const result = await sendOTPExternal(formatted, otp, "whatsapp", config, purpose);
 
         if (!result.success) {
@@ -118,7 +118,7 @@ exports.verifyOtp = (req, res) => {
         const record = otpStore[formatted];
 
         if (!record || record.otp !== otp) {
-            console.log(`❌ OTP Verification FAILED for ${formatted}. Expected: ${record?.otp}, Got: ${otp}`);
+
             return res.status(400).json({ error: "Invalid OTP" });
         }
 
@@ -319,14 +319,14 @@ exports.unregisteredLogin = async (req, res) => {
         // 1. Identify Database using reference number (Must be a non-admin user for unambiguous mapping)
         const refUser = await userMaster.findOne({ 
             userMobile: cleanRef, 
-            userRole: { $ne: "CorpAdmin" } 
+            userActive: true 
         });
 
         if (!refUser || !refUser.accessCorporate?.[0]?.dbName) {
-            console.log(`❌ Unregistered Login: Reference Mobile ${cleanRef} NOT FOUND or is an Admin (Ambiguous)`);
-            return res.status(404).json({ 
-                success: false, 
-                message: "Reference number must be a registered staff member of the corporate." 
+
+            return res.status(404).json({
+                success: false,
+                message: "Reference number must be a registered staff member of the corporate."
             });
         }
 
@@ -337,20 +337,20 @@ exports.unregisteredLogin = async (req, res) => {
         const formats = [clean10, `0${clean10}`, `91${clean10}`, `+91${clean10}`];
         const query = { mobile: { $in: formats }, active: true };
 
-        let role = "Client"; 
+        let role = "Client";
         let userData = { name: "Guest User", _id: cleanMobile, photo_url: "" };
         let finalDbName = null;
 
         // 🚀 Loop through all corporates linked to the reference user
         for (const corp of refUser.accessCorporate) {
             if (!corp.isActive) continue;
-            
+
             const dbName = corp.dbName;
             const mobileRegex = new RegExp(cleanMobile.slice(-10) + "$");
-            
+
             const tenantConnection = await dbConnector.getTenantConnection(dbName);
             const models = getTenantModels(tenantConnection);
-            
+
             // 1. Search Staff (Try finding even if inactive first for debugging)
             const staff = await models.Employees.findOne({ mobile: mobileRegex }).lean();
             if (staff) {
@@ -403,7 +403,8 @@ exports.unregisteredLogin = async (req, res) => {
             userDisplayName: userData.name,
             accessAllow: true,
             isGuest: true,
-            ownMobile: cleanMobile
+            ownMobile: cleanMobile,
+            referenceMobile: cleanRef
         }, process.env.JWT_SECRET, { expiresIn: "90d" });
 
 
@@ -420,6 +421,7 @@ exports.unregisteredLogin = async (req, res) => {
                 userDisplayName: userData.name,
                 CorpProfileImage: refUser.accessCorporate[0].CorpProfileImage || "",
                 userProfileImage: userData.photo_url || "",
+                referenceMobile: cleanRef, // 🚀 Added for "Call Supervisor" feature
                 isGuest: true,
                 accessAllow: true
             }
@@ -489,10 +491,10 @@ exports.resolveGuestRole = async (req, res) => {
 exports.switchCorporate = async (req, res) => {
     try {
         const { corporateId } = req.body;
-        
+
         const user = await userMaster.findById(req.user.userId);
         if (!user) {
-            console.log("❌ [Switch] User not found in database");
+
             return res.status(404).json({ success: false, message: "User not found" });
         }
 
@@ -620,7 +622,7 @@ exports.verifyIdentity = async (req, res) => {
         // 1. Try to fetch Tenant Config from MongoDB
         let config = null;
         let dbName = req.tenantDbName || req.user?.dbName || (user.accessCorporate?.[0]?.dbName);
-        
+
         if (dbName) {
             try {
                 const dbConnector = require("../utils/dbConnector");
@@ -629,8 +631,8 @@ exports.verifyIdentity = async (req, res) => {
                 const { ProfileMaster } = getTenantModels(conn);
                 const profile = await ProfileMaster.findOne({}).lean();
                 config = profile?.apiUrls || null;
-            } catch (terr) { 
-                console.log(`⚠️ Identity tenant config lookup failed for ${dbName}:`, terr.message); 
+            } catch (terr) {
+                console.error(`⚠️ Identity tenant config lookup failed for ${dbName}:`, terr.message);
             }
         }
 

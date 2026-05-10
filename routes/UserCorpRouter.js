@@ -33,6 +33,7 @@ router.get("/leads/list",       ctrl.manageLeads.list);
 router.post("/leads/addMany",    ctrl.manageLeads.addMany);
 router.get("/leads/search",     ctrl.manageLeads.searchByMobile);
 router.get("/leads/analytics",  ctrl.manageLeads.analytics);
+router.get("/leads/all/gallery", ctrl.manageLeads.getAllGallery);
 router.get("/leads/project-active", ctrl.manageLeads.getProjectActive);
 router.get("/leads/status/:status", ctrl.manageLeads.getLeadsByStatus);
 router.get("/leads/:id",        ctrl.manageLeads.get);
@@ -62,6 +63,10 @@ router.get("/hr/attendance",     ctrl.manageEmployees.listAttendance);
 router.get("/hr/attendance/active", ctrl.manageEmployees.getActiveAttendance);
 router.get("/hr/attendance/active-staff", ctrl.manageEmployees.listActiveStaff);
 router.post("/hr/attendance/toggle", ctrl.manageEmployees.toggleAttendance);
+router.post("/hr/attendance/emergency-end-employee", ctrl.manageEmployees.emergencyEndEmployee); // individual emergency off
+router.post("/hr/attendance/continue-shift",         ctrl.manageEmployees.continueShift);         // double shift continuation
+router.post("/hr/broadcast",                         ctrl.manageEmployees.sendBroadcast);
+
 router.post("/hr/attendance",    ctrl.manageEmployees.markAttendance);
 router.put("/hr/attendance/:id", ctrl.manageEmployees.updateAttendance);
 router.delete("/hr/attendance/:id", ctrl.manageEmployees.deleteAttendance);

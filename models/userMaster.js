@@ -37,15 +37,15 @@ const userMasterSchema = new mongoose.Schema({
 
     accessCorporate: [{
         corporateName: { type: String },
-        corporatePAN:  { type: String },
-        dbName:        { type: String },
-        locationId:    { type: mongoose.Schema.Types.ObjectId },
+        corporatePAN: { type: String },
+        dbName: { type: String },
+        locationId: { type: mongoose.Schema.Types.ObjectId },
         CorpProfileImage: { type: String },
-        isActive:      { type: Boolean, default: true }
+        isActive: { type: Boolean, default: true }
     }]
-}, { 
+}, {
     timestamps: true,
-    collection: "userMaster" 
+    collection: "userMaster"
 });
 
 // ── Middleware: Password Hashing ────────────────────────

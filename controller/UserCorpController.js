@@ -88,6 +88,37 @@ exports.manageLeads = {
         } catch (err) { res.status(500).json({ success: false, message: err.message }); }
     },
 
+    getAllGallery: async (req, res) => {
+        try {
+            const { ProfileMaster } = req.tenantModels || {};
+            const dbName = req.tenantDbName || req.user?.dbName;
+
+            if (!dbName) return res.status(400).json({ success: false, message: "Missing tenant identification" });
+
+            let customConfig = null;
+            try {
+                if (ProfileMaster) {
+                    const profile = await ProfileMaster.findOne({}).lean();
+                    if (profile?.apiUrls?.cloudinary?.isActive) {
+                        customConfig = profile.apiUrls.cloudinary;
+                    }
+                }
+            } catch (perr) {
+                console.error("🔴 ProfileMaster query error:", perr.message);
+            }
+
+            const result = await externalService.fetchLeadsMedia(dbName, customConfig).catch((err) => {
+                console.error("🔴 Fetch leads media error:", err.message);
+                return { resources: [] };
+            });
+
+            const urls = (result.resources || []).map(r => r.secure_url);
+            res.json({ success: true, data: urls });
+        } catch (err) {
+            res.status(500).json({ success: false, message: err.message });
+        }
+    },
+
     update: async (req, res) => {
         try {
             const { Leads } = req.tenantModels;
@@ -332,7 +363,6 @@ exports.manageLeads = {
                 action: "Site Visit",
                 byUser: req.user?.userDisplayName || "System",
                 date: new Date(),
-                metadata: { selfie_url, location, remarks }
             };
 
             const updateQuery = {
@@ -635,8 +665,13 @@ exports.manageEmployees = {
     listAttendance: async (req, res) => {
         try {
             const { Attendance } = req.tenantModels;
-            const { from_date, to_date } = req.query;
+            const { from_date, to_date, employeeId } = req.query;
             let q = {};
+
+            if (employeeId) {
+                q.employeeId = employeeId;
+            }
+
             if (from_date || to_date) {
                 const dateFilter = {};
                 if (from_date) {
@@ -649,25 +684,38 @@ exports.manageEmployees = {
                 }
                 
                 if (Object.keys(dateFilter).length > 0) {
-                    // Include either the date range OR anything that is still "On Duty"
-                    q = {
-                        $or: [
-                            { date: dateFilter },
-                            { dutyEnd: { $exists: false } },
-                            { dutyEnd: null }
-                        ]
-                    };
+                    // Include either the date range OR anything that is still "On Duty" (if filtering for specific user)
+                    if (q.employeeId) {
+                        q = {
+                            employeeId: q.employeeId,
+                            $or: [
+                                { date: dateFilter },
+                                { dutyEnd: { $exists: false } },
+                                { dutyEnd: null }
+                            ]
+                        };
+                    } else {
+                        q.date = dateFilter;
+                    }
                 }
             }
             const data = await Attendance.find(q).populate("employeeId").lean();
             res.json({ success: true, data });
-        } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+        } catch (err) { 
+            console.error("🔴 [Error] listAttendance Failed:", err);
+            res.status(500).json({ success: false, message: err.message }); 
+        }
     },
     markAttendance: async (req, res) => {
         try {
             const { Attendance } = req.tenantModels;
-            const { employeeId, leadId, status, dutyLevel, rate, date, site_name, remarks,
-                    dutyStart, dutyEnd, forcedOff, forcedOffReason, clientId, location, geoHistory } = req.body;
+            const {
+                employeeId, leadId, status, dutyLevel, rate, date, site_name, remarks,
+                dutyStart, dutyEnd, forcedOff, forcedOffReason, clientId, location, geoHistory,
+                // Shift fields
+                shiftCode, shiftType, shiftPeriod, shiftLockHours
+            } = req.body;
+
             const record = new Attendance({
                 employeeId,
                 leadId,
@@ -683,7 +731,12 @@ exports.manageEmployees = {
                 forcedOff: !!forcedOff,
                 forcedOffReason: forcedOffReason || "",
                 location,
-                geoHistory: geoHistory || []
+                geoHistory: geoHistory || [],
+                // Shift
+                shiftCode: shiftCode || null,
+                shiftType: shiftType || '8hr',
+                shiftPeriod: shiftPeriod || 'Morning',
+                shiftLockHours: shiftLockHours || (shiftType === '12hr' ? 12 : 8)
             });
             await record.save();
             res.status(201).json({ success: true, message: "Attendance recorded", data: record });
@@ -693,23 +746,28 @@ exports.manageEmployees = {
     updateAttendance: async (req, res) => {
         try {
             const { Attendance } = req.tenantModels;
-            const allowed = ['dutyEnd', 'forcedOff', 'forcedOffReason', 'status', 'rate', 'location', 'geoHistory'];
+            const allowed = [
+                'dutyEnd', 'forcedOff', 'forcedOffReason', 'status', 'rate',
+                'location', 'geoHistory', 'emergencyOff', 'emergencyReason',
+                'emergencyByUser', 'shiftCode', 'shiftType', 'shiftPeriod'
+            ];
             const update = {};
-            
-            // Handle standard fields
             allowed.forEach(k => { if (req.body[k] !== undefined) update[k] = req.body[k]; });
-            
-            // Handle $push explicitly for geoHistory if sent in body (for cleaner array appending)
-            const mongoUpdate = { ...update };
+
+            // Allow $push for geoHistory ticks from background task
+            const mongoUpdate = Object.keys(update).length ? { $set: update } : {};
             if (req.body.$push) mongoUpdate.$push = req.body.$push;
 
-            // Auto-calculate hours worked
+            // Auto-calculate hours worked on duty end
             if (update.dutyEnd) {
                 const existing = await Attendance.findById(req.params.id).select('dutyStart').lean();
                 if (existing?.dutyStart) {
-                    update.hoursWorked = parseFloat(((new Date(update.dutyEnd) - new Date(existing.dutyStart)) / 3600000).toFixed(2));
+                    const hrs = (new Date(update.dutyEnd) - new Date(existing.dutyStart)) / 3600000;
+                    update.hoursWorked = parseFloat(Math.max(0, hrs).toFixed(2));
+                    mongoUpdate.$set = { ...update };
                 }
             }
+
             const record = await Attendance.findByIdAndUpdate(req.params.id, mongoUpdate, { new: true });
             if (!record) return res.status(404).json({ success: false, message: 'Record not found' });
             res.json({ success: true, data: record });
@@ -748,95 +806,398 @@ exports.manageEmployees = {
     toggleAttendance: async (req, res) => {
         try {
             const { Attendance } = req.tenantModels;
-            const { employeeId, type, lat, long } = req.body;
+            const {
+                employeeId, type, lat, long, address,
+                shiftCode, shiftType, shiftPeriod, shiftLockHours,
+                site_name, siteId, leadId,
+                forcedOff, forcedOffReason, emergencyOff, emergencyReason
+            } = req.body;
+
             if (!employeeId || !type) return res.status(400).json({ success: false, message: "Missing params" });
 
             const today = new Date();
             today.setHours(0, 0, 0, 0);
+            const queryId = mongoose.isValidObjectId(employeeId) ? new mongoose.Types.ObjectId(employeeId) : employeeId;
 
-            // Find session for today
+            // Find open session (not necessarily today — shift C and E can span midnight)
             let record = await Attendance.findOne({
-                employeeId,
-                date: { $gte: today }
-            });
+                employeeId: queryId,
+                $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }]
+            }).sort({ dutyStart: -1 });
 
             if (type === 'ON') {
                 if (record) {
-                    // Re-opening today's session
-                    if (record.dutyEnd) {
-                        // Calculate break
-                        const breakEntry = {
-                            start: record.dutyEnd,
-                            end: new Date(),
-                            reason: "Toggle Re-On"
-                        };
-                        record.breaks.push(breakEntry);
-                        record.dutyEnd = null; // Re-open
-                        await record.save();
-                    }
-                } else {
-                    // Start New Session
-                    record = new Attendance({
-                        employeeId,
-                        date: new Date(),
-                        dutyStart: new Date(),
-                        location: { lat, long },
-                        status: 'Present',
-                        site_name: 'HQ/Remote Duty'
-                    });
-                    await record.save();
+                    // Already ON duty — just return current session
+                    return res.json({ success: true, data: record, message: 'Already on duty' });
                 }
-                return res.json({ success: true, data: record });
-            } else {
-                // End Session
-                if (!record) return res.status(404).json({ success: false, message: "No session found for today" });
-                
-                record.dutyEnd = new Date();
-                record.location = { ...record.location, endLat: lat, endLong: long };
-                
-                // Total duration minus total breaks
-                let totalMillis = record.dutyEnd - record.dutyStart;
-                (record.breaks || []).forEach(b => {
-                    if (b.end && b.start) totalMillis -= (b.end - b.start);
+                // Start new session
+                const now = new Date();
+                const lockHrs = shiftLockHours || (shiftType === '12hr' ? 12 : 8);
+                const scheduledEnd = new Date(now.getTime() + lockHrs * 3600000);
+                record = new Attendance({
+                    employeeId,
+                    date: now,
+                    dutyStart: now,
+                    dutyEndScheduled: scheduledEnd,
+                    shiftCode: shiftCode || null,
+                    shiftType: shiftType || '8hr',
+                    shiftPeriod: shiftPeriod || 'Morning',
+                    shiftLockHours: lockHrs,
+                    location: { lat, long, address: address || '' },
+                    geoHistory: [{ lat, long, address: address || '', type: 'start', timestamp: now }],
+                    status: 'Present',
+                    site_name: site_name || 'HQ/Remote',
+                    siteId: siteId || null,
+                    leadId: leadId || null
                 });
-                
-                record.hoursWorked = parseFloat((totalMillis / 3600000).toFixed(2));
                 await record.save();
-                return res.json({ success: true, data: record });
+                req.io.to(req.tenantDbName).emit('attendance:duty_on', {
+                    employeeId, attendanceId: record._id, shiftCode, shiftPeriod
+                });
+                return res.json({ success: true, data: record, message: 'Duty started' });
+
+            } else { // OFF
+                if (!record) return res.status(404).json({ success: false, message: "No active duty session found" });
+
+                const now = new Date();
+                const lockHrs = record.shiftLockHours || 8;
+                const elapsedHrs = (now - record.dutyStart) / 3600000;
+                const isLocked = elapsedHrs < lockHrs;
+
+                // Shift lock enforcement
+                const requesterRole = req.user?.userRole;
+                const canOverride = ['CorpAdmin', 'Project', 'Admin'].includes(requesterRole);
+
+                if (isLocked && !forcedOff && !emergencyOff && !canOverride) {
+                    return res.status(403).json({
+                        success: false,
+                        locked: true,
+                        message: `Shift lock active. ${lockHrs}h shift not complete (${elapsedHrs.toFixed(1)}h elapsed). Contact supervisor to override.`,
+                        remainingHrs: parseFloat((lockHrs - elapsedHrs).toFixed(2))
+                    });
+                }
+
+                record.dutyEnd = now;
+                record.location = { ...record.location, lat, long, address: address || record.location?.address };
+                record.geoHistory.push({ lat, long, address: address || '', type: 'end', timestamp: now });
+                record.hoursWorked = parseFloat(Math.max(0, elapsedHrs).toFixed(2));
+
+                if (forcedOff) { record.forcedOff = true; record.forcedOffReason = forcedOffReason || 'Manual override'; }
+                if (emergencyOff) {
+                    record.emergencyOff = true;
+                    record.emergencyReason = emergencyReason || 'Emergency shutdown';
+                    record.emergencyByUser = req.user?.userDisplayName || 'System';
+                }
+                await record.save();
+
+                req.io.to(req.tenantDbName).emit('attendance:duty_off', {
+                    employeeId, attendanceId: record._id, hoursWorked: record.hoursWorked, emergencyOff: !!emergencyOff
+                });
+                return res.json({ success: true, data: record, message: 'Duty ended' });
             }
+        } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+    },
+
+    /**
+     * 🆘 Emergency End for a SINGLE employee
+     * Authorized roles: CorpAdmin / Project / Admin only
+     * Body: { employeeId, reason }
+     */
+    emergencyEndEmployee: async (req, res) => {
+        try {
+            const requesterRole = req.user?.userRole;
+            if (!['CorpAdmin', 'Project', 'Admin'].includes(requesterRole)) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Access denied. Only Project Users, Admin and CorpAdmin can trigger emergency off for an employee.'
+                });
+            }
+
+            const { Attendance } = req.tenantModels;
+            const { employeeId, reason } = req.body;
+            if (!employeeId) return res.status(400).json({ success: false, message: 'employeeId is required' });
+
+            const now = new Date();
+            const byUser = req.user?.userDisplayName || 'System';
+            const queryId = mongoose.isValidObjectId(employeeId)
+                ? new mongoose.Types.ObjectId(employeeId) : employeeId;
+
+            // Find the open session for this employee
+            const record = await Attendance.findOne({
+                employeeId: queryId,
+                $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }]
+            });
+
+            if (!record) {
+                return res.status(404).json({ success: false, message: 'No active duty session found for this employee' });
+            }
+
+            const elapsedHrs = (now - record.dutyStart) / 3600000;
+            record.dutyEnd         = now;
+            record.emergencyOff    = true;
+            record.emergencyReason = reason || 'Emergency end by supervisor';
+            record.emergencyByUser = byUser;
+            record.forcedOff       = true;
+            record.forcedOffReason = 'Emergency End by Supervisor';
+            record.hoursWorked     = parseFloat(Math.max(0, elapsedHrs).toFixed(2));
+            await record.save();
+
+            // Notify the specific employee via Socket.IO
+            req.io.to(req.tenantDbName).emit('attendance:emergency_end', {
+                employeeId: String(employeeId),
+                attendanceId: record._id,
+                reason: record.emergencyReason,
+                byUser,
+                at: now.toISOString()
+            });
+
+            res.json({ success: true, message: `Emergency duty end applied for employee`, data: record });
+        } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+    },
+
+    /**
+     * 🔄 Continue Next Shift (Double Shift)
+     * Closes current shift attendance, opens a NEW attendance record for the next shift.
+     * Sends a double-shift notification to CorpAdmin / Admin / Project users.
+     * Body: { employeeId, nextShiftCode, nextShiftType, nextShiftPeriod, lat, long, address, site_name, siteId, leadId }
+     */
+    continueShift: async (req, res) => {
+        try {
+            const { Attendance } = req.tenantModels;
+            const {
+                employeeId, nextShiftCode, nextShiftType, nextShiftPeriod,
+                lat, long, address, site_name, siteId, leadId
+            } = req.body;
+
+            if (!employeeId || !nextShiftCode) {
+                return res.status(400).json({ success: false, message: 'employeeId and nextShiftCode are required' });
+            }
+
+            const queryId = mongoose.isValidObjectId(employeeId)
+                ? new mongoose.Types.ObjectId(employeeId) : employeeId;
+
+            // 1. Find current open session
+            const current = await Attendance.findOne({
+                employeeId: queryId,
+                $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }]
+            }).sort({ dutyStart: -1 });
+
+            if (!current) {
+                return res.status(404).json({ success: false, message: 'No active duty session to continue from' });
+            }
+
+            const now = new Date();
+            const lockHrs = current.shiftLockHours || 8;
+            const elapsedHrs = (now - current.dutyStart) / 3600000;
+
+            // Enforce: current shift must be at least complete (lock period elapsed)
+            if (elapsedHrs < lockHrs) {
+                return res.status(403).json({
+                    success: false,
+                    locked: true,
+                    message: `Current shift ${current.shiftCode} not yet complete. ${(lockHrs - elapsedHrs).toFixed(1)}h remaining.`,
+                    remainingHrs: parseFloat((lockHrs - elapsedHrs).toFixed(2))
+                });
+            }
+
+            // 2. Close current shift
+            current.dutyEnd     = now;
+            current.hoursWorked = parseFloat(elapsedHrs.toFixed(2));
+            current.geoHistory.push({ lat, long, address: address || '', type: 'end', timestamp: now });
+            await current.save();
+
+            // 3. Determine next shift lock hours
+            const nextLockHrs = nextShiftType === '12hr' ? 12 : 8;
+            const nextScheduledEnd = new Date(now.getTime() + nextLockHrs * 3600000);
+
+            // 4. Create new attendance record for next shift (marked as double shift)
+            const nextRecord = new Attendance({
+                employeeId,
+                date: now,
+                dutyStart: now,
+                dutyEndScheduled: nextScheduledEnd,
+                shiftCode: nextShiftCode,
+                shiftType: nextShiftType || '8hr',
+                shiftPeriod: nextShiftPeriod || 'Morning',
+                shiftLockHours: nextLockHrs,
+                isDoubleShift: true,
+                previousShiftId: current._id,
+                doubleShiftNotified: true,
+                location: { lat, long, address: address || '' },
+                geoHistory: [{ lat, long, address: address || '', type: 'start', timestamp: now }],
+                status: 'Present',
+                site_name: site_name || current.site_name || 'HQ/Remote',
+                siteId: siteId || current.siteId || null,
+                leadId: leadId || current.leadId || null,
+                rate: current.rate || 0
+            });
+            await nextRecord.save();
+
+            // 5. Broadcast double-shift notification to supervisors
+            const notification = {
+                type: 'double_shift',
+                employeeId: String(employeeId),
+                previousShiftCode: current.shiftCode,
+                nextShiftCode,
+                attendanceId: nextRecord._id,
+                at: now.toISOString(),
+                message: `⚠️ Double Shift Alert: Employee continued into Shift ${nextShiftCode} after completing Shift ${current.shiftCode}.`
+            };
+            req.io.to(req.tenantDbName).emit('attendance:double_shift', notification);
+            // Also send as broadcast alert targeted at supervisors
+            req.io.to(req.tenantDbName).emit('admin:broadcast', {
+                id: new mongoose.Types.ObjectId().toString(),
+                title: '⚠️ Double Shift Alert',
+                message: notification.message,
+                priority: 'urgent',
+                targetRoles: ['CorpAdmin', 'Admin', 'Project'],
+                sentBy: 'System',
+                sentByRole: 'System',
+                at: now.toISOString()
+            });
+
+            res.json({
+                success: true,
+                message: `Shift ${current.shiftCode} closed. Shift ${nextShiftCode} started (Double Shift).`,
+                closedShift: current,
+                newShift: nextRecord
+            });
+        } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+    },
+
+    /** 📢 Send Broadcast Alert — CorpAdmin / Admin only */
+    sendBroadcast: async (req, res) => {
+        try {
+            const requesterRole = req.user?.userRole;
+            if (!['CorpAdmin', 'Admin'].includes(requesterRole)) {
+                return res.status(403).json({ success: false, message: 'Only CorpAdmin and Admin can send broadcasts.' });
+            }
+
+            const { title, message, priority, targetRoles } = req.body;
+            if (!message || !message.trim()) {
+                return res.status(400).json({ success: false, message: 'Message is required' });
+            }
+
+            const payload = {
+                id: new mongoose.Types.ObjectId().toString(),
+                title: title || 'Message from Management',
+                message: message.trim(),
+                priority: priority || 'normal',   // 'normal' | 'urgent'
+                targetRoles: targetRoles || [],    // empty = all users
+                sentBy: req.user?.userDisplayName || 'Admin',
+                sentByRole: requesterRole,
+                corporateName: req.user?.corporateName || '',
+                at: new Date().toISOString()
+            };
+
+            // Emit to all users in this tenant's room
+            req.io.to(req.tenantDbName).emit('admin:broadcast', payload);
+
+            res.json({ success: true, message: 'Broadcast sent successfully', data: payload });
         } catch (err) { res.status(500).json({ success: false, message: err.message }); }
     },
 
     listActiveStaff: async (req, res) => {
         try {
+            if (!req.tenantModels) {
+                console.error("❌ [FAIL] req.tenantModels is MISSING");
+                return res.status(500).json({ success: false, message: "Tenant models not initialized" });
+            }
+
             const { Attendance, Employees } = req.tenantModels;
-            
-            // Find all attendance records without dutyEnd (Active)
-            const active = await Attendance.find({
-                $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }]
-            }).lean();
+            if (!Attendance) {
+                console.error("❌ [FAIL] Attendance model is MISSING");
+                return res.status(500).json({ success: false, message: "Attendance model missing on tenant" });
+            }
+            if (!Employees) {
+                console.error("❌ [FAIL] Employees model is MISSING");
+                return res.status(500).json({ success: false, message: "Employees model missing on tenant" });
+            }
 
-            // Fetch names/photos from both Employees and Users (Staff)
-            const employeeIds = active.map(a => a.employeeId);
-            const emps = await Employees.find({ _id: { $in: employeeIds } }).select("name photo_url role").lean();
-            
-            // Also check UserMaster for registered staff (since employeeId could be userId)
-            const userMaster = req.tenantModels.UserMaster || require("../models/UserMaster"); // Handle dynamic model reference
-            const users = await userMaster.find({ _id: { $in: employeeIds } }).select("userDisplayName userProfileImage userRole").lean();
+            const connState = Attendance.db?.readyState;
+            if (connState !== 1) {
+                console.error("❌ [FAIL] Database is NOT connected! State:", connState);
+                return res.status(500).json({ success: false, message: "Database not connected" });
+            }
 
-            const data = active.map(a => {
-                const emp = emps.find(e => String(e._id) === String(a.employeeId));
-                const user = users.find(u => String(u._id) === String(a.employeeId));
+            let active;
+            try {
+                active = await Attendance.find({
+                    $or: [
+                        { dutyEnd: { $exists: false } },
+                        { dutyEnd: null },
+                        { dutyEnd: "" }
+                    ]
+                }).lean();
+            } catch (dbErr) {
+                console.error("❌ [STEP 1] FAILED — Attendance.find() threw:", dbErr.message);
+                return res.status(500).json({ success: false, message: "Attendance DB query failed: " + dbErr.message });
+            }
+
+            if (active.length === 0) {
+                return res.json({ success: true, data: [] });
+            }
+
+            const employeeIds = active
+                .map(a => a.employeeId)
+                .filter(id => {
+                    if (!id) return false;
+                    const idStr = String(id._id || id);
+                    return mongoose.Types.ObjectId.isValid(idStr);
+                })
+                .map(id => String(id._id || id));
+
+            let emps = [];
+            try {
+                emps = await Employees.find({ _id: { $in: employeeIds } }).select("name photo_url role").lean();
+            } catch (empErr) {
+                // Non-fatal
+            }
+
+            let users = [];
+            try {
+                users = await userMaster.find({ _id: { $in: employeeIds } })
+                    .select("userDisplayName userProfileImage userRole")
+                    .lean()
+                    .maxTimeMS(5000);
+            } catch (userErr) {
+                // Non-fatal
+            }
+
+            const data = active.map((a) => {
+                let currentLat = a.location?.lat;
+                let currentLong = a.location?.long;
+
+                if (a.geoHistory && a.geoHistory.length > 0) {
+                    const latest = a.geoHistory[a.geoHistory.length - 1];
+                    if (latest?.lat && latest?.long) {
+                        currentLat = latest.lat;
+                        currentLong = latest.long;
+                    }
+                }
+
+                const targetId = String(a.employeeId?._id || a.employeeId);
+                const emp = emps.find(e => String(e._id) === targetId);
+                const user = users.find(u => String(u._id) === targetId);
+                const displayName = emp?.name || user?.userDisplayName || "Unknown";
+
                 return {
                     ...a,
-                    displayName: emp?.name || user?.userDisplayName || "Unknown",
+                    location: { ...(a.location || {}), lat: currentLat, long: currentLong },
+                    displayName,
                     photo: emp?.photo_url || user?.userProfileImage || null,
                     role: emp?.role || user?.userRole || "Staff"
                 };
             });
 
             res.json({ success: true, data });
-        } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+
+        } catch (err) {
+            console.error("🔴 [CRITICAL] listActiveStaff UNEXPECTED CRASH:");
+            console.error("   Message:", err.message);
+            console.error("   Stack:\n", err.stack);
+            res.status(500).json({ success: false, message: err.message, stack: err.stack });
+        }
     }
 };
 

@@ -90,8 +90,7 @@ const leadSchema = new mongoose.Schema({
     activity: [new mongoose.Schema({
         action: { type: String },
         byUser: { type: String },
-        date: { type: Date, default: Date.now },
-        metadata: { type: mongoose.Schema.Types.Mixed }
+        date: { type: Date, default: Date.now }
     }, { _id: false })],
     locationId: { type: mongoose.Schema.Types.ObjectId }, // Link to ProfileMaster.locations._id
     // ── Site Geo Location ──
@@ -103,6 +102,12 @@ const leadSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 // 6. Attendance
+// Shift Reference:
+//   A = Morning   8h  (06:00–14:00)
+//   B = Afternoon 8h  (14:00–22:00)
+//   C = Night     8h  (22:00–06:00)
+//   D = Day      12h  (06:00–18:00)
+//   E = Night    12h  (18:00–06:00)
 const attendanceSchema = new mongoose.Schema({
     employeeId: { type: mongoose.Schema.Types.ObjectId, ref: 'Employees', required: true },
     date: { type: Date, required: true },
@@ -113,17 +118,31 @@ const attendanceSchema = new mongoose.Schema({
     remarks: { type: String, trim: true },
     siteId: { type: String },
     leadId: { type: mongoose.Schema.Types.ObjectId },
-    clientId: { type: mongoose.Schema.Types.ObjectId }, // Denormalized from lead for quick lookup
+    clientId: { type: mongoose.Schema.Types.ObjectId },
     locationId: { type: mongoose.Schema.Types.ObjectId },
+    // ── Shift Control ──
+    shiftCode: { type: String, enum: ['A', 'B', 'C', 'D', 'E', null], default: null },
+    shiftType: { type: String, enum: ['8hr', '12hr'], default: '8hr' },
+    shiftPeriod: { type: String, enum: ['Morning', 'Afternoon', 'Night', 'Day', 'Night12'], default: 'Morning' },
+    shiftLockHours: { type: Number, default: 8 }, // 8 or 12 depending on shift
+    // ── Double / Consecutive Shift ──
+    isDoubleShift: { type: Boolean, default: false },           // true if worker continued into next shift
+    previousShiftId: { type: mongoose.Schema.Types.ObjectId, ref: 'Attendance', default: null }, // links to prior shift record
+    doubleShiftNotified: { type: Boolean, default: false },     // notification sent to supervisors?
+
     // ── Duty Toggle Fields ──
-    dutyStart: { type: Date },         // When ON-duty was toggled
-    dutyEnd: { type: Date },           // When OFF-duty (normal or forced)
-    dutyEndScheduled: { type: Date },  // Expected end time
+    dutyStart: { type: Date },
+    dutyEnd: { type: Date },
+    dutyEndScheduled: { type: Date },
     hoursWorked: { type: Number, default: 0 },
-    forcedOff: { type: Boolean, default: false },          // true = ended before 8hr lock
-    forcedOffReason: { type: String, trim: true },         // Reason captured on forced off-duty
+    forcedOff: { type: Boolean, default: false },
+    forcedOffReason: { type: String, trim: true },
+    // ── Emergency Control ──
+    emergencyOff: { type: Boolean, default: false },       // true = ended via emergency override
+    emergencyReason: { type: String, trim: true },         // Reason for emergency end
+    emergencyByUser: { type: String, trim: true },         // Who triggered the emergency off
     // ── Geo & Tracking ──
-    location: {
+    location: {                                            // Last known / duty-end location
         lat: { type: Number },
         long: { type: Number },
         address: { type: String }
@@ -132,8 +151,10 @@ const attendanceSchema = new mongoose.Schema({
         lat: { type: Number },
         long: { type: Number },
         address: { type: String },
-        type: { type: String, enum: ['start', 'end', 'tick'] },
-        time: { type: Date, default: Date.now }
+        accuracy: { type: Number },
+        speed: { type: Number },
+        type: { type: String, enum: ['start', 'end', 'tick', 'siteVisit'] },
+        timestamp: { type: Date, default: Date.now }       // Renamed from 'time' for clarity
     }],
     isPosted: { type: Boolean, default: false },
     voucherId: { type: mongoose.Schema.Types.ObjectId, ref: "Vouchers" },
@@ -206,20 +227,20 @@ const counterSchema = new mongoose.Schema({
  */
 const getTenantModels = (connection) => {
     return {
-        ProfileMaster: connection.model("ProfileMaster", profileMasterSchema),
-        Categories: connection.model("Categories", categorySchema),
-        Products: connection.model("Products", productSchema),
-        Parties: connection.model("Parties", partySchema),
-        Employees: connection.model("Employees", employeeSchema),
-        Leads: connection.model("Leads", leadSchema),
-        Attendance: connection.model("Attendance", attendanceSchema),
-        Groups: connection.model("Groups", groupSchema),
-        Ledgers: connection.model("Ledgers", ledgerSchema),
-        Vouchers: connection.model("Vouchers", voucherSchema),
-        Quotations: connection.model("Quotations", quotationSchema),
-        PurchaseOrders: connection.model("PurchaseOrders", purchaseOrderSchema),
-        TaxInvoices: connection.model("TaxInvoices", taxInvoiceSchema),
-        Counters: connection.model("Counters", counterSchema),
+        ProfileMaster: connection.models.ProfileMaster || connection.model("ProfileMaster", profileMasterSchema),
+        Categories: connection.models.Categories || connection.model("Categories", categorySchema),
+        Products: connection.models.Products || connection.model("Products", productSchema),
+        Parties: connection.models.Parties || connection.model("Parties", partySchema),
+        Employees: connection.models.Employees || connection.model("Employees", employeeSchema),
+        Leads: connection.models.Leads || connection.model("Leads", leadSchema),
+        Attendance: connection.models.Attendance || connection.model("Attendance", attendanceSchema),
+        Groups: connection.models.Groups || connection.model("Groups", groupSchema),
+        Ledgers: connection.models.Ledgers || connection.model("Ledgers", ledgerSchema),
+        Vouchers: connection.models.Vouchers || connection.model("Vouchers", voucherSchema),
+        Quotations: connection.models.Quotations || connection.model("Quotations", quotationSchema),
+        PurchaseOrders: connection.models.PurchaseOrders || connection.model("PurchaseOrders", purchaseOrderSchema),
+        TaxInvoices: connection.models.TaxInvoices || connection.model("TaxInvoices", taxInvoiceSchema),
+        Counters: connection.models.Counters || connection.model("Counters", counterSchema),
     };
 };
 
