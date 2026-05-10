@@ -501,6 +501,10 @@ const externalService = {
             
             return result;
         } catch (err) {
+            if (err.message.includes('ENOTFOUND') || err.message.includes('getaddrinfo')) {
+                console.log("ℹ️ Cloudinary Search: Service unavailable (Offline/DNS issue).");
+                return { resources: [] };
+            }
             console.error("🔴 Cloudinary Search Leads Error:", err.message);
             throw err;
         }
@@ -522,6 +526,10 @@ const externalService = {
             
             return result;
         } catch (err) {
+            if (err.message.includes('ENOTFOUND') || err.message.includes('getaddrinfo')) {
+                console.log("ℹ️ Cloudinary Fetch: Service unavailable (Offline/DNS issue).");
+                return { resources: [] };
+            }
             console.error("🔴 Cloudinary Fetch Leads Error:", err.message);
             throw err;
         }

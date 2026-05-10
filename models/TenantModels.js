@@ -216,6 +216,21 @@ const taxInvoiceSchema = new mongoose.Schema({
     voucherId: { type: mongoose.Schema.Types.ObjectId, ref: "Vouchers" }, // Link to accounting voucher
 }, { timestamps: true });
 
+// 9. Messages (Chat)
+const messageSchema = new mongoose.Schema({
+    senderName: { type: String, required: true },
+    senderId: { type: String }, // ID of sender
+    text: { type: String },
+    type: { type: String, enum: ['text', 'advance', 'leave', 'uniform', 'media'], default: 'text' },
+    status: { type: String, enum: ['unseen', 'seen'], default: 'unseen' },
+    mediaUrl: { type: String }, // URL (Cloudinary or Local)
+    mediaType: { type: String }, // 'image', 'audio', 'video'
+    localPath: { type: String }, // Path on server after download
+    isCloudDeleted: { type: Boolean, default: false }, // Flag for cloud removal
+    isOneToOne: { type: Boolean, default: false },
+    receiverId: { type: String }, // If one-to-one
+}, { timestamps: true });
+
 // Counter Schema
 const counterSchema = new mongoose.Schema({
     _id: { type: String, required: true }, // e.g. 'lead', 'quotation_locId', 'sales_locId'
@@ -241,6 +256,7 @@ const getTenantModels = (connection) => {
         PurchaseOrders: connection.models.PurchaseOrders || connection.model("PurchaseOrders", purchaseOrderSchema),
         TaxInvoices: connection.models.TaxInvoices || connection.model("TaxInvoices", taxInvoiceSchema),
         Counters: connection.models.Counters || connection.model("Counters", counterSchema),
+        Messages: connection.models.Messages || connection.model("Messages", messageSchema),
     };
 };
 

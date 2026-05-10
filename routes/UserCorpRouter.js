@@ -12,6 +12,7 @@ const multer = require("multer");
 const auth = require("../middleware/authMiddleware");
 const tenant = require("../middleware/tenantMiddleware");
 const ctrl = require("../controller/UserCorpController");
+const chatCtrl = require("../controller/chatController");
 
 // Setup Multer for Bulk Uploads
 const storage = multer.memoryStorage();
@@ -89,6 +90,11 @@ router.get("/staff",             ctrl.manageStaff.list);
 router.post("/staff",            ctrl.manageStaff.create);
 router.put("/staff/:id",         ctrl.manageStaff.update);
 router.delete("/staff/:id",      ctrl.manageStaff.delete);
+
+// --- 💬 CHAT ---
+router.post("/chat/send", chatCtrl.sendMessage);
+router.get("/chat/messages", chatCtrl.getMessages);
+router.put("/chat/seen", chatCtrl.markAsSeen);
 
 // --- 🏢 CORPORATE PROFILE ---
 router.get("/profile",           ctrl.manageProfile.get);
