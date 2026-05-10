@@ -24,6 +24,33 @@ const downloadFile = (url, destPath) => {
     });
 };
 
+const cleanupBroadcastMedia = async (Messages) => {
+    try {
+        const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+        const oldMessages = await Messages.find({
+            isOneToOne: false,
+            createdAt: { $lt: tenDaysAgo },
+            localPath: { $ne: null }
+        });
+
+        for (const msg of oldMessages) {
+            if (msg.localPath) {
+                // Ensure we handle the leading slash correctly
+                const relativePath = msg.localPath.startsWith('/') ? msg.localPath.substring(1) : msg.localPath;
+                const fullPath = path.join(__dirname, '..', relativePath);
+                if (fs.existsSync(fullPath)) {
+                    fs.unlinkSync(fullPath);
+                    console.log(`🗑️ Auto-removed old broadcast media: ${fullPath}`);
+                }
+                msg.localPath = null;
+                await msg.save();
+            }
+        }
+    } catch (err) {
+        console.error("🔴 Cleanup error:", err.message);
+    }
+};
+
 exports.sendMessage = async (req, res) => {
     try {
         const { senderName, senderId, text, type, mediaUrl, mediaType, public_id, isOneToOne, receiverId } = req.body;
@@ -48,8 +75,8 @@ exports.sendMessage = async (req, res) => {
         // If message has media and was uploaded to Cloudinary, download it to server and delete from cloud
         if (mediaUrl && public_id) {
             try {
-                const uploadDir = path.join(__dirname, '..', 'uploads');
-                if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
+                const uploadDir = path.join(__dirname, '..', 'uploads', 'chatMediaFolder');
+                if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
                 const fileName = `${Date.now()}-${path.basename(mediaUrl)}`;
                 const localPath = path.join(uploadDir, fileName);
@@ -58,8 +85,8 @@ exports.sendMessage = async (req, res) => {
                 await downloadFile(mediaUrl, localPath);
 
                 // Update message with local path
-                messageData.localPath = `/uploads/${fileName}`;
-                messageData.mediaUrl = `/uploads/${fileName}`; // Point to local path
+                messageData.localPath = `/uploads/chatMediaFolder/${fileName}`;
+                messageData.mediaUrl = `/uploads/chatMediaFolder/${fileName}`; // Point to local path
                 
                 // Delete from Cloudinary
                 console.log(`Deleting ${public_id} from Cloudinary...`);
@@ -90,6 +117,9 @@ exports.getMessages = async (req, res) => {
     try {
         const { Messages } = req.tenantModels;
         if (!Messages) return res.status(400).json({ success: false, message: "Tenant models not initialized" });
+
+        // Lazy cleanup for broadcast media (older than 10 days)
+        cleanupBroadcastMedia(Messages);
 
         const { isOneToOne, receiverId, senderId } = req.query;
         

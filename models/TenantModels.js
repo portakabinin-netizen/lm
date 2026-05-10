@@ -226,6 +226,7 @@ const messageSchema = new mongoose.Schema({
     mediaUrl: { type: String }, // URL (Cloudinary or Local)
     mediaType: { type: String }, // 'image', 'audio', 'video'
     localPath: { type: String }, // Path on server after download
+    mediaPath: { type: String }, // Path on device or server
     isCloudDeleted: { type: Boolean, default: false }, // Flag for cloud removal
     isOneToOne: { type: Boolean, default: false },
     receiverId: { type: String }, // If one-to-one
