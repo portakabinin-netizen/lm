@@ -61,23 +61,32 @@ const extractNameFromIndiamart = (text) => {
     const block = m[1].trim();
     
     // Since stripHtml flattens newlines, we look for the pattern:
-    // Phone [tick symbols] [Name] , [City]
-    const regexMatch = block.match(/Phone\s*[^a-zA-Z0-9]*\s*([^,]+)/i);
+    // Phone [tick symbols or entities] [Name]
+    // We match lazily after "Phone" until we find a sequence of letters (at least 2)
+    // and we ensure it is not followed by a colon (which would indicate a label like Email:)
+    const regexMatch = block.match(/Phone[\s\S]*?\b([A-Za-z]{2,}(?:\s+[A-Za-z]+)*)\b(?!:)/);
     if (regexMatch) {
         let name = regexMatch[1].trim();
         
-        // Clean repeated name (e.g., "John Doe JOHN DOE")
-        const parts = name.split(/\s+/);
-        if (parts.length >= 2 && parts.length % 2 === 0) {
-            const mid = parts.length / 2;
-            const firstHalf = parts.slice(0, mid).join(" ");
-            const secondHalf = parts.slice(mid).join(" ");
-            if (firstHalf.toLowerCase() === secondHalf.toLowerCase()) {
-                name = firstHalf;
+        const avoidList = ["email", "gst", "phone", "mobile", "requirement"];
+        if (!avoidList.includes(name.toLowerCase())) {
+            // Clean repeated name (e.g., "John Doe JOHN DOE" or "LATIF Lattif")
+            const parts = name.split(/\s+/);
+            if (parts.length >= 2 && parts.length % 2 === 0) {
+                const mid = parts.length / 2;
+                const firstHalf = parts.slice(0, mid).join(" ");
+                const secondHalf = parts.slice(mid).join(" ");
+                
+                const c1 = firstHalf.toLowerCase().replace(/(.)\1+/g, '$1');
+                const c2 = secondHalf.toLowerCase().replace(/(.)\1+/g, '$1');
+                
+                if (c1 === c2) {
+                    name = firstHalf;
+                }
             }
+            
+            return name;
         }
-        
-        return name;
     }
     
     const nameMatch = block.match(/Name\s*:\s*([^\n\r]+)/i);
@@ -115,7 +124,7 @@ const externalService = {
         // Source ID
         const sid = raw.source_id || raw.inquiry_id || raw.ID || raw.rfi_id || raw.QUERY_ID || raw.messageId || raw.QUERY_ID || "";
 
-        let name = clean(raw.sender_name || raw.SENDER_NAME || raw.SENDER || "");
+        let name = clean(raw.sender_name || raw.SENDER_NAME || raw.SENDER || raw.name || "");
         let subject = clean(raw.subject || raw.SUBJECT || "");
 
         // 🚀 NEW: Extract name from subject if Unknown or missing
@@ -301,7 +310,6 @@ const externalService = {
                         ]);
 
                         if (fullMsg && fullMsg.source) {
-                            console.log(`[${tenantDbName}] Raw Email Source:`, fullMsg.source.toString());
                             const parsed = await simpleParser(fullMsg.source);
                             const cleanBody = [parsed.text, parsed.html ? stripHtml(parsed.html) : "", parsed.subject].join(" ");
 
@@ -324,17 +332,6 @@ const externalService = {
                             
                             let extractedName = (replyToText || parsed.from?.text || "Unknown").replace(/<.*?>/g, '').trim();
                             
-                            // Clean repeated name (e.g., "John Doe JOHN DOE" or "LATIF Lattif")
-                            const nameParts = extractedName.split(/\s+/);
-                            if (nameParts.length >= 2 && nameParts.length % 2 === 0) {
-                                const mid = nameParts.length / 2;
-                                const firstHalf = nameParts.slice(0, mid).join(" ");
-                                const secondHalf = nameParts.slice(mid).join(" ");
-                                if (firstHalf.toLowerCase() === secondHalf.toLowerCase()) {
-                                    extractedName = firstHalf;
-                                }
-                            }
-                            
                             if (sender.toLowerCase().includes("indiamart") || extractedName === "Unknown" || extractedName.includes("@")) {
                                 const bodyName = extractNameFromIndiamart(cleanBody);
                                 if (bodyName) {
@@ -342,10 +339,22 @@ const externalService = {
                                 }
                             }
 
-                            // Debug log if name is still Unknown
-                            if (extractedName === "Unknown") {
-                                console.log(`[${tenantDbName}] Name extraction failed. ReplyTo:`, parsed.replyTo, "From:", parsed.from, "Body snippet:", cleanBody.substring(0, 200));
+                            // Clean repeated name (e.g., "John Doe JOHN DOE" or "LATIF Lattif")
+                            const nameParts = extractedName.split(/\s+/);
+                            if (nameParts.length >= 2 && nameParts.length % 2 === 0) {
+                                const mid = nameParts.length / 2;
+                                const firstHalf = nameParts.slice(0, mid).join(" ");
+                                const secondHalf = nameParts.slice(mid).join(" ");
+                                
+                                const c1 = firstHalf.toLowerCase().replace(/(.)\1+/g, '$1');
+                                const c2 = secondHalf.toLowerCase().replace(/(.)\1+/g, '$1');
+                                
+                                if (c1 === c2) {
+                                    extractedName = firstHalf;
+                                }
                             }
+
+
 
                             const leadData = {
                                 name: extractedName,
@@ -446,7 +455,7 @@ const externalService = {
                 return { success: true, count: 0 };
             }
 
-            console.log(`[${tenantDbName}] All Fetched Leads before deduplication:`, allLeads);
+
 
             // Step 3: Merge & Deduplicate (70-80%)
             externalService.emitProgress(io, tenantDbName, 75, `Merging and deduplicating ${allLeads.length} leads...`, "general");
