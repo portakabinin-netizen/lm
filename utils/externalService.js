@@ -53,6 +53,41 @@ const extractMobile = (text) => {
     return null;
 };
 
+const extractNameFromIndiamart = (text) => {
+    if (!text) return null;
+    const m = text.match(/Buyer's Contact Details\s*:?([\s\S]*?)(?:$|Product Details|Requirement|Requirement Details)/i);
+    if (!m) return null;
+    
+    const block = m[1].trim();
+    
+    // Since stripHtml flattens newlines, we look for the pattern:
+    // Phone [tick symbols] [Name] , [City]
+    const regexMatch = block.match(/Phone\s*[^a-zA-Z0-9]*\s*([^,]+)/i);
+    if (regexMatch) {
+        let name = regexMatch[1].trim();
+        
+        // Clean repeated name (e.g., "John Doe JOHN DOE")
+        const parts = name.split(/\s+/);
+        if (parts.length >= 2 && parts.length % 2 === 0) {
+            const mid = parts.length / 2;
+            const firstHalf = parts.slice(0, mid).join(" ");
+            const secondHalf = parts.slice(mid).join(" ");
+            if (firstHalf.toLowerCase() === secondHalf.toLowerCase()) {
+                name = firstHalf;
+            }
+        }
+        
+        return name;
+    }
+    
+    const nameMatch = block.match(/Name\s*:\s*([^\n\r]+)/i);
+    if (nameMatch) {
+        return nameMatch[1].trim();
+    }
+    
+    return null;
+};
+
 // ─── Configuration ──────────────────────────────────────────────────────────
 cloudinary.config({
     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -266,14 +301,54 @@ const externalService = {
                         ]);
 
                         if (fullMsg && fullMsg.source) {
+                            console.log(`[${tenantDbName}] Raw Email Source:`, fullMsg.source.toString());
                             const parsed = await simpleParser(fullMsg.source);
                             const cleanBody = [parsed.text, parsed.html ? stripHtml(parsed.html) : "", parsed.subject].join(" ");
 
                             const geo = findCityState(cleanBody);
                             const mobile = extractMobile(cleanBody);
 
+                            let replyToText = "";
+                            if (parsed.replyTo) {
+                                if (typeof parsed.replyTo === 'string') {
+                                    replyToText = parsed.replyTo;
+                                } else if (parsed.replyTo.text) {
+                                    replyToText = parsed.replyTo.text;
+                                } else if (Array.isArray(parsed.replyTo)) {
+                                    const first = parsed.replyTo[0];
+                                    replyToText = first?.name || first?.text || "";
+                                } else if (parsed.replyTo.value && parsed.replyTo.value[0]) {
+                                    replyToText = parsed.replyTo.value[0].name || parsed.replyTo.value[0].text || "";
+                                }
+                            }
+                            
+                            let extractedName = (replyToText || parsed.from?.text || "Unknown").replace(/<.*?>/g, '').trim();
+                            
+                            // Clean repeated name (e.g., "John Doe JOHN DOE" or "LATIF Lattif")
+                            const nameParts = extractedName.split(/\s+/);
+                            if (nameParts.length >= 2 && nameParts.length % 2 === 0) {
+                                const mid = nameParts.length / 2;
+                                const firstHalf = nameParts.slice(0, mid).join(" ");
+                                const secondHalf = nameParts.slice(mid).join(" ");
+                                if (firstHalf.toLowerCase() === secondHalf.toLowerCase()) {
+                                    extractedName = firstHalf;
+                                }
+                            }
+                            
+                            if (sender.toLowerCase().includes("indiamart") || extractedName === "Unknown" || extractedName.includes("@")) {
+                                const bodyName = extractNameFromIndiamart(cleanBody);
+                                if (bodyName) {
+                                    extractedName = bodyName;
+                                }
+                            }
+
+                            // Debug log if name is still Unknown
+                            if (extractedName === "Unknown") {
+                                console.log(`[${tenantDbName}] Name extraction failed. ReplyTo:`, parsed.replyTo, "From:", parsed.from, "Body snippet:", cleanBody.substring(0, 200));
+                            }
+
                             const leadData = {
-                                name: (parsed.replyTo?.text || parsed.from?.text || "Unknown").replace(/<.*?>/g, '').trim(),
+                                name: extractedName,
                                 mobile: mobile || "",
                                 email: extractEmail(cleanBody),
                                 product: extractProductName(parsed.subject) || "Enquiry",
@@ -370,6 +445,8 @@ const externalService = {
                 externalService.emitProgress(io, tenantDbName, 100, "Sync complete: No new leads found.", "sync_stats", { isComplete: true, totalFetched: 0, savedCount: 0 });
                 return { success: true, count: 0 };
             }
+
+            console.log(`[${tenantDbName}] All Fetched Leads before deduplication:`, allLeads);
 
             // Step 3: Merge & Deduplicate (70-80%)
             externalService.emitProgress(io, tenantDbName, 75, `Merging and deduplicating ${allLeads.length} leads...`, "general");

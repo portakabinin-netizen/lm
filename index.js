@@ -63,7 +63,7 @@ io.on("connection", (socket) => {
 app.get("/", (req, res) => {
   res.status(200).json({
     success: true,
-    message: "🚀 LeadManager API is active",
+    message: "🚀 Nex API is active",
     uptime: process.uptime(),
     timestamp: new Date(),
   });
@@ -91,48 +91,48 @@ app.post("/api/readEmails", authMiddleware, tenantMiddleware, UserCorpController
 
 // ---------- 🔬 DIAGNOSTIC ROUTE (Temp — remove after debugging) ----------
 app.get("/api/debug/active-staff", authMiddleware, tenantMiddleware, async (req, res) => {
-    try {
-        const mongoose = require("mongoose");
-        const userMaster = require("./models/userMaster");
-        const { Attendance, Employees } = req.tenantModels;
+  try {
+    const mongoose = require("mongoose");
+    const userMaster = require("./models/userMaster");
+    const { Attendance, Employees } = req.tenantModels;
 
-        console.log("🔬 [DIAG] Models:", !!Attendance, !!Employees);
+    console.log("🔬 [DIAG] Models:", !!Attendance, !!Employees);
 
-        const active = await Attendance.find({
-            $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }, { dutyEnd: "" }]
-        }).lean();
-        console.log("🔬 [DIAG] Active records:", active.length);
-        if (active.length === 0) return res.json({ success: true, step: "STEP1", active: 0 });
+    const active = await Attendance.find({
+      $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }, { dutyEnd: "" }]
+    }).lean();
+    console.log("🔬 [DIAG] Active records:", active.length);
+    if (active.length === 0) return res.json({ success: true, step: "STEP1", active: 0 });
 
-        const employeeIds = active.map(a => a.employeeId).filter(id => id && mongoose.Types.ObjectId.isValid(String(id)));
-        console.log("🔬 [DIAG] Employee IDs:", employeeIds.length);
+    const employeeIds = active.map(a => a.employeeId).filter(id => id && mongoose.Types.ObjectId.isValid(String(id)));
+    console.log("🔬 [DIAG] Employee IDs:", employeeIds.length);
 
-        const emps = await Employees.find({ _id: { $in: employeeIds } }).select("name").lean();
-        console.log("🔬 [DIAG] Emps:", emps.length);
+    const emps = await Employees.find({ _id: { $in: employeeIds } }).select("name").lean();
+    console.log("🔬 [DIAG] Emps:", emps.length);
 
-        let users = [];
-        try { users = await userMaster.find({ _id: { $in: employeeIds } }).select("userDisplayName").lean(); } catch(e) { console.log("🔬 [DIAG] userMaster failed:", e.message); }
-        console.log("🔬 [DIAG] Users:", users.length);
+    let users = [];
+    try { users = await userMaster.find({ _id: { $in: employeeIds } }).select("userDisplayName").lean(); } catch (e) { console.log("🔬 [DIAG] userMaster failed:", e.message); }
+    console.log("🔬 [DIAG] Users:", users.length);
 
-        const data = active.map(a => {
-            const targetId = String(a.employeeId?._id || a.employeeId);
-            const emp = emps.find(e => String(e._id) === targetId);
-            const user = users.find(u => String(u._id) === targetId);
-            return {
-                id: a._id,
-                employeeId: targetId,
-                dutyEnd: a.dutyEnd,
-                lat: a.location?.lat,
-                long: a.location?.long,
-                name: emp?.name || user?.userDisplayName || "Unknown"
-            };
-        });
+    const data = active.map(a => {
+      const targetId = String(a.employeeId?._id || a.employeeId);
+      const emp = emps.find(e => String(e._id) === targetId);
+      const user = users.find(u => String(u._id) === targetId);
+      return {
+        id: a._id,
+        employeeId: targetId,
+        dutyEnd: a.dutyEnd,
+        lat: a.location?.lat,
+        long: a.location?.long,
+        name: emp?.name || user?.userDisplayName || "Unknown"
+      };
+    });
 
-        res.json({ success: true, count: data.length, data });
-    } catch (err) {
-        console.error("🔬 [DIAG] CRASH:", err.message, err.stack);
-        res.status(500).json({ success: false, message: err.message, stack: err.stack });
-    }
+    res.json({ success: true, count: data.length, data });
+  } catch (err) {
+    console.error("🔬 [DIAG] CRASH:", err.message, err.stack);
+    res.status(500).json({ success: false, message: err.message, stack: err.stack });
+  }
 });
 
 // ---------- 404 Handler ----------

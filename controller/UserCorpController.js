@@ -866,7 +866,7 @@ exports.manageEmployees = {
 
                 // Shift lock enforcement
                 const requesterRole = req.user?.userRole;
-                const canOverride = ['CorpAdmin', 'Project', 'Admin'].includes(requesterRole);
+                const canOverride = ['CorpAdmin', 'Project', 'userAdmin'].includes(requesterRole);
 
                 if (isLocked && !forcedOff && !emergencyOff && !canOverride) {
                     return res.status(403).json({
@@ -906,7 +906,7 @@ exports.manageEmployees = {
     emergencyEndEmployee: async (req, res) => {
         try {
             const requesterRole = req.user?.userRole;
-            if (!['CorpAdmin', 'Project', 'Admin'].includes(requesterRole)) {
+            if (!['CorpAdmin', 'Project', 'userAdmin'].includes(requesterRole)) {
                 return res.status(403).json({
                     success: false,
                     message: 'Access denied. Only Project Users, Admin and CorpAdmin can trigger emergency off for an employee.'
@@ -1050,7 +1050,7 @@ exports.manageEmployees = {
                 title: '⚠️ Double Shift Alert',
                 message: notification.message,
                 priority: 'urgent',
-                targetRoles: ['CorpAdmin', 'Admin', 'Project'],
+                targetRoles: ['CorpAdmin', 'userAdmin', 'Project'],
                 sentBy: 'System',
                 sentByRole: 'System',
                 at: now.toISOString()
@@ -1069,7 +1069,7 @@ exports.manageEmployees = {
     sendBroadcast: async (req, res) => {
         try {
             const requesterRole = req.user?.userRole;
-            if (!['CorpAdmin', 'Admin'].includes(requesterRole)) {
+            if (!['CorpAdmin', 'userAdmin'].includes(requesterRole)) {
                 return res.status(403).json({ success: false, message: 'Only CorpAdmin and Admin can send broadcasts.' });
             }
 

@@ -12,7 +12,7 @@ const userMasterSchema = new mongoose.Schema({
     userEmail: { type: String, trim: true, lowercase: true },
     userMobile: { type: String, required: true, unique: true, trim: true },
     userPassword: { type: String, required: true },
-    userRole: { type: String, enum: ["CorpAdmin", "ROAdmin", "Sales", "Project", "Finance"], required: true },
+    userRole: { type: String, enum: ["CorpAdmin", "userAdmin", "Sales", "Project", "Finance"], required: true },
     userAadhar: { type: String, unique: true, sparse: true },
     userDoB: { type: Date },
     userActive: { type: Boolean, default: true },
