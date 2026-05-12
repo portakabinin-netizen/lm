@@ -1149,17 +1149,20 @@ exports.manageEmployees = {
 
             let emps = [];
             try {
-                emps = await Employees.find({ _id: { $in: employeeIds } }).select("name photo_url role").lean();
+                emps = await Employees.find({ _id: { $in: employeeIds } }).select("name photo_url role user_id").lean();
             } catch (empErr) {
                 // Non-fatal
             }
 
             let users = [];
             try {
-                users = await userMaster.find({ _id: { $in: employeeIds } })
-                    .select("userDisplayName userProfileImage userRole")
-                    .lean()
-                    .maxTimeMS(5000);
+                const userIds = emps.map(e => e.user_id).filter(id => id && mongoose.Types.ObjectId.isValid(String(id)));
+                if (userIds.length > 0) {
+                    users = await userMaster.find({ _id: { $in: userIds } })
+                        .select("userDisplayName userProfileImage userRole")
+                        .lean()
+                        .maxTimeMS(5000);
+                }
             } catch (userErr) {
                 // Non-fatal
             }
@@ -1178,7 +1181,7 @@ exports.manageEmployees = {
 
                 const targetId = String(a.employeeId?._id || a.employeeId);
                 const emp = emps.find(e => String(e._id) === targetId);
-                const user = users.find(u => String(u._id) === targetId);
+                const user = users.find(u => String(u._id) === String(emp?.user_id));
                 const displayName = emp?.name || user?.userDisplayName || "Unknown";
 
                 return {
