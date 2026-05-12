@@ -115,7 +115,7 @@ const messagingService = {
             const data = await response.json();
 
             if (data.error) {
-                return { success: false, message: data.error.message };
+                return { success: false, message: `${data.error.message} (Template: ${templateId})` };
             }
 
             return { success: true, channel: "whatsapp", message: "WhatsApp message sent via Meta API", messageId: data.messages?.[0]?.id };

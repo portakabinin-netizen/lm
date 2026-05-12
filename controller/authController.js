@@ -672,7 +672,7 @@ exports.verifyIdentity = async (req, res) => {
 
         otpStore[formatted] = { otp, expiresAt: Date.now() + 5 * 60 * 1000, purpose: "reset" };
 
-        const result = await sendOTPExternal(formatted, otp, "whatsapp", config, "reset");
+        const result = await sendOTPExternal(formatted, otp, "whatsapp", config, "register");
         if (!result.success) {
             return res.status(500).json({ success: false, message: result.message || "Failed to send OTP" });
         }
