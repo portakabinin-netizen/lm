@@ -145,8 +145,7 @@ const messagingService = {
                 }
 
                 const result = await messagingService.sendWhatsApp(mobile, templateId, { "1": otp }, config);
-
-                if (result.success) return result;
+                return result;
             }
 
             // SMS Fallback via MSG91 (STRICT: Read from profileMaster only)
