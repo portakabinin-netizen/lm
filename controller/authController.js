@@ -130,21 +130,33 @@ exports.verifyOtp = (req, res) => {
 exports.searchlinkCorp = async (req, res) => {
     try {
         const { query } = req.body;
+        const searchCriteria = { userRole: "CorpAdmin" };
+        
+        if (query) {
+            searchCriteria["accessCorporate.corporateName"] = { $regex: new RegExp(query, "i") };
+        }
+        
         const results = await userMaster.find(
-            {
-                userRole: "CorpAdmin",
-                "accessCorporate.corporateName": { $regex: new RegExp(query, "i") }
-            },
-            { "accessCorporate.$": 1, userDisplayName: 1, userEmail: 1 }
+            searchCriteria,
+            { "accessCorporate": 1, userDisplayName: 1, userEmail: 1 }
         ).lean();
 
-        const flatResults = results.map(r => ({
-            ...r.accessCorporate?.[0],
-            corporateName: r.accessCorporate?.[0]?.corporateName || "Unknown",
-            adminName: r.userDisplayName,
-            _id: r._id, // Owner Admin ID
-            dbName: r.accessCorporate?.[0]?.dbName
-        }));
+        const flatResults = [];
+        results.forEach(r => {
+            if (r.accessCorporate) {
+                r.accessCorporate.forEach(corp => {
+                    if (!query || (corp.corporateName && corp.corporateName.match(new RegExp(query, "i")))) {
+                        flatResults.push({
+                            ...corp,
+                            corporateName: corp.corporateName || "Unknown",
+                            adminName: r.userDisplayName,
+                            _id: r._id, // Owner Admin ID
+                            dbName: corp.dbName
+                        });
+                    }
+                });
+            }
+        });
 
         return res.json({ success: true, data: flatResults });
     } catch (err) { return res.status(500).json({ error: err.message }); }

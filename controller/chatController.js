@@ -132,8 +132,18 @@ exports.getMessages = async (req, res) => {
                     { senderId: receiverId, receiverId: senderId }
                 ]
             };
-        } else {
+        } else if (isOneToOne === 'false') {
             query = { isOneToOne: { $ne: true } }; // Public chat
+        } else {
+            // Default: Fetch all public messages + private messages involving the current user
+            const currentUserId = req.user.userId;
+            query = {
+                $or: [
+                    { isOneToOne: { $ne: true } }, // Public chat
+                    { senderId: currentUserId },    // Sent by me
+                    { receiverId: currentUserId }   // Received by me
+                ]
+            };
         }
 
         const messages = await Messages.find(query).sort({ createdAt: 1 }).limit(100);
