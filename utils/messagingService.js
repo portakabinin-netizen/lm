@@ -103,6 +103,9 @@ const messagingService = {
                 ];
             }
 
+            console.log(`[WhatsApp Payload] URL: ${url}`);
+            console.log(`[WhatsApp Payload] Body:`, JSON.stringify(payload, null, 2));
+
             const response = await fetch(url, {
                 method: "POST",
                 headers: {
@@ -115,6 +118,7 @@ const messagingService = {
             const data = await response.json();
 
             if (data.error) {
+                console.error(`[WhatsApp Error]`, data.error);
                 return { success: false, message: `${data.error.message} (Template: ${templateId})` };
             }
 
