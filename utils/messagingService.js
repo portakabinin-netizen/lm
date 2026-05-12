@@ -135,13 +135,9 @@ const messagingService = {
                 // 1. Try to find purpose-specific template in whatsapp_meta
                 let templateId = config?.whatsapp_meta?.templates?.find(t => t.purpose === purpose)?.template_id;
 
-                // 2. Fallback to any whatsapp_template_id in msg91 block (Legacy)
+                // 2. Fallback to legacy template or default to "hipk_singup"
                 if (!templateId) {
-                    templateId = config?.msg91?.whatsapp_template_id;
-                }
-
-                if (!templateId) {
-                    return { success: false, message: `WhatsApp template for purpose "${purpose}" not configured in profileMaster` };
+                    templateId = config?.msg91?.whatsapp_template_id || "hipk_singup";
                 }
 
                 const result = await messagingService.sendWhatsApp(mobile, templateId, { "1": otp }, config);
