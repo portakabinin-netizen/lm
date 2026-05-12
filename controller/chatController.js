@@ -103,7 +103,10 @@ exports.sendMessage = async (req, res) => {
 
         // Emit to socket room for instant delivery
         if (req.io && req.user && req.user.dbName) {
+            console.log(`📡 [SOCKET] Emitting 'newMessage' to room ${req.user.dbName}`, msg._id);
             req.io.to(req.user.dbName).emit('newMessage', msg);
+        } else {
+            console.log(`⚠️ [SOCKET] Could not emit message. req.io: ${!!req.io}, req.user: ${!!req.user}, dbName: ${req.user?.dbName}`);
         }
 
         return res.status(201).json({ success: true, data: msg });
