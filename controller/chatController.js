@@ -103,10 +103,7 @@ exports.sendMessage = async (req, res) => {
 
         // Emit to socket room for instant delivery
         if (req.io && req.user && req.user.dbName) {
-            console.log(`📡 [SOCKET] Emitting 'newMessage' to room ${req.user.dbName}`, msg._id);
             req.io.to(req.user.dbName).emit('newMessage', msg);
-        } else {
-            console.log(`⚠️ [SOCKET] Could not emit message. req.io: ${!!req.io}, req.user: ${!!req.user}, dbName: ${req.user?.dbName}`);
         }
 
         return res.status(201).json({ success: true, data: msg });
@@ -163,7 +160,6 @@ exports.markAsSeen = async (req, res) => {
         if (!Messages) return res.status(400).json({ success: false, message: "Tenant models not initialized" });
 
         const { messageIds } = req.body;
-        console.log(`📩 [markAsSeen] Received seen report for ${messageIds?.length} messages`);
         
         await Messages.updateMany(
             { _id: { $in: messageIds } },
@@ -172,7 +168,6 @@ exports.markAsSeen = async (req, res) => {
 
         // Emit to socket room so sender knows messages were seen
         if (req.io && req.user && req.user.dbName) {
-            console.log(`📡 [markAsSeen] Emitting messagesSeen to room ${req.user.dbName}`);
             req.io.to(req.user.dbName).emit('messagesSeen', { messageIds, seenBy: req.user.userId });
         }
 

@@ -53,7 +53,6 @@ io.on("connection", (socket) => {
   socket.on("joinRoom", (dbName) => {
     if (dbName) {
       socket.join(dbName);
-      console.log(`🔌 [SOCKET] Client ${socket.id} joined room: ${dbName}`);
     }
   });
 
