@@ -1154,11 +1154,19 @@ exports.manageEmployees = {
                 // Non-fatal
             }
 
+            // Find missing IDs (potentially direct users)
+            const foundEmpIds = emps.map(e => String(e._id));
+            const missingIds = employeeIds.filter(id => !foundEmpIds.includes(String(id)));
+
             let users = [];
             try {
                 const userIds = emps.map(e => e.user_id).filter(id => id && mongoose.Types.ObjectId.isValid(String(id)));
-                if (userIds.length > 0) {
-                    users = await userMaster.find({ _id: { $in: userIds } })
+                
+                // Add missing IDs to the query if they are valid ObjectIds
+                const queryIds = [...userIds, ...missingIds.filter(id => mongoose.Types.ObjectId.isValid(String(id)))];
+                
+                if (queryIds.length > 0) {
+                    users = await userMaster.find({ _id: { $in: queryIds } })
                         .select("userDisplayName userProfileImage userRole")
                         .lean()
                         .maxTimeMS(5000);
@@ -1181,8 +1189,8 @@ exports.manageEmployees = {
 
                 const targetId = String(a.employeeId?._id || a.employeeId);
                 const emp = emps.find(e => String(e._id) === targetId);
-                const user = users.find(u => String(u._id) === String(emp?.user_id));
-                const displayName = emp?.name || user?.userDisplayName || "Unknown";
+                const user = users.find(u => String(u._id) === String(emp?.user_id) || String(u._id) === targetId);
+                const displayName = emp?.name || user?.userDisplayName || "User";
 
                 return {
                     ...a,
