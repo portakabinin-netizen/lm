@@ -32,6 +32,13 @@ const userMasterSchema = new mongoose.Schema({
         }
     },
 
+    // 🕒 Predefined Duty Shift
+    dutyShift: {
+        startFrom: { type: String, default: "09:00" }, // HH:mm
+        durationHrs: { type: Number, default: 8 },
+        endOn: { type: String, default: "17:00" } // HH:mm
+    },
+
     // 🛡️ Security / Locking (Disabled for now as requested)
     isLocked: { type: Boolean, default: false },
 

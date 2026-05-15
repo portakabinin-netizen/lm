@@ -135,6 +135,12 @@ const employeeSchema = new mongoose.Schema({
     monthly_rate: { type: Number, default: 0 },
     bank: bankAccountSchema,
     addresses: employeeAddressSchema,
+    // 🕒 Predefined Duty Shift
+    dutyShift: {
+        startFrom: { type: String, default: "09:00" }, // HH:mm
+        durationHrs: { type: Number, default: 8 },
+        endOn: { type: String, default: "17:00" } // HH:mm
+    },
     joinDate: { type: Date },
     active: { type: Boolean, default: true }
 }, { _id: true, timestamps: true });
@@ -221,6 +227,8 @@ const attendanceSchema = new mongoose.Schema({
     site_name: { type: String },
     siteId: { type: String },
     leadId: { type: mongoose.Schema.Types.ObjectId },
+    isLate: { type: Boolean, default: false },
+    remarks: { type: String }
 }, { _id: true, timestamps: true });
 
 // 🎡 Corporate Data Slot

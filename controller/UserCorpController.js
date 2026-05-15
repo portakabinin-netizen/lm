@@ -805,7 +805,7 @@ exports.manageEmployees = {
     },
     toggleAttendance: async (req, res) => {
         try {
-            const { Attendance } = req.tenantModels;
+            const { Attendance, Employees } = req.tenantModels;
             const {
                 employeeId, type, lat, long, address,
                 shiftCode, shiftType, shiftPeriod, shiftLockHours,
@@ -832,7 +832,73 @@ exports.manageEmployees = {
                 }
                 // Start new session
                 const now = new Date();
-                const lockHrs = shiftLockHours || (shiftType === '12hr' ? 12 : 8);
+                
+                // Fetch employee or user to get predefined duty shift
+                let emp = await Employees.findById(queryId).lean();
+                if (!emp) {
+                    const userMaster = require("../models/userMaster");
+                    emp = await userMaster.findById(queryId).lean();
+                }
+                
+                const lockHrs = shiftLockHours || emp?.dutyShift?.durationHrs || (shiftType === '12hr' ? 12 : 8);
+                
+                // 🕒 Late Coming & Buffer Logic
+                let isLateComing = false;
+                if (emp?.dutyShift?.startFrom) {
+                    const [startHour, startMinute] = emp.dutyShift.startFrom.split(':').map(Number);
+                    const shiftStartToday = new Date(now);
+                    shiftStartToday.setHours(startHour, startMinute, 0, 0);
+                    
+                    const bufferTime = new Date(shiftStartToday.getTime() - 30 * 60000); // 30 mins early
+                    const lateTime = new Date(shiftStartToday.getTime() + 15 * 60000); // 15 mins late
+                    
+                    if (now < bufferTime) {
+                        if (req.body.requestPermission) {
+                            // Send chat message to public chatroom
+                            const { Messages } = req.tenantModels;
+                            if (Messages) {
+                                const msg = new Messages({
+                                    senderName: emp.name || 'Employee',
+                                    senderId: queryId,
+                                    text: `⚠️ Request to join duty early from ${emp.name || 'Employee'}. Shift starts at ${emp.dutyShift.startFrom}.`,
+                                    type: 'text',
+                                    isOneToOne: false, // Public chat
+                                    status: 'unseen'
+                                });
+                                await msg.save();
+                                req.io.to(req.tenantDbName).emit('newMessage', msg);
+                            }
+                            
+                            // Send broadcast to Project role
+                            req.io.to(req.tenantDbName).emit('admin:broadcast', {
+                                id: new mongoose.Types.ObjectId().toString(),
+                                title: '⚠️ Early Duty Request',
+                                message: `Employee ${emp.name || 'Employee'} requested to join duty early. Shift starts at ${emp.dutyShift.startFrom}.`,
+                                priority: 'normal',
+                                targetRoles: ['Project', 'CorpAdmin'],
+                                sentBy: emp.name || 'Employee',
+                                sentByRole: 'Employee',
+                                at: now.toISOString()
+                            });
+                            
+                            return res.json({
+                                success: true,
+                                message: `Request to join duty early has been sent to Project supervisors via chatroom.`
+                            });
+                        }
+                        
+                        return res.status(403).json({
+                            success: false,
+                            tooEarly: true, // Flag for frontend to show "Request Permission" button
+                            message: `Too early to start duty. You can start from ${bufferTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`
+                        });
+                    }
+                    
+                    if (now > lateTime) {
+                        isLateComing = true;
+                    }
+                }
+                
                 const scheduledEnd = new Date(now.getTime() + lockHrs * 3600000);
                 record = new Attendance({
                     employeeId,
@@ -848,7 +914,9 @@ exports.manageEmployees = {
                     status: 'Present',
                     site_name: site_name || 'HQ/Remote',
                     siteId: siteId || null,
-                    leadId: leadId || null
+                    leadId: leadId || null,
+                    isLate: isLateComing,
+                    remarks: isLateComing ? 'On Duty-Late Coming' : undefined
                 });
                 await record.save();
                 req.io.to(req.tenantDbName).emit('attendance:duty_on', {
