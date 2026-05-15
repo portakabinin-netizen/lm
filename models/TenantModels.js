@@ -51,6 +51,32 @@ const partySchema = new mongoose.Schema({
 }, { timestamps: true });
 
 // 4. Employees
+
+// ── Employment History Entry ──────────────────────────────────────────────────
+// Each entry represents one "employment period" for the worker.
+// Only one entry should have active: true at any time — the current arrangement.
+const employmentEntrySchema = new mongoose.Schema({
+    joinDate:       { type: Date, required: true },       // Start of this employment period
+    daily_rate:     { type: Number, default: 0 },         // Daily wage (₹)
+    monthly_rate:   { type: Number, default: 0 },         // Monthly salary (₹)
+    shiftStartTime: { type: String, trim: true },         // Shift start in HH:MM (24h), e.g. "08:00"
+    shiftHours:     { type: Number, default: 8 },         // Duration in hours (8 for MANG, 12 for DaNi)
+    // ── Shift Group & Name ──────────────────────────────────────────────────
+    // groupName: MANG (8hr shifts) or DaNi (12hr shifts)
+    groupName:      { type: String, enum: ['MANG', 'DaNi', null], default: null },
+    // shiftName: specific slot within the group
+    //   MANG slots: Morning | Afternoon | Night | General
+    //   DaNi slots: Day | Night
+    shiftName:      {
+        type: String,
+        enum: ['Morning', 'Afternoon', 'Night', 'General', 'Day', null],
+        default: null
+    },
+    active:         { type: Boolean, default: true },     // true = currently active employment period
+    endDate:        { type: Date },                       // Populated when this period ends
+    notes:          { type: String, trim: true },         // Optional reason / remark for change
+}, { _id: true, timestamps: true });
+
 const employeeSchema = new mongoose.Schema({
     name: { type: String, required: true, trim: true },
     father_name: { type: String, trim: true },
@@ -62,14 +88,19 @@ const employeeSchema = new mongoose.Schema({
     aadhar_no: { type: String, trim: true },
     enrollment_no: { type: String, trim: true },
     dob: { type: Date },
-    joinDate: { type: Date },
     gender: { type: String, enum: ["Male", "Female", "Transgender"], default: "Male" },
     photo_url: { type: String, trim: true },
-    daily_rate: { type: Number, default: 0 },
-    monthly_rate: { type: Number, default: 0 },
+
+    employmentHistory: { type: [employmentEntrySchema], default: [] },
+
+    // ── Legacy / Flat fields (kept for backward compat, prefer employmentHistory) ──
+    joinDate: { type: Date },          // @deprecated — use employmentHistory[active].joinDate
+    daily_rate: { type: Number, default: 0 }, // @deprecated — use employmentHistory[active].daily_rate
+    monthly_rate: { type: Number, default: 0 }, // @deprecated — use employmentHistory[active].monthly_rate
+    shiftEndTime: { type: String, trim: true },  // Legacy: default end time ("18:00")
+
     bank: bankAccountSchema,
     addresses: employeeAddressSchema,
-    shiftEndTime: { type: String, trim: true }, // Default end time (e.g. "18:00")
     active: { type: Boolean, default: true }
 }, { timestamps: true });
 
@@ -102,12 +133,14 @@ const leadSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 // 6. Attendance
-// Shift Reference:
-//   A = Morning   8h  (06:00–14:00)
-//   B = Afternoon 8h  (14:00–22:00)
-//   C = Night     8h  (22:00–06:00)
-//   D = Day      12h  (06:00–18:00)
-//   E = Night    12h  (18:00–06:00)
+// Shift Reference — Group MANG (8hr):
+//   M = Morning   8h  (06:00–14:00)
+//   A = Afternoon 8h  (14:00–22:00)
+//   N = Night     8h  (22:00–06:00)
+//   G = General   8h  (any fixed 8h window)
+// Shift Reference — Group DaNi (12hr):
+//   D  = Day   12h  (06:00–18:00)
+//   N2 = Night 12h  (18:00–06:00)
 const attendanceSchema = new mongoose.Schema({
     employeeId: { type: mongoose.Schema.Types.ObjectId, ref: 'Employees', required: true },
     date: { type: Date, required: true },
@@ -121,9 +154,11 @@ const attendanceSchema = new mongoose.Schema({
     clientId: { type: mongoose.Schema.Types.ObjectId },
     locationId: { type: mongoose.Schema.Types.ObjectId },
     // ── Shift Control ──
-    shiftCode: { type: String, enum: ['A', 'B', 'C', 'D', 'E', null], default: null },
+    // MANG = 8hr group: M(Morning), A(Afternoon), N(Night), G(General)
+    // DaNi = 12hr group: D(Day), N2(Night)
+    shiftCode: { type: String, enum: ['M', 'A', 'N', 'G', 'D', 'N2', null], default: null },
     shiftType: { type: String, enum: ['8hr', '12hr'], default: '8hr' },
-    shiftPeriod: { type: String, enum: ['Morning', 'Afternoon', 'Night', 'Day', 'Night12'], default: 'Morning' },
+    shiftPeriod: { type: String, enum: ['Morning', 'Afternoon', 'Night', 'General', 'Day', 'Night12'], default: 'Morning' },
     shiftLockHours: { type: Number, default: 8 }, // 8 or 12 depending on shift
     // ── Double / Consecutive Shift ──
     isDoubleShift: { type: Boolean, default: false },           // true if worker continued into next shift
