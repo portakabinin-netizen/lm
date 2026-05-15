@@ -39,6 +39,8 @@ const userMasterSchema = new mongoose.Schema({
         endOn: { type: String, default: "17:00" } // HH:mm
     },
 
+    allowCashFlow: { type: Boolean, default: false },
+
     // 🛡️ Security / Locking (Disabled for now as requested)
     isLocked: { type: Boolean, default: false },
 

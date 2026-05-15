@@ -256,6 +256,35 @@ exports.register = async (req, res) => {
                 console.error("Critical: Provisioning failed:", perr.message);
                 // We proceed but log the error - the admin might need to retry setup from UI
             }
+        } else if (["Project", "Sales", "Finance"].includes(data.userRole)) {
+            // 👷 Auto-create Employee Record for managed roles
+            try {
+                const dbConnector = require("../utils/dbConnector");
+                const { getTenantModels } = require("../models/TenantModels");
+                const targetDbName = newUserPayload.accessCorporate?.[0]?.dbName;
+                
+                if (targetDbName) {
+                    const tenantConnection = await dbConnector.getTenantConnection(targetDbName);
+                    const models = getTenantModels(tenantConnection);
+                    
+                    // Check if employee already exists
+                    const existingEmp = await models.Employees.findOne({ mobile: cleanMobile });
+                    if (!existingEmp) {
+                        const newEmp = new models.Employees({
+                            name: data.userDisplayName,
+                            mobile: cleanMobile,
+                            role: data.userRole,
+                            active: true,
+                            addresses: data.addresses,
+                            dutyShift: data.dutyShift
+                        });
+                        await newEmp.save();
+                        console.log(`Auto-created employee record for ${data.userDisplayName} in ${targetDbName}`);
+                    }
+                }
+            } catch (empErr) {
+                console.error("Failed to auto-create employee record:", empErr.message);
+            }
         }
 
         return res.status(201).json({ success: true, message: "User registered", userId: newUser._id });

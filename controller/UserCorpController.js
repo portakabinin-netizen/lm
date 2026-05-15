@@ -638,6 +638,19 @@ exports.manageEmployees = {
     },
     update: async (req, res) => {
         try {
+            const requesterRole = req.user?.userRole;
+            
+            // Project users can only update dutyShift for workers
+            if (requesterRole === 'Project') {
+                const fieldsTryingToUpdate = Object.keys(req.body);
+                const isOnlyUpdatingShift = fieldsTryingToUpdate.every(f => f === 'dutyShift');
+                if (!isOnlyUpdatingShift) {
+                    return res.status(403).json({ success: false, message: "Project users can only update shift timing for workers." });
+                }
+            } else if (!['CorpAdmin', 'userAdmin'].includes(requesterRole)) {
+                return res.status(403).json({ success: false, message: "Access denied. Insufficient permissions." });
+            }
+
             const { Employees } = req.tenantModels;
             const emp = await Employees.findByIdAndUpdate(req.params.id, req.body, { new: true });
             if (!emp) return res.status(404).json({ success: false, message: "Employee not found" });
@@ -895,7 +908,55 @@ exports.manageEmployees = {
                     }
                     
                     if (now > lateTime) {
-                        isLateComing = true;
+                        const isSpecialRole = ['Project', 'Sales', 'Finance'].includes(emp.userRole || emp.role);
+                        
+                        if (isSpecialRole) {
+                            if (req.body.requestPermission) {
+                                // Send chat message to public chatroom
+                                const { Messages } = req.tenantModels;
+                                if (Messages) {
+                                    const msg = new Messages({
+                                        senderName: emp.name || 'User',
+                                        senderId: queryId,
+                                        text: `⚠️ Request to join duty late from ${emp.name || 'User'}. Shift started at ${emp.dutyShift.startFrom}.`,
+                                        type: 'text',
+                                        isOneToOne: false, // Public chat
+                                        status: 'unseen'
+                                    });
+                                    await msg.save();
+                                    req.io.to(req.tenantDbName).emit('newMessage', msg);
+                                }
+                                
+                                // Send broadcast to CorpAdmin and userAdmin
+                                req.io.to(req.tenantDbName).emit('admin:broadcast', {
+                                    id: new mongoose.Types.ObjectId().toString(),
+                                    title: '⚠️ Late Duty Request',
+                                    message: `User ${emp.name || 'User'} requested to join duty late. Shift started at ${emp.dutyShift.startFrom}.`,
+                                    priority: 'normal',
+                                    targetRoles: ['CorpAdmin', 'userAdmin'],
+                                    sentBy: emp.name || 'User',
+                                    sentByRole: 'User',
+                                    at: now.toISOString()
+                                });
+                                
+                                return res.json({
+                                    success: true,
+                                    message: `Request to join duty late has been sent to CorpAdmin and userAdmin via chatroom.`
+                                });
+                            }
+                            
+                            return res.status(403).json({
+                                success: false,
+                                tooLate: true, // Flag for frontend to show "Request Permission" button
+                                message: `You are too late to start duty. You can request permission from CorpAdmin/userAdmin.`
+                            });
+                        }
+                        
+                        // For normal workers, reject strictly
+                        return res.status(403).json({
+                            success: false,
+                            message: `You are too late to start duty. Shift started at ${emp.dutyShift.startFrom}. Maximum allowed delay is 15 minutes.`
+                        });
                     }
                 }
                 
@@ -1298,7 +1359,80 @@ exports.manageStaff = {
     },
     update: async (req, res) => {
         try {
+            const requesterRole = req.user?.userRole;
+            
+            // Only CorpAdmin and userAdmin can update shift timing for registered users
+            if (req.body.dutyShift && !['CorpAdmin', 'userAdmin'].includes(requesterRole)) {
+                return res.status(403).json({ success: false, message: "Only CorpAdmin and userAdmin can update shift timing for registered users." });
+            }
+
             const staff = await userMaster.findByIdAndUpdate(req.params.id, req.body, { new: true }).select("-userPassword");
+
+            // 💸 Create Petty Cash Book if allowed cash flow
+            if (staff.allowCashFlow) {
+                try {
+                    const dbConnector = require("../utils/dbConnector");
+                    const { getTenantModels } = require("../models/TenantModels");
+                    const financeCtrl = require("./FinanceController");
+                    const targetDbName = staff.accessCorporate?.[0]?.dbName;
+                    
+                    if (targetDbName) {
+                        const tenantConnection = await dbConnector.getTenantConnection(targetDbName);
+                        const models = getTenantModels(tenantConnection);
+                        
+                        await financeCtrl.ensureLedgerFolioInternal(models, {
+                            name: `Petty Cash - ${staff.userDisplayName}`,
+                            group: "Cash-in-hand",
+                            nature: "Assets",
+                            refId: staff._id,
+                            refType: "User"
+                        });
+                        console.log(`Auto-created Petty Cash Book for ${staff.userDisplayName} in ${targetDbName}`);
+                    }
+                } catch (pcErr) {
+                    console.error("Failed to auto-create Petty Cash Book:", pcErr.message);
+                }
+            }
+
+            // 👷 Sync with Employee Collection for specific roles
+            if (["Project", "Sales", "Finance"].includes(staff.userRole)) {
+                try {
+                    const dbConnector = require("../utils/dbConnector");
+                    const { getTenantModels } = require("../models/TenantModels");
+                    const targetDbName = staff.accessCorporate?.[0]?.dbName;
+                    
+                    if (targetDbName) {
+                        const tenantConnection = await dbConnector.getTenantConnection(targetDbName);
+                        const models = getTenantModels(tenantConnection);
+                        
+                        // Check if employee already exists
+                        const existingEmp = await models.Employees.findOne({ mobile: staff.userMobile });
+                        if (!existingEmp) {
+                            const newEmp = new models.Employees({
+                                name: staff.userDisplayName,
+                                mobile: staff.userMobile,
+                                role: staff.userRole,
+                                active: true,
+                                addresses: staff.addresses,
+                                dutyShift: staff.dutyShift
+                            });
+                            await newEmp.save();
+                            console.log(`Auto-created employee record for existing user ${staff.userDisplayName} in ${targetDbName}`);
+                        } else {
+                            // Update existing employee record
+                            existingEmp.name = staff.userDisplayName;
+                            existingEmp.role = staff.userRole;
+                            existingEmp.addresses = staff.addresses;
+                            existingEmp.dutyShift = staff.dutyShift;
+                            await existingEmp.save();
+                            console.log(`Updated employee record for user ${staff.userDisplayName} in ${targetDbName}`);
+                        }
+                    }
+                } catch (empErr) {
+                    console.error("Failed to sync employee record:", empErr.message);
+                }
+            }
+
             res.json({ success: true, data: staff });
         } catch (err) { res.status(500).json({ success: false, message: err.message }); }
     },
