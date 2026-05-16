@@ -69,6 +69,13 @@ app.get("/", (req, res) => {
   });
 });
 
+// ---------- 🏥 Request Logging (DEBUG)
+app.use((req, res, next) => {
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl}`);
+    if (req.headers['x-tenant-id']) console.log(`   └─ x-tenant-id: ${req.headers['x-tenant-id']}`);
+    next();
+});
+
 // ---------- API Routes ----------
 app.use("/api/auth", authRouter);
 app.use("/api/setting", setting);

@@ -115,8 +115,11 @@ exports.sendMessage = async (req, res) => {
 
 exports.getMessages = async (req, res) => {
     try {
-        const { Messages } = req.tenantModels;
-        if (!Messages) return res.status(400).json({ success: false, message: "Tenant models not initialized" });
+        const { Messages } = req.tenantModels || {};
+        if (!Messages) {
+            console.error(`❌ [Chat] Messages model missing for tenant: ${req.tenantDbName || 'unknown'}`);
+            return res.status(400).json({ success: false, message: "Tenant models not initialized" });
+        }
 
         // Lazy cleanup for broadcast media (older than 10 days)
         cleanupBroadcastMedia(Messages);

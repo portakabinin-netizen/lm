@@ -30,6 +30,8 @@ const tenantMiddleware = async (req, res, next) => {
         req.tenantModels = getTenantModels(tenantConnection);
         req.tenantDbName = dbName;
 
+        console.log(`🏢 [Tenant] Resolved dbName: ${dbName} | Models: ${Object.keys(req.tenantModels || {}).join(', ')}`);
+
         // 4. Resolve Hierarchical Locations (HO, RO, BO Logic)
         if (req.user && req.user.userRole !== "CorpAdmin") {
             const profile = await req.tenantModels.ProfileMaster.findOne({}).lean();

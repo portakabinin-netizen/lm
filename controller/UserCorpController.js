@@ -158,7 +158,12 @@ exports.manageLeads = {
 
     analytics: async (req, res) => {
         try {
-            const { Leads } = req.tenantModels;
+            const { Leads } = req.tenantModels || {};
+            if (!Leads) {
+                console.error(`❌ [Analytics] Leads model missing for tenant: ${req.tenantDbName || 'unknown'}`);
+                return res.status(400).json({ success: false, message: "Tenant models not initialized" });
+            }
+            console.log(`📊 [Analytics] Fetching for tenant: ${req.tenantDbName}`);
             const { fromDate, toDate, source } = req.query;
             const q = {};
             

@@ -593,44 +593,7 @@ exports.checkUnique = async (req, res) => {
 
 // Removed duplicate updateProfileImage
 
-exports.getProfileHistory = async (req, res) => {
-    try {
-        const { userId, type } = req.query; // type: "user" or "corp"
-        const { ProfileMaster } = req.tenantModels || {};
-        const dbName = req.tenantDbName || req.user?.dbName;
-
-        if (!dbName) {
-            return res.status(400).json({ success: false, message: "Missing tenant identification" });
-        }
-
-        let customConfig = null;
-        if (ProfileMaster) {
-            try {
-                const profile = await ProfileMaster.findOne({}).lean();
-                if (profile?.apiUrls?.cloudinary?.isActive) {
-                    customConfig = profile.apiUrls.cloudinary;
-                }
-            } catch (err) {
-                console.error("ProfileMaster Query Error:", err.message);
-            }
-        }
-
-        const subFolder = type === "corp" ? "corporateProfile" : `userProfile/${userId}`;
-        const folderPath = `hipk/${dbName}/${subFolder}`;
-
-        try {
-            const resources = await externalService.fetchFolderMedia(folderPath, customConfig);
-            return res.json({ success: true, resources });
-        } catch (err) {
-            console.error("Image History Fetch Error:", err.message);
-            // 🚀 Return empty instead of 500 to keep UI alive
-            return res.json({ success: true, resources: [] });
-        }
-    } catch (err) {
-        console.error("Profile History Context Error:", err.message);
-        return res.status(500).json({ success: false, message: err.message });
-    }
-};
+// Consolidating getProfileHistory into the unified export at the bottom of the file
 
 exports.verifyIdentity = async (req, res) => {
     try {
@@ -956,29 +919,50 @@ exports.getProfileHistory = async (req, res) => {
         }
         const dbName = req.tenantDbName || req.user?.dbName;
 
-        if (!dbName) return res.status(400).json({ error: "Tenant context missing" });
+        if (!dbName) return res.status(400).json({ success: false, message: "Tenant context missing" });
+        if (!userId && type === "user") return res.status(400).json({ success: false, message: "UserId required for user profile history" });
 
-        if (!userId && type === "user") return res.status(400).json({ error: "UserId required for user profile history" });
+        // 🚀 FOLDER MAPPING FIX: Check both naming conventions
+        const subFolder = type === "user" ? `user-profile/${userId}` : "corp-profile";
+        const legacySubFolder = type === "user" ? `userProfile/${userId}` : "corporateProfile";
+        
+        const folderPath = `hipk/${dbName}/${subFolder}`;
+        const legacyFolderPath = `hipk/${dbName}/${legacySubFolder}`;
 
-        const folder = type === "user" ? `user-profile/${userId}` : "corp-profile";
-        const folderPath = `hipk/${dbName}/${folder}`;
+        const { ProfileMaster } = req.tenantModels || {};
+        let config = null;
+        if (ProfileMaster) {
+            const profile = await ProfileMaster.findOne({}).lean();
+            config = profile?.apiUrls?.cloudinary || null;
+        }
 
-        const { ProfileMaster } = req.tenantModels;
-        const profile = await ProfileMaster.findOne({}).lean();
-        const config = profile?.apiUrls?.cloudinary;
+        console.log(`[getProfileHistory] Fetching for ${folderPath} and ${legacyFolderPath}...`);
+        
+        // Fetch from both folders and merge
+        const [resources, legacyResources] = await Promise.all([
+            externalService.fetchFolderMedia(folderPath, config).catch(() => []),
+            externalService.fetchFolderMedia(legacyFolderPath, config).catch(() => [])
+        ]);
 
-        const resources = await externalService.fetchFolderMedia(folderPath, config).catch(() => []);
+        const mergedResources = [...resources, ...legacyResources].sort((a, b) => 
+            new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+        );
 
         // Fetch actual active DB profile image
         let activeUrl = null;
         if (mongoose.Types.ObjectId.isValid(userId)) {
             const me = await userMaster.findById(userId).lean();
-            activeUrl = type === "user" ? me?.userProfileImage : me?.accessCorporate?.find(c => c.dbName === dbName)?.CorpProfileImage;
+            if (me) {
+                activeUrl = type === "user" 
+                    ? me.userProfileImage 
+                    : me.accessCorporate?.find(c => c.dbName === dbName)?.CorpProfileImage;
+            }
         }
 
-        res.json({ success: true, resources, activeUrl });
+        res.json({ success: true, resources: mergedResources, activeUrl });
 
     } catch (err) {
+        console.error("🔴 Profile History Error:", err.message);
         res.status(500).json({ success: false, message: err.message });
     }
 };
