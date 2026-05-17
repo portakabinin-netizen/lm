@@ -365,28 +365,25 @@ exports.manageLeads = {
             const { selfie_url, location, remarks } = req.body;
             
             const activityEntry = {
-                action: "Site Visit",
+                action: "PIN Site",
                 byUser: req.user?.userDisplayName || "System",
                 date: new Date(),
             };
 
             const updateQuery = {
-                $push: { activity: activityEntry }
-            };
-
-            // Capture first-time location as anchor
-            const lead = await Leads.findById(req.params.id);
-            if (!lead) return res.status(404).json({ success: false, message: "Lead not found" });
-
-            if (!lead.location || !lead.location.lat) {
-                updateQuery.$set = {
+                $push: { activity: activityEntry },
+                $set: {
                     location: {
                         lat: location?.latitude || location?.lat,
                         long: location?.longitude || location?.long,
                         address: location?.formattedAddress || location?.address
                     }
-                };
-            }
+                }
+            };
+
+            // Capture location as anchor
+            const lead = await Leads.findById(req.params.id);
+            if (!lead) return res.status(404).json({ success: false, message: "Lead not found" });
 
             const updatedLead = await Leads.findByIdAndUpdate(req.params.id, updateQuery, { new: true });
             
@@ -401,7 +398,7 @@ exports.manageLeads = {
                     lat: location?.latitude || location?.lat,
                     long: location?.longitude || location?.long,
                     timestamp: new Date(),
-                    note: `Site Visit: ${lead.sender_name}`
+                    note: `PIN Site: ${lead.sender_name}`
                 });
                 await active.save();
             }
@@ -748,7 +745,6 @@ exports.manageEmployees = {
                 dutyEnd: dutyEnd ? new Date(dutyEnd) : undefined,
                 forcedOff: !!forcedOff,
                 forcedOffReason: forcedOffReason || "",
-                location,
                 geoHistory: geoHistory || [],
                 // Shift
                 shiftCode: shiftCode || null,
@@ -765,8 +761,8 @@ exports.manageEmployees = {
         try {
             const { Attendance } = req.tenantModels;
             const allowed = [
-                'dutyEnd', 'forcedOff', 'forcedOffReason', 'status', 'rate',
-                'location', 'geoHistory', 'emergencyOff', 'emergencyReason',
+                'forcedOff', 'forcedOffReason', 'status', 'rate',
+                'geoHistory', 'emergencyOff', 'emergencyReason',
                 'emergencyByUser', 'shiftCode', 'shiftType', 'shiftPeriod'
             ];
             const update = {};
@@ -786,8 +782,19 @@ exports.manageEmployees = {
                 }
             }
 
-            const record = await Attendance.findByIdAndUpdate(req.params.id, mongoUpdate, { new: true });
-            if (!record) return res.status(404).json({ success: false, message: 'Record not found' });
+            const record = await Attendance.findById(req.params.id);
+            if (!record) return res.status(404).json({ success: false, message: "Attendance record not found" });
+
+            // 🔐 Permission Check: If salary is posted, only Admin/CorpAdmin can change rate
+            if (record.isPosted && req.body.rate !== undefined && record.rate !== req.body.rate) {
+                const role = req.user?.userRole;
+                if (!['CorpAdmin', 'userAdmin'].includes(role)) {
+                    return res.status(403).json({ success: false, message: "Only CorpAdmin or userAdmin can modify the rate after salary is posted." });
+                }
+            }
+
+            Object.assign(record, update);
+            await record.save();
             res.json({ success: true, data: record });
         } catch (err) { res.status(500).json({ success: false, message: err.message }); }
     },
@@ -838,8 +845,20 @@ exports.manageEmployees = {
             const queryId = mongoose.isValidObjectId(employeeId) ? new mongoose.Types.ObjectId(employeeId) : employeeId;
 
             // Find open session (not necessarily today — shift C and E can span midnight)
+            // 1. Identify all possible IDs for this employee (Self-sync check)
+            let emp = await Employees.findById(queryId).lean();
+            if (!emp) {
+                const userMaster = require("../models/userMaster");
+                emp = await userMaster.findById(queryId).lean();
+            }
+            
+            const linkedIds = [queryId];
+            if (emp?.user_id) linkedIds.push(new mongoose.Types.ObjectId(emp.user_id));
+            if (emp?._id && String(emp._id) !== String(queryId)) linkedIds.push(emp._id);
+
+            // 2. Find open session using any linked IDs
             let record = await Attendance.findOne({
-                employeeId: queryId,
+                employeeId: { $in: linkedIds },
                 $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }]
             }).sort({ dutyStart: -1 });
 
@@ -851,138 +870,132 @@ exports.manageEmployees = {
                 // Start new session
                 const now = new Date();
                 
-                // Fetch employee or user to get predefined duty shift
-                let emp = await Employees.findById(queryId).lean();
-                if (!emp) {
-                    const userMaster = require("../models/userMaster");
-                    emp = await userMaster.findById(queryId).lean();
+                // (emp was already fetched above)
+                if (!emp) return res.status(404).json({ success: false, message: "Employee details not found" });
+                
+                let isSpecialAction = false;
+                // ─── SHIFT VALIDATION ───
+            const activeShift = (emp.employmentHistory || []).find(h => h.active) || 
+                                (emp.employmentHistory || []).slice(-1)[0];
+            
+            const [h, m] = (activeShift?.shiftStartTime || "08:00").split(':').map(Number);
+            if (activeShift && !isSpecialAction) {
+                const shiftStart = new Date(now);
+                shiftStart.setHours(h, m, 0, 0);
+                
+                // Buffer check: allowed to join 15 mins before or up to 15 mins late
+                const bufferTime = new Date(shiftStart.getTime() - 15 * 60000);
+                const lateTime = new Date(shiftStart.getTime() + 15 * 60000);
+                
+                if (now < bufferTime) {
+                    if (req.body.requestPermission) {
+                        const { Messages } = req.tenantModels;
+                        if (Messages) {
+                            const msg = new Messages({
+                                senderName: emp.name || 'Employee',
+                                senderId: queryId,
+                                text: `⚠️ Request to join duty early from ${emp.name || 'Employee'}. Shift starts at ${activeShift.shiftStartTime}.`,
+                                type: 'text',
+                                isOneToOne: false,
+                                status: 'unseen'
+                            });
+                            await msg.save();
+                            req.io.to(req.tenantDbName).emit('newMessage', msg);
+                        }
+                        
+                        req.io.to(req.tenantDbName).emit('admin:broadcast', {
+                            id: new mongoose.Types.ObjectId().toString(),
+                            title: '⚠️ Early Duty Request',
+                            message: `Employee ${emp.name || 'Employee'} requested to join duty early. Shift starts at ${activeShift.shiftStartTime}.`,
+                            priority: 'normal',
+                            targetRoles: ['Project', 'CorpAdmin'],
+                            sentBy: emp.name || 'Employee',
+                            sentByRole: 'Employee',
+                            at: now.toISOString()
+                        });
+                        
+                        return res.json({
+                            success: true,
+                            message: `Request to join duty early has been sent to Project supervisors via chatroom.`
+                        });
+                    }
+                    return res.status(403).json({
+                        success: false,
+                        tooEarly: true,
+                        message: `Too early to start duty. Shift starts at ${activeShift.shiftStartTime}.`
+                    });
                 }
                 
-                const lockHrs = shiftLockHours || emp?.dutyShift?.durationHrs || (shiftType === '12hr' ? 12 : 8);
-                
-                // 🕒 Late Coming & Buffer Logic
-                let isLateComing = false;
-                if (emp?.dutyShift?.startFrom) {
-                    const [startHour, startMinute] = emp.dutyShift.startFrom.split(':').map(Number);
-                    const shiftStartToday = new Date(now);
-                    shiftStartToday.setHours(startHour, startMinute, 0, 0);
-                    
-                    const bufferTime = new Date(shiftStartToday.getTime() - 30 * 60000); // 30 mins early
-                    const lateTime = new Date(shiftStartToday.getTime() + 15 * 60000); // 15 mins late
-                    
-                    if (now < bufferTime) {
+                if (now > lateTime) {
+                    const isSpecialRole = ['Project', 'Sales', 'Finance'].includes(emp.userRole || emp.role);
+                    if (isSpecialRole) {
                         if (req.body.requestPermission) {
-                            // Send chat message to public chatroom
                             const { Messages } = req.tenantModels;
                             if (Messages) {
                                 const msg = new Messages({
-                                    senderName: emp.name || 'Employee',
+                                    senderName: emp.name || 'User',
                                     senderId: queryId,
-                                    text: `⚠️ Request to join duty early from ${emp.name || 'Employee'}. Shift starts at ${emp.dutyShift.startFrom}.`,
+                                    text: `⚠️ Request to join duty late from ${emp.name || 'User'}. Shift started at ${activeShift.shiftStartTime}.`,
                                     type: 'text',
-                                    isOneToOne: false, // Public chat
+                                    isOneToOne: false,
                                     status: 'unseen'
                                 });
                                 await msg.save();
                                 req.io.to(req.tenantDbName).emit('newMessage', msg);
                             }
                             
-                            // Send broadcast to Project role
                             req.io.to(req.tenantDbName).emit('admin:broadcast', {
                                 id: new mongoose.Types.ObjectId().toString(),
-                                title: '⚠️ Early Duty Request',
-                                message: `Employee ${emp.name || 'Employee'} requested to join duty early. Shift starts at ${emp.dutyShift.startFrom}.`,
+                                title: '⚠️ Late Duty Request',
+                                message: `User ${emp.name || 'User'} requested to join duty late. Shift started at ${activeShift.shiftStartTime}.`,
                                 priority: 'normal',
-                                targetRoles: ['Project', 'CorpAdmin'],
-                                sentBy: emp.name || 'Employee',
-                                sentByRole: 'Employee',
+                                targetRoles: ['CorpAdmin', 'userAdmin'],
+                                sentBy: emp.name || 'User',
+                                sentByRole: 'User',
                                 at: now.toISOString()
                             });
                             
                             return res.json({
                                 success: true,
-                                message: `Request to join duty early has been sent to Project supervisors via chatroom.`
+                                message: `Request to join duty late has been sent to CorpAdmin and userAdmin via chatroom.`
                             });
                         }
-                        
                         return res.status(403).json({
                             success: false,
-                            tooEarly: true, // Flag for frontend to show "Request Permission" button
-                            message: `Too early to start duty. You can start from ${bufferTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`
+                            tooLate: true,
+                            message: `You are too late to start duty. Shift started at ${activeShift.shiftStartTime}.`
                         });
                     }
-                    
-                    if (now > lateTime) {
-                        const isSpecialRole = ['Project', 'Sales', 'Finance'].includes(emp.userRole || emp.role);
-                        
-                        if (isSpecialRole) {
-                            if (req.body.requestPermission) {
-                                // Send chat message to public chatroom
-                                const { Messages } = req.tenantModels;
-                                if (Messages) {
-                                    const msg = new Messages({
-                                        senderName: emp.name || 'User',
-                                        senderId: queryId,
-                                        text: `⚠️ Request to join duty late from ${emp.name || 'User'}. Shift started at ${emp.dutyShift.startFrom}.`,
-                                        type: 'text',
-                                        isOneToOne: false, // Public chat
-                                        status: 'unseen'
-                                    });
-                                    await msg.save();
-                                    req.io.to(req.tenantDbName).emit('newMessage', msg);
-                                }
-                                
-                                // Send broadcast to CorpAdmin and userAdmin
-                                req.io.to(req.tenantDbName).emit('admin:broadcast', {
-                                    id: new mongoose.Types.ObjectId().toString(),
-                                    title: '⚠️ Late Duty Request',
-                                    message: `User ${emp.name || 'User'} requested to join duty late. Shift started at ${emp.dutyShift.startFrom}.`,
-                                    priority: 'normal',
-                                    targetRoles: ['CorpAdmin', 'userAdmin'],
-                                    sentBy: emp.name || 'User',
-                                    sentByRole: 'User',
-                                    at: now.toISOString()
-                                });
-                                
-                                return res.json({
-                                    success: true,
-                                    message: `Request to join duty late has been sent to CorpAdmin and userAdmin via chatroom.`
-                                });
-                            }
-                            
-                            return res.status(403).json({
-                                success: false,
-                                tooLate: true, // Flag for frontend to show "Request Permission" button
-                                message: `You are too late to start duty. You can request permission from CorpAdmin/userAdmin.`
-                            });
-                        }
-                        
-                        // For normal workers, reject strictly
-                        return res.status(403).json({
-                            success: false,
-                            message: `You are too late to start duty. Shift started at ${emp.dutyShift.startFrom}. Maximum allowed delay is 15 minutes.`
-                        });
-                    }
+                    return res.status(403).json({
+                        success: false,
+                        message: `You are too late to start duty. Shift started at ${activeShift.shiftStartTime}.`
+                    });
                 }
-                
+            }
+
+            const lockHrs = activeShift?.shiftHours || 8;
+            const currentRate = activeShift?.daily_rate || 0;
+
+            if (record) return res.status(400).json({ success: false, message: "Duty already started" });
+
                 const scheduledEnd = new Date(now.getTime() + lockHrs * 3600000);
                 record = new Attendance({
                     employeeId,
                     date: now,
                     dutyStart: now,
                     dutyEndScheduled: scheduledEnd,
-                    shiftCode: shiftCode || null,
-                    shiftType: shiftType || '8hr',
-                    shiftPeriod: shiftPeriod || 'Morning',
+                    shiftCode: shiftCode || activeShift?.shiftName?.substring(0,1) || 'G',
+                    shiftType: shiftType || (lockHrs === 12 ? '12hr' : '8hr'),
+                    shiftPeriod: shiftPeriod || activeShift?.shiftName || 'General',
                     shiftLockHours: lockHrs,
-                    location: { lat, long, address: address || '' },
+                    rate: currentRate,
                     geoHistory: [{ lat, long, address: address || '', type: 'start', timestamp: now }],
                     status: 'Present',
                     site_name: site_name || 'HQ/Remote',
                     siteId: siteId || null,
                     leadId: leadId || null,
-                    isLate: isLateComing,
-                    remarks: isLateComing ? 'On Duty-Late Coming' : undefined
+                    isLate: activeShift ? (now > new Date(new Date(now).setHours(h, m, 0, 0) + 15 * 60000)) : false,
+                    remarks: (activeShift && now > new Date(new Date(now).setHours(h, m, 0, 0) + 15 * 60000)) ? 'On Duty-Late Coming' : undefined
                 });
                 await record.save();
                 req.io.to(req.tenantDbName).emit('attendance:duty_on', {
@@ -1000,7 +1013,9 @@ exports.manageEmployees = {
 
                 // Shift lock enforcement
                 const requesterRole = req.user?.userRole;
-                const canOverride = ['CorpAdmin', 'Project', 'userAdmin'].includes(requesterRole);
+                const employeeRole = emp?.userRole || emp?.role;
+                const canOverride = ['CorpAdmin', 'Project', 'userAdmin'].includes(requesterRole) ||
+                                   ['Project', 'Sales', 'Finance'].includes(employeeRole);
 
                 if (isLocked && !forcedOff && !emergencyOff && !canOverride) {
                     return res.status(403).json({
@@ -1012,7 +1027,6 @@ exports.manageEmployees = {
                 }
 
                 record.dutyEnd = now;
-                record.location = { ...record.location, lat, long, address: address || record.location?.address };
                 record.geoHistory.push({ lat, long, address: address || '', type: 'end', timestamp: now });
                 record.hoursWorked = parseFloat(Math.max(0, elapsedHrs).toFixed(2));
 
@@ -1157,7 +1171,6 @@ exports.manageEmployees = {
                 isDoubleShift: true,
                 previousShiftId: current._id,
                 doubleShiftNotified: true,
-                location: { lat, long, address: address || '' },
                 geoHistory: [{ lat, long, address: address || '', type: 'start', timestamp: now }],
                 status: 'Present',
                 site_name: site_name || current.site_name || 'HQ/Remote',
@@ -1310,15 +1323,13 @@ exports.manageEmployees = {
             }
 
             const data = active.map((a) => {
-                let currentLat = a.location?.lat;
-                let currentLong = a.location?.long;
+                let currentLat = null;
+                let currentLong = null;
 
                 if (a.geoHistory && a.geoHistory.length > 0) {
                     const latest = a.geoHistory[a.geoHistory.length - 1];
-                    if (latest?.lat && latest?.long) {
-                        currentLat = latest.lat;
-                        currentLong = latest.long;
-                    }
+                    currentLat = latest?.lat;
+                    currentLong = latest?.long;
                 }
 
                 const targetId = String(a.employeeId?._id || a.employeeId);
@@ -1328,7 +1339,7 @@ exports.manageEmployees = {
 
                 return {
                     ...a,
-                    location: { ...(a.location || {}), lat: currentLat, long: currentLong },
+                    location: { lat: currentLat, long: currentLong },
                     displayName,
                     photo: emp?.photo_url || user?.userProfileImage || null,
                     role: emp?.role || user?.userRole || "Staff"
@@ -1411,26 +1422,59 @@ exports.manageStaff = {
                         const models = getTenantModels(tenantConnection);
                         
                         // Check if employee already exists
-                        const existingEmp = await models.Employees.findOne({ mobile: staff.userMobile });
-                        if (!existingEmp) {
-                            const newEmp = new models.Employees({
+                        let emp = await models.Employees.findOne({ mobile: staff.userMobile });
+                        
+                        const newHistoryEntry = {
+                            joinDate: new Date(),
+                            daily_rate: req.body.daily_rate || 0,
+                            monthly_rate: req.body.monthly_rate || 0,
+                            shiftStartTime: req.body.shiftStartTime || "08:00",
+                            shiftHours: req.body.shiftHours || 8,
+                            groupName: req.body.groupName || "MANG",
+                            shiftName: req.body.shiftName || "Morning",
+                            active: true,
+                            notes: "Profile update from userMaster"
+                        };
+
+                        if (!emp) {
+                            emp = new models.Employees({
                                 name: staff.userDisplayName,
                                 mobile: staff.userMobile,
                                 role: staff.userRole,
                                 active: true,
                                 addresses: staff.addresses,
-                                dutyShift: staff.dutyShift
+                                user_id: staff._id,
+                                employmentHistory: [newHistoryEntry]
                             });
-                            await newEmp.save();
-                            console.log(`Auto-created employee record for existing user ${staff.userDisplayName} in ${targetDbName}`);
+                            await emp.save();
+                            console.log(`Auto-created employee record for ${staff.userDisplayName}`);
                         } else {
-                            // Update existing employee record
-                            existingEmp.name = staff.userDisplayName;
-                            existingEmp.role = staff.userRole;
-                            existingEmp.addresses = staff.addresses;
-                            existingEmp.dutyShift = staff.dutyShift;
-                            await existingEmp.save();
-                            console.log(`Updated employee record for user ${staff.userDisplayName} in ${targetDbName}`);
+                            // Update core info
+                            emp.name = staff.userDisplayName;
+                            emp.role = staff.userRole;
+                            emp.addresses = staff.addresses;
+                            emp.user_id = staff._id;
+
+                            // Versioning logic for employmentHistory
+                            const activeEntry = emp.employmentHistory.find(h => h.active);
+                            const hasChanges = !activeEntry || 
+                                activeEntry.daily_rate !== newHistoryEntry.daily_rate ||
+                                activeEntry.shiftStartTime !== newHistoryEntry.shiftStartTime ||
+                                activeEntry.shiftHours !== newHistoryEntry.shiftHours ||
+                                activeEntry.groupName !== newHistoryEntry.groupName ||
+                                activeEntry.shiftName !== newHistoryEntry.shiftName;
+
+                            if (hasChanges) {
+                                // Close current active entry
+                                if (activeEntry) {
+                                    activeEntry.active = false;
+                                    activeEntry.endDate = new Date();
+                                }
+                                // Add new entry
+                                emp.employmentHistory.push(newHistoryEntry);
+                            }
+                            await emp.save();
+                            console.log(`Synced employee record for ${staff.userDisplayName}`);
                         }
                     }
                 } catch (empErr) {

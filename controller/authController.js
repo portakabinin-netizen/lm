@@ -276,7 +276,17 @@ exports.register = async (req, res) => {
                             role: data.userRole,
                             active: true,
                             addresses: data.addresses,
-                            dutyShift: data.dutyShift
+                            employmentHistory: [{
+                                joinDate: new Date(),
+                                daily_rate: data.daily_rate || 0,
+                                monthly_rate: data.monthly_rate || 0,
+                                shiftStartTime: data.shiftStartTime || "08:00",
+                                shiftHours: data.shiftHours || 8,
+                                groupName: data.groupName || "MANG",
+                                shiftName: data.shiftName || "Morning",
+                                active: true,
+                                notes: "Initial registration"
+                            }]
                         });
                         await newEmp.save();
                         console.log(`Auto-created employee record for ${data.userDisplayName} in ${targetDbName}`);

@@ -92,13 +92,6 @@ const employeeSchema = new mongoose.Schema({
     photo_url: { type: String, trim: true },
 
     employmentHistory: { type: [employmentEntrySchema], default: [] },
-
-    // ── Legacy / Flat fields (kept for backward compat, prefer employmentHistory) ──
-    joinDate: { type: Date },          // @deprecated — use employmentHistory[active].joinDate
-    daily_rate: { type: Number, default: 0 }, // @deprecated — use employmentHistory[active].daily_rate
-    monthly_rate: { type: Number, default: 0 }, // @deprecated — use employmentHistory[active].monthly_rate
-    shiftEndTime: { type: String, trim: true },  // Legacy: default end time ("18:00")
-
     bank: bankAccountSchema,
     addresses: employeeAddressSchema,
     active: { type: Boolean, default: true }
@@ -177,11 +170,6 @@ const attendanceSchema = new mongoose.Schema({
     emergencyReason: { type: String, trim: true },         // Reason for emergency end
     emergencyByUser: { type: String, trim: true },         // Who triggered the emergency off
     // ── Geo & Tracking ──
-    location: {                                            // Last known / duty-end location
-        lat: { type: Number },
-        long: { type: Number },
-        address: { type: String }
-    },
     geoHistory: [{
         lat: { type: Number },
         long: { type: Number },

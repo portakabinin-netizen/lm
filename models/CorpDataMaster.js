@@ -3,7 +3,8 @@ const {
     fullAddressSchema,
     bankAccountSchema,
     employeeAddressSchema,
-    multiTenantSchema
+    multiTenantSchema,
+    employmentHistoryEntrySchema
 } = require("./masterShared");
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -131,16 +132,9 @@ const employeeSchema = new mongoose.Schema({
     dob: { type: Date },
     gender: { type: String, enum: ["Male", "Female", "Transgender"], default: "Male" },
     photo_url: { type: String, trim: true },
-    daily_rate: { type: Number, default: 0 },
-    monthly_rate: { type: Number, default: 0 },
+    employmentHistory: [employmentHistoryEntrySchema],
     bank: bankAccountSchema,
     addresses: employeeAddressSchema,
-    // 🕒 Predefined Duty Shift
-    dutyShift: {
-        startFrom: { type: String, default: "09:00" }, // HH:mm
-        durationHrs: { type: Number, default: 8 },
-        endOn: { type: String, default: "17:00" } // HH:mm
-    },
     joinDate: { type: Date },
     active: { type: Boolean, default: true }
 }, { _id: true, timestamps: true });

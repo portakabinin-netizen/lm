@@ -64,10 +64,19 @@ exports.getStaffPicker = async (req, res) => {
         const parties = await Parties.find({ active: true }).lean();
 
         // Legacy format split transporters, employees, contacts
-        const mappedEmployees = employees.map(e => ({
-            _id: e._id, name: e.name, mobile: e.mobile, role: e.role,
-            pay_type: "Daily", daily_rate: e.daily_rate
-        }));
+        const mappedEmployees = employees.map(e => {
+            const hist = e.employmentHistory || [];
+            const active = hist.find(h => h.active) || hist[hist.length - 1] || {};
+            return {
+                _id: e._id, 
+                name: e.name, 
+                mobile: e.mobile, 
+                role: e.role,
+                pay_type: active.pay_type || "Daily", 
+                daily_rate: active.daily_rate || 0,
+                monthly_salary: active.monthly_salary || 0
+            };
+        });
 
         // We'll treat some Parties as transporters or contacts
         const mappedTransporters = parties.filter(p => p.type === "Supplier").map(p => ({
