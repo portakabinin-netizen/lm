@@ -22,7 +22,46 @@ exports.ensureLedgerFolioInternal = async (tenantModels, options) => {
     if (!finalGroup) throw new Error("Group name is required to ensure a ledger folio");
     if (!finalName) throw new Error("Ledger name is required to ensure a ledger folio");
 
-    // 1. Find or create group
+    // 1. Resolve parent group to an ObjectId if it is specified as a string name
+    let resolvedParentGroupId = null;
+    if (parentGroup) {
+        if (mongoose.Types.ObjectId.isValid(parentGroup)) {
+            resolvedParentGroupId = parentGroup;
+        } else {
+            let parentGroupDoc = await Groups.findOne({ groupName: { $regex: new RegExp(`^${parentGroup}$`, "i") } });
+            if (!parentGroupDoc) {
+                let parentNature = "Asset";
+                const pLower = parentGroup.toLowerCase();
+                if (pLower.includes("liabilit")) {
+                    parentNature = "Liability";
+                } else if (pLower.includes("revenue") || pLower.includes("income")) {
+                    parentNature = "Revenue";
+                } else if (pLower.includes("expense") || pLower.includes("cost") || pLower.includes("purchase")) {
+                    parentNature = "Expense";
+                }
+                parentGroupDoc = new Groups({
+                    groupName: parentGroup,
+                    parentGroup: null,
+                    nature: parentNature
+                });
+                await parentGroupDoc.save();
+            }
+            resolvedParentGroupId = parentGroupDoc._id;
+        }
+    } else if (finalGroup.toLowerCase() === "sundry debtors") {
+        let parentGroupDoc = await Groups.findOne({ groupName: { $regex: new RegExp("^Current Assets$", "i") } });
+        if (!parentGroupDoc) {
+            parentGroupDoc = new Groups({
+                groupName: "Current Assets",
+                parentGroup: null,
+                nature: "Asset"
+            });
+            await parentGroupDoc.save();
+        }
+        resolvedParentGroupId = parentGroupDoc._id;
+    }
+
+    // 2. Find or create group
     let groupDoc = await Groups.findOne({ groupName: { $regex: new RegExp(`^${finalGroup}$`, "i") } });
     if (!groupDoc) {
         // Resolve group nature to a valid category enum: ["Assets", "Liabilities", "Income", "Expenses"]
@@ -51,12 +90,12 @@ exports.ensureLedgerFolioInternal = async (tenantModels, options) => {
 
         groupDoc = new Groups({
             groupName: finalGroup,
-            parentGroup: parentGroup || (finalGroup.toLowerCase() === "sundry debtors" ? "Current Assets" : null),
+            parentGroup: resolvedParentGroupId,
             nature: resolvedGroupNature
         });
         await groupDoc.save();
-    } else if (finalGroup.toLowerCase() === "sundry debtors" && !groupDoc.parentGroup) {
-        groupDoc.parentGroup = "Current Assets";
+    } else if (resolvedParentGroupId && !groupDoc.parentGroup) {
+        groupDoc.parentGroup = resolvedParentGroupId;
         await groupDoc.save();
     }
 
