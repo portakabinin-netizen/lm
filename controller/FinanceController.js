@@ -49,8 +49,8 @@ exports.ensureLedgerFolioInternal = async (tenantModels, options) => {
             resolvedGroupNature = (nature && nature.toLowerCase() === "cr") ? "Liability" : "Asset";
         }
 
-        groupDoc = new Groups({ 
-            groupName: finalGroup, 
+        groupDoc = new Groups({
+            groupName: finalGroup,
             parentGroup: parentGroup || null,
             nature: resolvedGroupNature
         });
@@ -138,7 +138,7 @@ exports.getAccountingMaster = async (req, res) => {
         const ledgers = await Ledgers.find({}).lean();
         if (ledgers.length < 5) { // If very few ledgers, seed defaults
             const newLedgers = [];
-            
+
             const cashG = groups.find(g => g.groupName === "Cash-in-hand");
             if (cashG) {
                 const hasCash = ledgers.some(l => l.ledgerName === "Cash Book");
@@ -148,13 +148,13 @@ exports.getAccountingMaster = async (req, res) => {
                     newLedgers.push({ ledgerName: "Petty Cash", ledgerGroupId: cashG._id, openingBalance: 0, openingBalanceType: "Dr", isDefault: true });
                 }
             }
-            
+
             const salesG = groups.find(g => g.groupName === "Sales Accounts");
             if (salesG && !ledgers.some(l => l.ledgerName && l.ledgerName.includes("Sales"))) {
                 newLedgers.push({ ledgerName: "Sales", ledgerGroupId: salesG._id, openingBalance: 0, openingBalanceType: "Cr", isDefault: true });
                 newLedgers.push({ ledgerName: "Local Sales", ledgerGroupId: salesG._id, openingBalance: 0, openingBalanceType: "Cr", isDefault: true });
             }
-            
+
             const purcG = groups.find(g => g.groupName === "Purchase Accounts");
             if (purcG && !ledgers.some(l => l.ledgerName && l.ledgerName.includes("Purchase"))) {
                 newLedgers.push({ ledgerName: "Purchase", ledgerGroupId: purcG._id, openingBalance: 0, openingBalanceType: "Dr", isDefault: true });
@@ -165,12 +165,12 @@ exports.getAccountingMaster = async (req, res) => {
             if (directExpG && !ledgers.some(l => l.ledgerName === "Salary & Wages")) {
                 newLedgers.push({ ledgerName: "Salary & Wages", ledgerGroupId: directExpG._id, openingBalance: 0, openingBalanceType: "Dr", isDefault: true });
             }
-            
+
             const debtG = groups.find(g => g.groupName === "Sundry Debtors");
             if (debtG && !ledgers.some(l => l.ledgerName === "Default Client")) {
                 newLedgers.push({ ledgerName: "Default Client", ledgerGroupId: debtG._id, openingBalance: 0, openingBalanceType: "Dr", isDefault: true });
             }
-            
+
             const credG = groups.find(g => g.groupName === "Sundry Creditors");
             if (credG && !ledgers.some(l => l.ledgerName === "Default Vendor")) {
                 newLedgers.push({ ledgerName: "Default Vendor", ledgerGroupId: credG._id, openingBalance: 0, openingBalanceType: "Cr", isDefault: true });
@@ -206,10 +206,10 @@ exports.getAccountingMaster = async (req, res) => {
         // Auto-create ledgers for active billable clients (Leads) with 'Accepted' status
         try {
             const { Leads } = req.tenantModels;
-            const activeLeads = await Leads.find({ 
-                status: { $regex: /^accepted$/i } 
+            const activeLeads = await Leads.find({
+                status: { $regex: /^Accepted$/i }
             }).lean();
-            
+
             for (const lead of activeLeads) {
                 if (lead.sender_name) {
                     await exports.ensureLedgerFolioInternal(req.tenantModels, {
@@ -236,17 +236,17 @@ exports.getAccountingMaster = async (req, res) => {
 exports.getAnalytics = async (req, res) => {
     try {
         const { Quotations, TaxInvoices, PurchaseOrders } = req.tenantModels;
-        
+
         const qList = await Quotations.find({}).lean();
         const iList = await TaxInvoices.find({}).lean();
         const pList = await PurchaseOrders.find({}).lean();
-        
+
         let quotationAmount = 0;
         qList.forEach(q => quotationAmount += (q.totals?.grandTotal || 0));
-        
+
         let invoiceAmount = 0;
         iList.forEach(i => invoiceAmount += (i.totals?.grandTotal || 0));
-        
+
         let poAmount = 0;
         pList.forEach(p => poAmount += (p.totals?.grandTotal || 0));
 
@@ -256,21 +256,21 @@ exports.getAnalytics = async (req, res) => {
 
         const monthWiseAgg = await TaxInvoices.aggregate([
             { $match: { date: { $gte: sixMonthsAgo } } },
-            { 
-                $group: { 
-                    _id: { $dateToString: { format: "%Y-%m", date: "$date" } }, 
+            {
+                $group: {
+                    _id: { $dateToString: { format: "%Y-%m", date: "$date" } },
                     tax: { $sum: "$totals.total_tax" },
                     revenue: { $sum: "$totals.grand_total" }
-                } 
+                }
             },
             { $sort: { _id: 1 } },
-            { 
-                $project: { 
-                    month: "$_id", 
-                    tax: 1, 
-                    revenue: 1, 
-                    _id: 0 
-                } 
+            {
+                $project: {
+                    month: "$_id",
+                    tax: 1,
+                    revenue: 1,
+                    _id: 0
+                }
             }
         ]);
 
@@ -319,7 +319,7 @@ exports.manageGroups = {
             const { Groups } = req.tenantModels;
             const group = new Groups(req.body);
             await group.save();
-            
+
             // 🚀 REAL-TIME
             req.io.to(req.tenantDbName).emit("group:created", { data: group });
 
@@ -338,7 +338,7 @@ exports.manageGroups = {
         try {
             const { Groups } = req.tenantModels;
             await Groups.findByIdAndDelete(req.params.id);
-            
+
             // 🚀 REAL-TIME
             req.io.to(req.tenantDbName).emit("group:deleted", { id: req.params.id });
 
@@ -381,10 +381,10 @@ exports.manageLedgers = {
             try {
                 const { Leads } = req.tenantModels;
                 // Auto-create ledgers for leads with status 'Accepted' only
-                const activeLeads = await Leads.find({ 
-                    status: { $regex: /^accepted$/i } 
+                const activeLeads = await Leads.find({
+                    status: { $regex: /^accepted$/i }
                 }).lean();
-                
+
                 for (const lead of activeLeads) {
                     if (lead.sender_name) {
                         await exports.ensureLedgerFolioInternal(req.tenantModels, {
@@ -407,7 +407,7 @@ exports.manageLedgers = {
     create: async (req, res) => {
         try {
             const ledger = await exports.ensureLedgerFolioInternal(req.tenantModels, req.body);
-            
+
             // 🚀 REAL-TIME
             req.io.to(req.tenantDbName).emit("ledger:created", { data: ledger });
 
@@ -433,14 +433,14 @@ exports.manageLedgers = {
         try {
             const { Ledgers } = req.tenantModels;
             await Ledgers.findByIdAndDelete(req.params.id);
-            
+
             // 🚀 REAL-TIME
             req.io.to(req.tenantDbName).emit("ledger:deleted", { id: req.params.id });
 
             res.json({ success: true, message: "Ledger deleted" });
         } catch (err) { res.status(500).json({ success: false, message: err.message }); }
     },
-    
+
     // Lookups for Linkage
     lookupEntities: async (req, res) => {
         try {
@@ -448,19 +448,19 @@ exports.manageLedgers = {
             const { Leads, Parties } = req.tenantModels;
             const q = query?.toLowerCase() || "";
             let results = [];
-            
+
             if (type === "Leads") {
-                results = await Leads.find({ 
-                    status: "Accepted", 
-                    sender_name: { $regex: new RegExp(q, "i") } 
+                results = await Leads.find({
+                    status: "Accepted",
+                    sender_name: { $regex: new RegExp(q, "i") }
                 }).limit(10).lean();
             } else if (type === "Vendors") {
-                results = await Parties.find({ 
-                    type: "Supplier", 
-                    name: { $regex: new RegExp(q, "i") } 
+                results = await Parties.find({
+                    type: "Supplier",
+                    name: { $regex: new RegExp(q, "i") }
                 }).limit(10).lean();
             }
-            
+
             res.json({ success: true, data: results });
         } catch (err) { res.status(500).json({ success: false, message: err.message }); }
     }
@@ -474,10 +474,10 @@ exports.manageVouchers = {
         try {
             const { Vouchers } = req.tenantModels;
             const { type, locationId } = req.query;
-            
+
             const q = {};
             if (type) q.voucherType = type;
-            
+
             // Enforce location filtering for non-CorpAdmins
             const accessibleIds = req.user?.accessibleLocationIds;
             if (req.user?.userRole !== "CorpAdmin" && accessibleIds?.length > 0) {
@@ -494,7 +494,7 @@ exports.manageVouchers = {
         try {
             const { Vouchers, Counters, Leads, Employees } = req.tenantModels;
             const { voucherType, locationId, entries } = req.body;
-            
+
             // 1. Resolve Branch Location ID
             let resolvedLocId = locationId;
             if (!resolvedLocId || !mongoose.Types.ObjectId.isValid(resolvedLocId)) {
@@ -529,16 +529,16 @@ exports.manageVouchers = {
                         const crLedger = await req.tenantModels.Ledgers.findById(crLedgerId).lean();
                         if (crLedger) {
                             if (crLedger.refType !== "User" || String(crLedger.refId) !== String(req.user?._id)) {
-                                return res.status(400).json({ 
-                                    success: false, 
-                                    message: "Contra Security Guard: You can only transfer funds OUT of your own Petty Cash book." 
+                                return res.status(400).json({
+                                    success: false,
+                                    message: "Contra Security Guard: You can only transfer funds OUT of your own Petty Cash book."
                                 });
                             }
                         }
                     } else {
-                        return res.status(400).json({ 
-                            success: false, 
-                            message: "Contra Security Guard: Payer account must be your own Petty Cash book." 
+                        return res.status(400).json({
+                            success: false,
+                            message: "Contra Security Guard: Payer account must be your own Petty Cash book."
                         });
                     }
                 }
@@ -565,9 +565,9 @@ exports.manageVouchers = {
                 }
 
                 if (!isDrValid) {
-                    return res.status(400).json({ 
-                        success: false, 
-                        message: "Contra Security Guard: Destination must be Main Bank or another user's Petty Cash book." 
+                    return res.status(400).json({
+                        success: false,
+                        message: "Contra Security Guard: Destination must be Main Bank or another user's Petty Cash book."
                     });
                 }
 
@@ -604,10 +604,10 @@ exports.manageVouchers = {
                 const accountType = entry.accountType;
 
                 // A. Resolve core cash / bank / expense placeholders
-                if (ledgerId === "cash_in_hand" || ledgerId === "main_bank" || ledgerId === "office_rent" || 
-                    ledgerId === "electricity_bill" || ledgerId === "stationary_expense" || 
+                if (ledgerId === "cash_in_hand" || ledgerId === "main_bank" || ledgerId === "office_rent" ||
+                    ledgerId === "electricity_bill" || ledgerId === "stationary_expense" ||
                     ledgerId === "interest_income" || ledgerId === "uniform_equipment") {
-                    
+
                     let targetName = "Cash Book";
                     let targetGroup = "Cash-in-hand";
                     let nature = "Dr";
@@ -705,12 +705,12 @@ exports.manageVouchers = {
             // 3. Location-specific counter & Voucher generation
             const counterId = `voucher_${voucherType}_${resolvedLocId}`;
             const counter = await Counters.findByIdAndUpdate(counterId, { $inc: { seq: 1 } }, { upsert: true, new: true });
-            
-            const voucher = new Vouchers({ 
+
+            const voucher = new Vouchers({
                 ...req.body,
                 locationId: resolvedLocId,
                 entries: resolvedEntries,
-                voucherNo: `${voucherType.substring(0,3).toUpperCase()}-${resolvedLocId.toString().slice(-4)}-${counter.seq}` 
+                voucherNo: `${voucherType.substring(0, 3).toUpperCase()}-${resolvedLocId.toString().slice(-4)}-${counter.seq}`
             });
             await voucher.save();
 
@@ -724,7 +724,7 @@ exports.manageVouchers = {
         try {
             const { ledgerId } = req.params;
             const { Vouchers } = req.tenantModels;
-            
+
             const q = { "entries.ledgerId": ledgerId };
             const accessibleIds = req.user?.accessibleLocationIds;
             if (req.user?.userRole !== "CorpAdmin" && accessibleIds?.length > 0) {
@@ -762,11 +762,11 @@ const manageCommercial = (modelName, docPrefix) => ({
         try {
             const Model = req.tenantModels[modelName];
             const { locationId, status, vendorId } = req.query;
-            
+
             const q = {};
             if (status) q.status = status;
             if (vendorId) q.vendorId = vendorId;
-            
+
             // Enforce location filtering for non-CorpAdmins
             const accessibleIds = req.user?.accessibleLocationIds;
             if (req.user?.userRole !== "CorpAdmin" && accessibleIds?.length > 0) {
@@ -803,7 +803,7 @@ const manageCommercial = (modelName, docPrefix) => ({
                 docNo: `${docPrefix}-${locationId.toString().slice(-4)}-${counter.seq}`
             });
             await doc.save();
-            
+
             // 🚀 REAL-TIME
             req.io.to(req.tenantDbName).emit(`${modelName.toLowerCase()}:created`, { data: doc });
 
@@ -815,7 +815,7 @@ const manageCommercial = (modelName, docPrefix) => ({
             const Model = req.tenantModels[modelName];
             const item = await Model.findByIdAndUpdate(req.params.id, req.body, { new: true });
             if (!item) return res.status(404).json({ success: false, message: "Document not found" });
-            
+
             // 🚀 REAL-TIME
             req.io.to(req.tenantDbName).emit(`${modelName.toLowerCase()}:updated`, { data: item });
 
@@ -826,7 +826,7 @@ const manageCommercial = (modelName, docPrefix) => ({
         try {
             const Model = req.tenantModels[modelName];
             await Model.findByIdAndDelete(req.params.id);
-            
+
             // 🚀 REAL-TIME
             req.io.to(req.tenantDbName).emit(`${modelName.toLowerCase()}:deleted`, { id: req.params.id });
 
@@ -877,12 +877,12 @@ exports.postSalaryJournal = async (req, res) => {
 
         let empLedger = await Ledgers.findOne({ refId: employeeId, refType: "Staff" });
         if (!empLedger) {
-            empLedger = new Ledgers({ 
-                ledgerName: employeeName || `Emp-${employeeId.toString().slice(-4)}`, 
-                ledgerGroupId: payablesG._id, 
-                openingBalanceType: "Cr", 
-                refId: employeeId, 
-                refType: "Staff" 
+            empLedger = new Ledgers({
+                ledgerName: employeeName || `Emp-${employeeId.toString().slice(-4)}`,
+                ledgerGroupId: payablesG._id,
+                openingBalanceType: "Cr",
+                refId: employeeId,
+                refType: "Staff"
             });
             await empLedger.save();
         }
@@ -912,14 +912,14 @@ exports.postSalaryJournal = async (req, res) => {
             // Create New Journal Voucher
             const counterId = `voucher_Journal_${locationId || 'global'}`;
             const counter = await Counters.findByIdAndUpdate(counterId, { $inc: { seq: 1 } }, { upsert: true, new: true });
-            
+
             voucher = new Vouchers({
                 locationId,
                 voucherType: "Journal",
                 voucherNo: `JRN-${(locationId || '0000').toString().slice(-4)}-${counter.seq}`,
                 date: new Date(),
                 narration: `Salary Dues for ${month || 'Current Month'} - ${employeeName}`,
-                leadId, 
+                leadId,
                 entries: [
                     { ledgerId: salaryLedger._id, ledgerName: salaryLedger.name, debit: amount, credit: 0 },
                     { ledgerId: empLedger._id, ledgerName: empLedger.name, debit: 0, credit: amount }
@@ -1039,7 +1039,7 @@ exports.getPettyCashBalances = async (req, res) => {
         for (const ledger of pettyCashLedgers) {
             // Find all vouchers containing this ledgerId
             const vouchers = await Vouchers.find({ "entries.ledgerId": ledger._id }).lean();
-            
+
             let totalDebit = 0;
             let totalCredit = 0;
 
