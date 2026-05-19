@@ -129,13 +129,15 @@ exports.createTransaction = async (req, res) => {
         txnData.txn_number = `LEGACY-${Date.now()}`;
         txnData.recorded_by = req.user?._id;
 
-        // Auto-create Ledgers for Double Entry
-        let cashLedger = await Ledgers.findOne({ name: "Cash" });
-        if (!cashLedger) {
-            let cashG = await Groups.findOne({ name: "Cash-in-hand" });
-            if (!cashG) cashG = await Groups.create({ name: "Cash-in-hand", nature: "Assets" });
-            cashLedger = await Ledgers.create({ name: "Cash", groupId: cashG._id, nature: "Dr" });
-        }
+        // Auto-create User-specific Petty Cash Ledger for Double Entry
+        const pettyCashName = `Petty Cash - ${req.user?.userDisplayName || "General User"}`;
+        const cashLedger = await ensureLedgerFolioInternal(req.tenantModels, {
+            name: pettyCashName,
+            group: "Cash-in-hand",
+            nature: "Dr",
+            refId: req.user?._id || null,
+            refType: "User"
+        });
 
         let partyLedgerName = txnData.party_name || txnData.txn_type;
         let partyLedger = await ensureLedgerFolioInternal(req.tenantModels, {

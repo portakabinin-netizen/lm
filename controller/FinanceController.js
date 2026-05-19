@@ -341,18 +341,138 @@ exports.manageVouchers = {
     },
     create: async (req, res) => {
         try {
-            const { Vouchers, Counters } = req.tenantModels;
-            const { voucherType, locationId } = req.body;
+            const { Vouchers, Counters, Leads, Employees } = req.tenantModels;
+            const { voucherType, locationId, entries } = req.body;
             
-            if (!locationId) return res.status(400).json({ success: false, message: "locationId is required" });
+            // 1. Resolve Branch Location ID
+            let resolvedLocId = locationId;
+            if (!resolvedLocId || !mongoose.Types.ObjectId.isValid(resolvedLocId)) {
+                const profile = await req.tenantModels.ProfileMaster.findOne({}).lean();
+                resolvedLocId = profile?.locations?.[0]?._id || req.user?.accessibleLocationIds?.[0];
+            }
+            if (!resolvedLocId) {
+                resolvedLocId = new mongoose.Types.ObjectId(); // Fallback to safe ObjectId to satisfy validation
+            }
 
-            // Location-specific counter
-            const counterId = `voucher_${voucherType}_${locationId}`;
+            if (!entries || !Array.isArray(entries)) {
+                return res.status(400).json({ success: false, message: "entries array is required" });
+            }
+
+            // 2. Resolve or Auto-Create Ledger Folios for all entries
+            const resolvedEntries = [];
+            for (const entry of entries) {
+                let ledgerId = entry.ledgerId;
+                let ledgerName = entry.ledgerName || "";
+                const accountType = entry.accountType;
+
+                // A. Resolve core cash / bank / expense placeholders
+                if (ledgerId === "cash_in_hand" || ledgerId === "main_bank" || ledgerId === "office_rent" || 
+                    ledgerId === "electricity_bill" || ledgerId === "stationary_expense" || 
+                    ledgerId === "interest_income" || ledgerId === "uniform_equipment") {
+                    
+                    let targetName = "Cash Book";
+                    let targetGroup = "Cash-in-hand";
+                    let nature = "Dr";
+                    let refId = null;
+                    let refType = null;
+
+                    if (ledgerId === "cash_in_hand") {
+                        targetName = `Petty Cash - ${req.user?.userDisplayName || "General User"}`;
+                        targetGroup = "Cash-in-hand";
+                        refId = req.user?._id || null;
+                        refType = "User";
+                    } else if (ledgerId === "main_bank") {
+                        targetName = "Main Bank Account";
+                        targetGroup = "Bank Accounts";
+                    } else if (ledgerId === "office_rent") {
+                        targetName = "Office Rent";
+                        targetGroup = "Indirect Expenses";
+                    } else if (ledgerId === "electricity_bill") {
+                        targetName = "Electricity Bill";
+                        targetGroup = "Indirect Expenses";
+                    } else if (ledgerId === "stationary_expense") {
+                        targetName = "Stationary & Printing";
+                        targetGroup = "Indirect Expenses";
+                    } else if (ledgerId === "interest_income") {
+                        targetName = "Interest Income";
+                        targetGroup = "Indirect Income";
+                        nature = "Cr";
+                    } else if (ledgerId === "uniform_equipment") {
+                        targetName = "Uniform & Equipment";
+                        targetGroup = "Direct Expenses";
+                    }
+
+                    const resolvedLedger = await exports.ensureLedgerFolioInternal(req.tenantModels, {
+                        name: targetName,
+                        group: targetGroup,
+                        nature,
+                        refId,
+                        refType
+                    });
+                    ledgerId = resolvedLedger._id;
+                    ledgerName = resolvedLedger.name;
+                }
+
+                // B. Resolve Lead-linked folios
+                else if (accountType === "Lead" || (mongoose.Types.ObjectId.isValid(ledgerId) && await Leads.exists({ _id: ledgerId }))) {
+                    const lead = await Leads.findById(ledgerId).lean();
+                    if (lead) {
+                        const resolvedLedger = await exports.ensureLedgerFolioInternal(req.tenantModels, {
+                            name: lead.sender_name,
+                            group: "Sundry Debtors",
+                            refId: lead._id,
+                            refType: "Lead",
+                            nature: "Dr"
+                        });
+                        ledgerId = resolvedLedger._id;
+                        ledgerName = resolvedLedger.name;
+                    }
+                }
+
+                // C. Resolve Employee/Staff-linked folios
+                else if (accountType === "Staff" || (mongoose.Types.ObjectId.isValid(ledgerId) && await Employees.exists({ _id: ledgerId }))) {
+                    const employee = await Employees.findById(ledgerId).lean();
+                    if (employee) {
+                        const resolvedLedger = await exports.ensureLedgerFolioInternal(req.tenantModels, {
+                            name: employee.name,
+                            group: "Direct Expenses",
+                            refId: employee._id,
+                            refType: "Staff",
+                            nature: "Dr"
+                        });
+                        ledgerId = resolvedLedger._id;
+                        ledgerName = resolvedLedger.name;
+                    }
+                }
+
+                // D. Fallback for invalid ObjectIds
+                else if (!mongoose.Types.ObjectId.isValid(ledgerId)) {
+                    const resolvedLedger = await exports.ensureLedgerFolioInternal(req.tenantModels, {
+                        name: ledgerName || "General Suspense",
+                        group: "Current Assets",
+                        nature: "Dr"
+                    });
+                    ledgerId = resolvedLedger._id;
+                    ledgerName = resolvedLedger.name;
+                }
+
+                resolvedEntries.push({
+                    ledgerId,
+                    ledgerName,
+                    debit: entry.debit || 0,
+                    credit: entry.credit || 0,
+                });
+            }
+
+            // 3. Location-specific counter & Voucher generation
+            const counterId = `voucher_${voucherType}_${resolvedLocId}`;
             const counter = await Counters.findByIdAndUpdate(counterId, { $inc: { seq: 1 } }, { upsert: true, new: true });
             
             const voucher = new Vouchers({ 
-                ...req.body, 
-                voucherNo: `${voucherType.substring(0,3).toUpperCase()}-${locationId.toString().slice(-4)}-${counter.seq}` 
+                ...req.body,
+                locationId: resolvedLocId,
+                entries: resolvedEntries,
+                voucherNo: `${voucherType.substring(0,3).toUpperCase()}-${resolvedLocId.toString().slice(-4)}-${counter.seq}` 
             });
             await voucher.save();
 
