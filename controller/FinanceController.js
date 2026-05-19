@@ -14,15 +14,20 @@ const mongoose = require("mongoose");
  * Used for auto-creating ledgers for Leads/Suppliers/Employees.
  */
 exports.ensureLedgerFolioInternal = async (tenantModels, options) => {
-    const { name, group, parentGroup, refId, refType, openingBalance, nature } = options;
+    const finalName = options.ledgerName || options.name;
+    const finalGroup = options.groupName || options.group;
+    const { parentGroup, refId, refType, openingBalance, nature } = options;
     const { Groups, Ledgers } = tenantModels;
 
+    if (!finalGroup) throw new Error("Group name is required to ensure a ledger folio");
+    if (!finalName) throw new Error("Ledger name is required to ensure a ledger folio");
+
     // 1. Find or create group
-    let groupDoc = await Groups.findOne({ groupName: { $regex: new RegExp(`^${group}$`, "i") } });
+    let groupDoc = await Groups.findOne({ groupName: { $regex: new RegExp(`^${finalGroup}$`, "i") } });
     if (!groupDoc) {
         // Resolve group nature to a valid category enum: ["Assets", "Liabilities", "Income", "Expenses"]
-        let resolvedGroupNature = "Assets";
-        const groupLower = group.toLowerCase();
+        let resolvedGroupNature = "Asset";
+        const groupLower = finalGroup.toLowerCase();
 
         if (groupLower.includes("creditor") || groupLower.includes("liability") || groupLower.includes("payable") || groupLower.includes("capital")) {
             resolvedGroupNature = "Liability";
@@ -45,7 +50,7 @@ exports.ensureLedgerFolioInternal = async (tenantModels, options) => {
         }
 
         groupDoc = new Groups({ 
-            groupName: group, 
+            groupName: finalGroup, 
             parentGroup: parentGroup || null,
             nature: resolvedGroupNature
         });
@@ -55,7 +60,7 @@ exports.ensureLedgerFolioInternal = async (tenantModels, options) => {
     // 2. Find or create ledger
     let ledger = await Ledgers.findOne({
         $or: [
-            { ledgerName: { $regex: new RegExp(`^${name}$`, "i") } },
+            { ledgerName: { $regex: new RegExp(`^${finalName}$`, "i") } },
             ... (refId ? [{ refId }] : [])
         ]
     });
@@ -70,7 +75,7 @@ exports.ensureLedgerFolioInternal = async (tenantModels, options) => {
         }
 
         ledger = new Ledgers({
-            ledgerName: name,
+            ledgerName: finalName,
             ledgerGroupId: groupDoc._id,
             refId: refId || null,
             refType: refType || "Manual",
@@ -78,9 +83,9 @@ exports.ensureLedgerFolioInternal = async (tenantModels, options) => {
             openingBalanceType: ledgerNature
         });
         await ledger.save();
-    } else if (name && ledger.ledgerName !== name) {
+    } else if (finalName && ledger.ledgerName !== finalName) {
         // Sync name if changed
-        ledger.ledgerName = name;
+        ledger.ledgerName = finalName;
         await ledger.save();
     }
 
@@ -804,9 +809,9 @@ exports.postSalaryJournal = async (req, res) => {
         let empLedger = await Ledgers.findOne({ refId: employeeId, refType: "Staff" });
         if (!empLedger) {
             empLedger = new Ledgers({ 
-                name: employeeName || `Emp-${employeeId.toString().slice(-4)}`, 
-                groupId: payablesG._id, 
-                nature: "Cr", 
+                ledgerName: employeeName || `Emp-${employeeId.toString().slice(-4)}`, 
+                ledgerGroupId: payablesG._id, 
+                openingBalanceType: "Cr", 
                 refId: employeeId, 
                 refType: "Staff" 
             });
@@ -982,14 +987,15 @@ exports.getPettyCashBalances = async (req, res) => {
             }
 
             // Since Petty Cash is a Dr nature Asset ledger:
-            const currentBalance = (ledger.openingBalance || 0) + totalDebit - totalCredit;
+            const currentBalance = (ledger.openingBalance || ledger.openingBal || 0) + totalDebit - totalCredit;
+            const finalLedgerName = ledger.ledgerName || ledger.name || "";
 
             results.push({
                 _id: ledger._id,
-                name: ledger.ledgerName,
-                userName: ledger.ledgerName ? ledger.ledgerName.replace(/^Petty Cash - /i, "") : "",
+                name: finalLedgerName,
+                userName: finalLedgerName ? finalLedgerName.replace(/^Petty Cash - /i, "") : "",
                 refId: ledger.refId,
-                openingBal: ledger.openingBalance || 0,
+                openingBal: ledger.openingBalance || ledger.openingBal || 0,
                 totalDebit,
                 totalCredit,
                 balance: currentBalance,
@@ -1067,8 +1073,8 @@ exports.getPettyCashTransactions = async (req, res) => {
             success: true,
             ledger: {
                 _id: ledger._id,
-                name: ledger.ledgerName,
-                openingBal: ledger.openingBalance || 0
+                name: ledger.ledgerName || ledger.name || "",
+                openingBal: ledger.openingBalance || ledger.openingBal || 0
             },
             data: transactions
         });
