@@ -53,6 +53,11 @@ const dbConnector = {
 
         try {
             const tenantConn = await mongoose.createConnection(tenantUri, { family: 4 }).asPromise();
+            
+            // Run schema migration to convert legacy documents
+            const { migrateTenantDb } = require("./schemaMigrator");
+            await migrateTenantDb(tenantConn, dbName);
+
             connections.set(dbName, tenantConn);
             return tenantConn;
         } catch (err) {
