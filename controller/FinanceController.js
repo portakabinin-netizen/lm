@@ -245,11 +245,11 @@ exports.getAccountingMaster = async (req, res) => {
             console.error("Proactive Staff Petty Cash Sync Failed:", uErr.message);
         }
 
-        // Auto-create ledgers for active billable clients (Leads) with 'Accepted' status
+        // Auto-create ledgers for active billable clients (Leads) with 'Accepted' or 'Tax Invoice' status
         try {
             const { Leads } = req.tenantModels;
             const activeLeads = await Leads.find({
-                status: { $regex: /^Accepted$/i }
+                status: { $regex: /^(Accepted|Tax Invoice)$/i }
             }).lean();
 
             for (const lead of activeLeads) {

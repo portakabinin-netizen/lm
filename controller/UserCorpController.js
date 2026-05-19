@@ -81,8 +81,9 @@ exports.manageLeads = {
             const lead = new Leads({ ...req.body, lead_no: counter.seq, locationId });
             await lead.save();
 
-            // Auto-create ledger if status is Accepted
-            if (lead.status && lead.status.toLowerCase() === "accepted") {
+            // Auto-create ledger if status is Accepted or Tax Invoice
+            const leadStatusLower = lead.status?.toLowerCase() || "";
+            if (leadStatusLower === "accepted" || leadStatusLower === "tax invoice") {
                 try {
                     const FinanceController = require('./FinanceController');
                     await FinanceController.ensureLedgerFolioInternal(req.tenantModels, {
@@ -138,7 +139,8 @@ exports.manageLeads = {
             const lead = await Leads.findByIdAndUpdate(req.params.id, req.body, { new: true });
             if (!lead) return res.status(404).json({ success: false, message: "Lead not found" });
             
-            if (lead.status && lead.status.toLowerCase() === "accepted") {
+            const leadStatusLower = lead.status?.toLowerCase() || "";
+            if (leadStatusLower === "accepted" || leadStatusLower === "tax invoice") {
                 try {
                     const FinanceController = require('./FinanceController');
                     await FinanceController.ensureLedgerFolioInternal(req.tenantModels, {
@@ -275,7 +277,8 @@ exports.manageLeads = {
                 const lead = new Leads({ ...data, lead_no: counter.seq });
                 await lead.save();
 
-                if (lead.status && lead.status.toLowerCase() === "accepted") {
+                const leadStatusLower = lead.status?.toLowerCase() || "";
+                if (leadStatusLower === "accepted" || leadStatusLower === "tax invoice") {
                     try {
                         const FinanceController = require('./FinanceController');
                         await FinanceController.ensureLedgerFolioInternal(req.tenantModels, {
