@@ -16,7 +16,7 @@ const mongoose = require("mongoose");
 exports.ensureLedgerFolioInternal = async (tenantModels, options) => {
     const finalName = options.ledgerName || options.name;
     const finalGroup = options.groupName || options.group;
-    const { parentGroup, refId, refType, openingBalance, nature } = options;
+    const { parentGroup, refId, refType, openingBalance, nature, leadIds, purchaseOrders } = options;
     const { Groups, Ledgers } = tenantModels;
 
     if (!finalGroup) throw new Error("Group name is required to ensure a ledger folio");
@@ -80,13 +80,30 @@ exports.ensureLedgerFolioInternal = async (tenantModels, options) => {
             refId: refId || null,
             refType: refType || "Manual",
             openingBalance: openingBalance || 0,
-            openingBalanceType: ledgerNature
+            openingBalanceType: ledgerNature,
+            currentBalance: openingBalance || 0,
+            leadIds: leadIds || ((refType === "Lead" && refId) ? [refId] : []),
+            purchaseOrders: purchaseOrders || []
         });
         await ledger.save();
-    } else if (finalName && ledger.ledgerName !== finalName) {
-        // Sync name if changed
-        ledger.ledgerName = finalName;
-        await ledger.save();
+    } else {
+        let changed = false;
+        if (finalName && ledger.ledgerName !== finalName) {
+            ledger.ledgerName = finalName;
+            changed = true;
+        }
+        if (refType === "Lead" && refId) {
+            if (!ledger.leadIds) {
+                ledger.leadIds = [];
+            }
+            if (!ledger.leadIds.some(id => String(id) === String(refId))) {
+                ledger.leadIds.push(refId);
+                changed = true;
+            }
+        }
+        if (changed) {
+            await ledger.save();
+        }
     }
 
     return ledger;
@@ -378,8 +395,15 @@ exports.manageLedgers = {
     update: async (req, res) => {
         try {
             const { Ledgers } = req.tenantModels;
+            const oldLedger = await Ledgers.findById(req.params.id);
+            if (!oldLedger) return res.status(404).json({ success: false, message: "Ledger not found" });
+
+            if (req.body.openingBalance !== undefined) {
+                const diff = parseFloat(req.body.openingBalance) - (oldLedger.openingBalance || 0);
+                req.body.currentBalance = (oldLedger.currentBalance || 0) + diff;
+            }
+
             const ledger = await Ledgers.findByIdAndUpdate(req.params.id, req.body, { new: true });
-            if (!ledger) return res.status(404).json({ success: false, message: "Ledger not found" });
             res.json({ success: true, data: ledger });
         } catch (err) { res.status(500).json({ success: false, message: err.message }); }
     },

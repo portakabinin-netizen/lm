@@ -206,6 +206,8 @@ const ledgerSchema = new mongoose.Schema({
     // App Integrations
     refId: { type: mongoose.Schema.Types.ObjectId },
     refType: { type: String },
+    leadIds: [{ type: mongoose.Schema.Types.ObjectId }],
+    purchaseOrders: [{ type: mongoose.Schema.Types.ObjectId }],
     
     // Compliance & Contact Info
     contactDetails: {
