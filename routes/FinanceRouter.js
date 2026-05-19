@@ -36,6 +36,7 @@ router.put("/ledgers/:id",             ctrl.manageLedgers.update);
 router.delete("/ledgers/:id",          ctrl.manageLedgers.delete);
 router.get("/petty-cash/balances",     ctrl.getPettyCashBalances);
 router.get("/petty-cash/transactions", ctrl.getPettyCashTransactions);
+router.post("/contra/approve",         ctrl.approveContraVoucher);
 
 // --- 🎫 VOUCHERS ---
 router.get("/vouchers",          ctrl.manageVouchers.list);

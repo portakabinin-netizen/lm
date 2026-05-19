@@ -152,12 +152,12 @@ exports.createTransaction = async (req, res) => {
         
         if (direction === "PAYMENT") {
             // Debit Party, Credit Cash
-            entries.push({ ledgerId: partyLedger._id, ledgerName: partyLedger.name, debit: amount, credit: 0 });
-            entries.push({ ledgerId: cashLedger._id, ledgerName: cashLedger.name, debit: 0, credit: amount });
+            entries.push({ ledgerId: partyLedger._id, ledgerName: partyLedger.ledgerName, debit: amount, credit: 0 });
+            entries.push({ ledgerId: cashLedger._id, ledgerName: cashLedger.ledgerName, debit: 0, credit: amount });
         } else {
             // Debit Cash, Credit Party
-            entries.push({ ledgerId: cashLedger._id, ledgerName: cashLedger.name, debit: amount, credit: 0 });
-            entries.push({ ledgerId: partyLedger._id, ledgerName: partyLedger.name, debit: 0, credit: amount });
+            entries.push({ ledgerId: cashLedger._id, ledgerName: cashLedger.ledgerName, debit: amount, credit: 0 });
+            entries.push({ ledgerId: partyLedger._id, ledgerName: partyLedger.ledgerName, debit: 0, credit: amount });
         }
 
         const counterId = `voucher_${direction}_${locationId}`;

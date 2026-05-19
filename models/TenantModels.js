@@ -185,35 +185,102 @@ const attendanceSchema = new mongoose.Schema({
 
 // 7. Accounting
 const groupSchema = new mongoose.Schema({
-    name: { type: String, required: true },
-    parentGroup: { type: String },
-    nature: { type: String, enum: ["Assets", "Liabilities", "Income", "Expenses"] }
-});
+    groupName: { type: String, required: true, trim: true },
+    parentGroup: { type: mongoose.Schema.Types.ObjectId, ref: "Groups", default: null },
+    nature: { 
+        type: String, 
+        required: true, 
+        enum: ['Asset', 'Liability', 'Equity', 'Revenue', 'Expense'] 
+    }
+}, { timestamps: true });
 
 const ledgerSchema = new mongoose.Schema({
-    name: { type: String, required: true },
-    groupId: { type: mongoose.Schema.Types.ObjectId, ref: "Groups" },
-    openingBal: { type: Number, default: 0 },
-    nature: { type: String, enum: ["Dr", "Cr"] },
+    ledgerName: { type: String, required: true, trim: true },
+    ledgerGroupId: { type: mongoose.Schema.Types.ObjectId, ref: "Groups", required: true },
+    
+    // Balances
+    openingBalance: { type: Number, required: true, default: 0.00 },
+    openingBalanceType: { type: String, required: true, enum: ['Dr', 'Cr'], default: 'Dr' },
+    currentBalance: { type: Number, required: true, default: 0.00 },
+    
+    // App Integrations
     refId: { type: mongoose.Schema.Types.ObjectId },
-    refType: { type: String }
-});
+    refType: { type: String },
+    
+    // Compliance & Contact Info
+    contactDetails: {
+        address: { type: String, trim: true },
+        state: { type: String, trim: true },
+        pin: { type: String, trim: true },
+        pan: { type: String, uppercase: true, trim: true },
+        gstn: { type: String, uppercase: true, trim: true }
+    },
+    isActive: { type: Boolean, default: true }
+}, { timestamps: true });
+
+ledgerSchema.index({ ledgerName: 1 });
+ledgerSchema.index({ ledgerGroupId: 1 });
+
+const voucherEntrySchema = new mongoose.Schema({
+    ledgerId: { type: mongoose.Schema.Types.ObjectId, ref: "Ledgers", required: true },
+    ledgerName: { type: String },
+    debit: { type: Number, default: 0, min: 0 },
+    credit: { type: Number, default: 0, min: 0 },
+}, { _id: false });
 
 const voucherSchema = new mongoose.Schema({
     locationId: { type: mongoose.Schema.Types.ObjectId }, // Link to ProfileMaster.locations._id
-    voucherType: { type: String, enum: ["Payment", "Receipt", "Journal", "Contra", "Sales", "Purchase"] },
-    voucherNo: { type: String, unique: true },
-    date: { type: Date, default: Date.now },
-    narration: { type: String },
-    entries: [new mongoose.Schema({
-        ledgerId: { type: mongoose.Schema.Types.ObjectId, ref: "Ledgers" },
-        ledgerName: { type: String },
-        debit: { type: Number, default: 0 },
-        credit: { type: Number, default: 0 },
-    }, { _id: false })],
+    voucherType: { type: String, enum: ["Payment", "Receipt", "Journal", "Contra", "Sales", "Purchase"], required: true },
+    voucherNo: { type: String, required: true, unique: true, trim: true },
+    date: { type: Date, required: true, default: Date.now },
+    narration: { type: String, required: true, trim: true },
+    
+    entries: { 
+        type: [voucherEntrySchema], 
+        required: true,
+        validate: [
+            (val) => val.length >= 2, 
+            'A transaction must have at least 2 entries (one Dr and one Cr)'
+        ]
+    },
+    
+    // Legacy support & Approval metadata
     legacyMetadata: { type: mongoose.Schema.Types.Mixed }, // Stores flat transaction data for legacy FinanceDashboard
     leadId: { type: mongoose.Schema.Types.ObjectId },
+    approvalPending: { type: Boolean, default: false },
+    contraMetadata: {
+        payerUserId: { type: String },
+        receiverUserId: { type: String },
+        payerApproved: { type: Boolean, default: false },
+        receiverApproved: { type: Boolean, default: false },
+        payerDeclarationDate: { type: Date },
+        receiverDeclarationDate: { type: Date }
+    },
+
+    metadata: {
+        createdBy: { type: String },
+        systemTimestamp: { type: Date, default: Date.now }
+    }
 }, { timestamps: true });
+
+// Pre-save validation: Ensure balancing matching principles (Total Dr = Total Cr)
+voucherSchema.pre('save', function(next) {
+    let totalDebit = 0;
+    let totalCredit = 0;
+
+    this.entries.forEach(entry => {
+        totalDebit += (entry.debit || 0);
+        totalCredit += (entry.credit || 0);
+    });
+
+    if (Math.abs(totalDebit - totalCredit) > 0.001) {
+        return next(new Error(`Accounting Integrity Error: Total Debits (${totalDebit}) must equal Total Credits (${totalCredit}).`));
+    }
+    next();
+});
+
+voucherSchema.index({ date: -1 });
+voucherSchema.index({ 'entries.ledgerId': 1 });
 
 // 8. Commercial Documents
 const { sellerSnapshotSchema, buyerSnapshotSchema, lineItemSchema, totalsSchema, conversionMetadataSchema } = require("./masterShared");

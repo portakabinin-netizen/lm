@@ -18,34 +18,34 @@ exports.ensureLedgerFolioInternal = async (tenantModels, options) => {
     const { Groups, Ledgers } = tenantModels;
 
     // 1. Find or create group
-    let groupDoc = await Groups.findOne({ name: { $regex: new RegExp(`^${group}$`, "i") } });
+    let groupDoc = await Groups.findOne({ groupName: { $regex: new RegExp(`^${group}$`, "i") } });
     if (!groupDoc) {
         // Resolve group nature to a valid category enum: ["Assets", "Liabilities", "Income", "Expenses"]
         let resolvedGroupNature = "Assets";
         const groupLower = group.toLowerCase();
 
         if (groupLower.includes("creditor") || groupLower.includes("liability") || groupLower.includes("payable") || groupLower.includes("capital")) {
-            resolvedGroupNature = "Liabilities";
+            resolvedGroupNature = "Liability";
         } else if (groupLower.includes("debtor") || groupLower.includes("asset") || groupLower.includes("receivable") || groupLower.includes("cash") || groupLower.includes("bank")) {
-            resolvedGroupNature = "Assets";
+            resolvedGroupNature = "Asset";
         } else if (groupLower.includes("expense") || groupLower.includes("purchase") || groupLower.includes("cost")) {
-            resolvedGroupNature = "Expenses";
+            resolvedGroupNature = "Expense";
         } else if (groupLower.includes("income") || groupLower.includes("sale") || groupLower.includes("revenue")) {
-            resolvedGroupNature = "Income";
+            resolvedGroupNature = "Revenue";
         } else if (parentGroup) {
             const parentLower = parentGroup.toLowerCase();
             if (parentLower.includes("liabilit") || parentLower.includes("income")) {
-                resolvedGroupNature = parentLower.includes("liabilit") ? "Liabilities" : "Income";
+                resolvedGroupNature = parentLower.includes("liabilit") ? "Liability" : "Revenue";
             } else {
-                resolvedGroupNature = parentLower.includes("expense") ? "Expenses" : "Assets";
+                resolvedGroupNature = parentLower.includes("expense") ? "Expense" : "Asset";
             }
         } else {
             // Default based on ledger's nature
-            resolvedGroupNature = (nature && nature.toLowerCase() === "cr") ? "Liabilities" : "Assets";
+            resolvedGroupNature = (nature && nature.toLowerCase() === "cr") ? "Liability" : "Asset";
         }
 
         groupDoc = new Groups({ 
-            name: group, 
+            groupName: group, 
             parentGroup: parentGroup || null,
             nature: resolvedGroupNature
         });
@@ -55,7 +55,7 @@ exports.ensureLedgerFolioInternal = async (tenantModels, options) => {
     // 2. Find or create ledger
     let ledger = await Ledgers.findOne({
         $or: [
-            { name: { $regex: new RegExp(`^${name}$`, "i") } },
+            { ledgerName: { $regex: new RegExp(`^${name}$`, "i") } },
             ... (refId ? [{ refId }] : [])
         ]
     });
@@ -66,21 +66,21 @@ exports.ensureLedgerFolioInternal = async (tenantModels, options) => {
         if (nature && (nature.toLowerCase() === "dr" || nature.toLowerCase() === "cr")) {
             ledgerNature = nature.toLowerCase() === "dr" ? "Dr" : "Cr";
         } else {
-            ledgerNature = (groupDoc.nature === "Assets" || groupDoc.nature === "Expenses") ? "Dr" : "Cr";
+            ledgerNature = (groupDoc.nature === "Asset" || groupDoc.nature === "Expense") ? "Dr" : "Cr";
         }
 
         ledger = new Ledgers({
-            name,
-            groupId: groupDoc._id,
+            ledgerName: name,
+            ledgerGroupId: groupDoc._id,
             refId: refId || null,
             refType: refType || "Manual",
-            openingBal: openingBalance || 0,
-            nature: ledgerNature
+            openingBalance: openingBalance || 0,
+            openingBalanceType: ledgerNature
         });
         await ledger.save();
-    } else if (name && ledger.name !== name) {
+    } else if (name && ledger.ledgerName !== name) {
         // Sync name if changed
-        ledger.name = name;
+        ledger.ledgerName = name;
         await ledger.save();
     }
 
@@ -97,17 +97,17 @@ exports.getAccountingMaster = async (req, res) => {
         // Auto-initialize standard Indian Accounting Groups if empty
         if (groups.length === 0) {
             const defaults = [
-                { name: "Capital Account", nature: "Liabilities" },
-                { name: "Sundry Creditors", nature: "Liabilities" },
-                { name: "Sundry Debtors", nature: "Assets" },
-                { name: "Bank Accounts", nature: "Assets" },
-                { name: "Cash-in-hand", nature: "Assets" },
-                { name: "Sales Accounts", nature: "Income" },
-                { name: "Purchase Accounts", nature: "Expenses" },
-                { name: "Direct Expenses", nature: "Expenses" },
-                { name: "Indirect Expenses", nature: "Expenses" },
-                { name: "Current Assets", nature: "Assets" },
-                { name: "Current Liabilities", nature: "Liabilities" }
+                { groupName: "Capital Account", nature: "Liability" },
+                { groupName: "Sundry Creditors", nature: "Liability" },
+                { groupName: "Sundry Debtors", nature: "Asset" },
+                { groupName: "Bank Accounts", nature: "Asset" },
+                { groupName: "Cash-in-hand", nature: "Asset" },
+                { groupName: "Sales Accounts", nature: "Revenue" },
+                { groupName: "Purchase Accounts", nature: "Expense" },
+                { groupName: "Direct Expenses", nature: "Expense" },
+                { groupName: "Indirect Expenses", nature: "Expense" },
+                { groupName: "Current Assets", nature: "Asset" },
+                { groupName: "Current Liabilities", nature: "Liability" }
             ];
             groups = await Groups.insertMany(defaults);
         }
@@ -117,41 +117,41 @@ exports.getAccountingMaster = async (req, res) => {
         if (ledgers.length < 5) { // If very few ledgers, seed defaults
             const newLedgers = [];
             
-            const cashG = groups.find(g => g.name === "Cash-in-hand");
+            const cashG = groups.find(g => g.groupName === "Cash-in-hand");
             if (cashG) {
-                const hasCash = ledgers.some(l => l.name === "Cash Book");
+                const hasCash = ledgers.some(l => l.ledgerName === "Cash Book");
                 if (!hasCash) {
-                    newLedgers.push({ name: "Cash", groupId: cashG._id, openingBal: 0, nature: "Dr", isDefault: true });
-                    newLedgers.push({ name: "Cash Book", groupId: cashG._id, openingBal: 0, nature: "Dr", isDefault: true });
-                    newLedgers.push({ name: "Petty Cash", groupId: cashG._id, openingBal: 0, nature: "Dr", isDefault: true });
+                    newLedgers.push({ ledgerName: "Cash", ledgerGroupId: cashG._id, openingBalance: 0, openingBalanceType: "Dr", isDefault: true });
+                    newLedgers.push({ ledgerName: "Cash Book", ledgerGroupId: cashG._id, openingBalance: 0, openingBalanceType: "Dr", isDefault: true });
+                    newLedgers.push({ ledgerName: "Petty Cash", ledgerGroupId: cashG._id, openingBalance: 0, openingBalanceType: "Dr", isDefault: true });
                 }
             }
             
-            const salesG = groups.find(g => g.name === "Sales Accounts");
-            if (salesG && !ledgers.some(l => l.name.includes("Sales"))) {
-                newLedgers.push({ name: "Sales", groupId: salesG._id, openingBal: 0, nature: "Cr", isDefault: true });
-                newLedgers.push({ name: "Local Sales", groupId: salesG._id, openingBal: 0, nature: "Cr", isDefault: true });
+            const salesG = groups.find(g => g.groupName === "Sales Accounts");
+            if (salesG && !ledgers.some(l => l.ledgerName && l.ledgerName.includes("Sales"))) {
+                newLedgers.push({ ledgerName: "Sales", ledgerGroupId: salesG._id, openingBalance: 0, openingBalanceType: "Cr", isDefault: true });
+                newLedgers.push({ ledgerName: "Local Sales", ledgerGroupId: salesG._id, openingBalance: 0, openingBalanceType: "Cr", isDefault: true });
             }
             
-            const purcG = groups.find(g => g.name === "Purchase Accounts");
-            if (purcG && !ledgers.some(l => l.name.includes("Purchase"))) {
-                newLedgers.push({ name: "Purchase", groupId: purcG._id, openingBal: 0, nature: "Dr", isDefault: true });
-                newLedgers.push({ name: "Local Purchase", groupId: purcG._id, openingBal: 0, nature: "Dr", isDefault: true });
+            const purcG = groups.find(g => g.groupName === "Purchase Accounts");
+            if (purcG && !ledgers.some(l => l.ledgerName && l.ledgerName.includes("Purchase"))) {
+                newLedgers.push({ ledgerName: "Purchase", ledgerGroupId: purcG._id, openingBalance: 0, openingBalanceType: "Dr", isDefault: true });
+                newLedgers.push({ ledgerName: "Local Purchase", ledgerGroupId: purcG._id, openingBalance: 0, openingBalanceType: "Dr", isDefault: true });
             }
 
-            const directExpG = groups.find(g => g.name === "Direct Expenses");
-            if (directExpG && !ledgers.some(l => l.name === "Salary & Wages")) {
-                newLedgers.push({ name: "Salary & Wages", groupId: directExpG._id, openingBal: 0, nature: "Dr", isDefault: true });
+            const directExpG = groups.find(g => g.groupName === "Direct Expenses");
+            if (directExpG && !ledgers.some(l => l.ledgerName === "Salary & Wages")) {
+                newLedgers.push({ ledgerName: "Salary & Wages", ledgerGroupId: directExpG._id, openingBalance: 0, openingBalanceType: "Dr", isDefault: true });
             }
             
-            const debtG = groups.find(g => g.name === "Sundry Debtors");
-            if (debtG && !ledgers.some(l => l.name === "Default Client")) {
-                newLedgers.push({ name: "Default Client", groupId: debtG._id, openingBal: 0, nature: "Dr", isDefault: true });
+            const debtG = groups.find(g => g.groupName === "Sundry Debtors");
+            if (debtG && !ledgers.some(l => l.ledgerName === "Default Client")) {
+                newLedgers.push({ ledgerName: "Default Client", ledgerGroupId: debtG._id, openingBalance: 0, openingBalanceType: "Dr", isDefault: true });
             }
             
-            const credG = groups.find(g => g.name === "Sundry Creditors");
-            if (credG && !ledgers.some(l => l.name === "Default Vendor")) {
-                newLedgers.push({ name: "Default Vendor", groupId: credG._id, openingBal: 0, nature: "Cr", isDefault: true });
+            const credG = groups.find(g => g.groupName === "Sundry Creditors");
+            if (credG && !ledgers.some(l => l.ledgerName === "Default Vendor")) {
+                newLedgers.push({ ledgerName: "Default Vendor", ledgerGroupId: credG._id, openingBalance: 0, openingBalanceType: "Cr", isDefault: true });
             }
 
             if (newLedgers.length > 0) {
@@ -435,6 +435,93 @@ exports.manageVouchers = {
                 return res.status(400).json({ success: false, message: "entries array is required" });
             }
 
+            // --- CONTRA RULES ENFORCEMENT ---
+            if (voucherType === "Contra") {
+                if (entries.length !== 2) {
+                    return res.status(400).json({ success: false, message: "Contra fund transfer must have exactly 2 entries (one Dr and one Cr)." });
+                }
+
+                const drEntry = entries.find(e => e.type === "Dr" || e.debit > 0);
+                const crEntry = entries.find(e => e.type === "Cr" || e.credit > 0);
+
+                if (!drEntry || !crEntry) {
+                    return res.status(400).json({ success: false, message: "Contra must contain one debit (receiving) and one credit (paying) entry." });
+                }
+
+                // Enforce payer (CrEntry) is the user's own cash account (maps to cash_in_hand or logged in user's Petty Cash book)
+                let crLedgerId = crEntry.ledgerId;
+                if (crLedgerId !== "cash_in_hand") {
+                    if (mongoose.Types.ObjectId.isValid(crLedgerId)) {
+                        const crLedger = await req.tenantModels.Ledgers.findById(crLedgerId).lean();
+                        if (crLedger) {
+                            if (crLedger.refType !== "User" || String(crLedger.refId) !== String(req.user?._id)) {
+                                return res.status(400).json({ 
+                                    success: false, 
+                                    message: "Contra Security Guard: You can only transfer funds OUT of your own Petty Cash book." 
+                                });
+                            }
+                        }
+                    } else {
+                        return res.status(400).json({ 
+                            success: false, 
+                            message: "Contra Security Guard: Payer account must be your own Petty Cash book." 
+                        });
+                    }
+                }
+
+                // Enforce destination (DrEntry) is either Main Bank or another user's petty cash book
+                let drLedgerId = drEntry.ledgerId;
+                let isDrValid = false;
+                let destUserId = null;
+
+                if (drLedgerId === "main_bank") {
+                    isDrValid = true;
+                } else if (mongoose.Types.ObjectId.isValid(drLedgerId)) {
+                    const drLedger = await req.tenantModels.Ledgers.findById(drLedgerId).lean();
+                    if (drLedger) {
+                        const drGroup = await req.tenantModels.Groups.findById(drLedger.ledgerGroupId).lean();
+                        const drGroupName = drGroup ? drGroup.groupName : "";
+                        if (drGroupName === "Bank Accounts" || drGroupName === "Cash-in-hand" || drLedger.ledgerName.includes("Petty Cash")) {
+                            isDrValid = true;
+                            if (drLedger.refType === "User" || drLedger.refId) {
+                                destUserId = drLedger.refId;
+                            }
+                        }
+                    }
+                }
+
+                if (!isDrValid) {
+                    return res.status(400).json({ 
+                        success: false, 
+                        message: "Contra Security Guard: Destination must be Main Bank or another user's Petty Cash book." 
+                    });
+                }
+
+                const userRole = req.user?.userRole;
+                const isAdmin = userRole === "CorpAdmin" || userRole === "userAdmin" || userRole === "Finance";
+
+                if (isAdmin) {
+                    req.body.approvalPending = false;
+                    req.body.contraMetadata = {
+                        payerUserId: req.user?._id,
+                        receiverUserId: destUserId,
+                        payerApproved: true,
+                        receiverApproved: true,
+                        payerDeclarationDate: new Date(),
+                        receiverDeclarationDate: new Date()
+                    };
+                } else {
+                    req.body.approvalPending = true;
+                    req.body.contraMetadata = {
+                        payerUserId: req.user?._id,
+                        receiverUserId: destUserId,
+                        payerApproved: true, // Payer declares paid immediately
+                        receiverApproved: false,
+                        payerDeclarationDate: new Date()
+                    };
+                }
+            }
+
             // 2. Resolve or Auto-Create Ledger Folios for all entries
             const resolvedEntries = [];
             for (const entry of entries) {
@@ -689,28 +776,28 @@ exports.postSalaryJournal = async (req, res) => {
         if (!amount || amount <= 0) return res.status(400).json({ success: false, message: "Invalid amount" });
 
         // 1. Ensure "Direct Expenses" -> "Salary & Wages"
-        let directExpG = await Groups.findOne({ name: "Direct Expenses" });
+        let directExpG = await Groups.findOne({ groupName: "Direct Expenses" });
         if (!directExpG) {
-            directExpG = new Groups({ name: "Direct Expenses", nature: "Expenses" });
+            directExpG = new Groups({ groupName: "Direct Expenses", nature: "Expense" });
             await directExpG.save();
         }
 
-        let salaryLedger = await Ledgers.findOne({ name: "Salary & Wages", groupId: directExpG._id });
+        let salaryLedger = await Ledgers.findOne({ ledgerName: "Salary & Wages", ledgerGroupId: directExpG._id });
         if (!salaryLedger) {
-            salaryLedger = new Ledgers({ name: "Salary & Wages", groupId: directExpG._id, nature: "Dr" });
+            salaryLedger = new Ledgers({ ledgerName: "Salary & Wages", ledgerGroupId: directExpG._id, openingBalanceType: "Dr" });
             await salaryLedger.save();
         }
 
         // 2. Ensure "Current Liabilities" -> "Account Payables" -> Employee Ledger
-        let currLiabG = await Groups.findOne({ name: "Current Liabilities" });
+        let currLiabG = await Groups.findOne({ groupName: "Current Liabilities" });
         if (!currLiabG) {
-            currLiabG = new Groups({ name: "Current Liabilities", nature: "Liabilities" });
+            currLiabG = new Groups({ groupName: "Current Liabilities", nature: "Liability" });
             await currLiabG.save();
         }
 
-        let payablesG = await Groups.findOne({ name: "Account Payables", parentGroup: "Current Liabilities" });
+        let payablesG = await Groups.findOne({ groupName: "Account Payables", parentGroup: currLiabG._id });
         if (!payablesG) {
-            payablesG = new Groups({ name: "Account Payables", parentGroup: "Current Liabilities", nature: "Liabilities" });
+            payablesG = new Groups({ groupName: "Account Payables", parentGroup: currLiabG._id, nature: "Liability" });
             await payablesG.save();
         }
 
@@ -841,11 +928,6 @@ exports.getSalaryVoucher = async (req, res) => {
  */
 exports.getPettyCashBalances = async (req, res) => {
     try {
-        const userRole = req.user?.userRole;
-        if (userRole !== "CorpAdmin" && userRole !== "userAdmin" && userRole !== "Finance") {
-            return res.status(403).json({ success: false, message: "Unauthorized. Admin or Finance role required." });
-        }
-
         const { Ledgers, Vouchers } = req.tenantModels;
 
         // 1. Proactively sync/create user-specific petty cash books for ALL registered users in this tenant first
@@ -874,7 +956,7 @@ exports.getPettyCashBalances = async (req, res) => {
         const pettyCashLedgers = await Ledgers.find({
             $or: [
                 { refType: "User" },
-                { name: { $regex: /^Petty Cash -/i } }
+                { ledgerName: { $regex: /^Petty Cash -/i } }
             ]
         }).lean();
 
@@ -888,6 +970,10 @@ exports.getPettyCashBalances = async (req, res) => {
             let totalCredit = 0;
 
             for (const v of vouchers) {
+                // Contra pending receiver approval is not considered in receiver balance
+                if (v.voucherType === "Contra" && v.approvalPending && String(v.contraMetadata?.receiverUserId) === String(ledger.refId)) {
+                    continue;
+                }
                 const entry = v.entries.find(e => String(e.ledgerId) === String(ledger._id));
                 if (entry) {
                     totalDebit += (entry.debit || 0);
@@ -896,14 +982,14 @@ exports.getPettyCashBalances = async (req, res) => {
             }
 
             // Since Petty Cash is a Dr nature Asset ledger:
-            const currentBalance = (ledger.openingBal || 0) + totalDebit - totalCredit;
+            const currentBalance = (ledger.openingBalance || 0) + totalDebit - totalCredit;
 
             results.push({
                 _id: ledger._id,
-                name: ledger.name,
-                userName: ledger.name.replace(/^Petty Cash - /i, ""),
+                name: ledger.ledgerName,
+                userName: ledger.ledgerName ? ledger.ledgerName.replace(/^Petty Cash - /i, "") : "",
                 refId: ledger.refId,
-                openingBal: ledger.openingBal || 0,
+                openingBal: ledger.openingBalance || 0,
                 totalDebit,
                 totalCredit,
                 balance: currentBalance,
@@ -922,11 +1008,6 @@ exports.getPettyCashBalances = async (req, res) => {
  */
 exports.getPettyCashTransactions = async (req, res) => {
     try {
-        const userRole = req.user?.userRole;
-        if (userRole !== "CorpAdmin" && userRole !== "userAdmin" && userRole !== "Finance") {
-            return res.status(403).json({ success: false, message: "Unauthorized. Admin or Finance role required." });
-        }
-
         const { ledgerId } = req.query;
         const { startDate, endDate } = req.query;
         const { Ledgers, Vouchers } = req.tenantModels;
@@ -960,6 +1041,8 @@ exports.getPettyCashTransactions = async (req, res) => {
             const entry = v.entries.find(e => String(e.ledgerId) === String(ledgerId));
             const otherEntries = v.entries.filter(e => String(e.ledgerId) !== String(ledgerId));
 
+            const isPending = v.voucherType === "Contra" && v.approvalPending && String(v.contraMetadata?.receiverUserId) === String(ledger.refId);
+
             return {
                 _id: v._id,
                 date: v.date,
@@ -970,6 +1053,8 @@ exports.getPettyCashTransactions = async (req, res) => {
                 credit: entry?.credit || 0,
                 type: (entry?.debit || 0) > 0 ? "Dr" : "Cr",
                 amount: (entry?.debit || 0) > 0 ? entry.debit : (entry?.credit || 0),
+                isPending: isPending || false,
+                contraMetadata: v.contraMetadata || null,
                 otherLegs: otherEntries.map(oe => ({
                     ledgerId: oe.ledgerId,
                     ledgerName: oe.ledgerName,
@@ -982,11 +1067,73 @@ exports.getPettyCashTransactions = async (req, res) => {
             success: true,
             ledger: {
                 _id: ledger._id,
-                name: ledger.name,
-                openingBal: ledger.openingBal || 0
+                name: ledger.ledgerName,
+                openingBal: ledger.openingBalance || 0
             },
             data: transactions
         });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+};
+
+/**
+ * 🔐 Contra Voucher Password Approval / Declaration
+ */
+exports.approveContraVoucher = async (req, res) => {
+    try {
+        const { Vouchers } = req.tenantModels;
+        const { voucherId, action, password } = req.body;
+        const userId = req.user?._id;
+
+        if (!voucherId || !action || !password) {
+            return res.status(400).json({ success: false, message: "voucherId, action, and password are required" });
+        }
+
+        // 1. Verify User Password
+        const userMaster = require("../models/userMaster");
+        const user = await userMaster.findById(userId);
+        if (!user) {
+            return res.status(404).json({ success: false, message: "User not found" });
+        }
+
+        const bcrypt = require("bcryptjs");
+        const isMatch = await bcrypt.compare(password, user.userPassword);
+        if (!isMatch) {
+            return res.status(401).json({ success: false, message: "Invalid verification password" });
+        }
+
+        // 2. Find Voucher
+        const voucher = await Vouchers.findById(voucherId);
+        if (!voucher) {
+            return res.status(404).json({ success: false, message: "Voucher not found" });
+        }
+
+        if (voucher.voucherType !== "Contra") {
+            return res.status(400).json({ success: false, message: "Only Contra vouchers require password approval" });
+        }
+
+        // 3. Process Action
+        if (action === "pay") {
+            voucher.contraMetadata = {
+                ...voucher.contraMetadata,
+                payerApproved: true,
+                payerDeclarationDate: new Date()
+            };
+        } else if (action === "receive") {
+            voucher.contraMetadata = {
+                ...voucher.contraMetadata,
+                receiverApproved: true,
+                receiverDeclarationDate: new Date()
+            };
+            // Receiver approved -> clears pending flag!
+            voucher.approvalPending = false;
+        } else {
+            return res.status(400).json({ success: false, message: "Invalid action. Must be 'pay' or 'receive'" });
+        }
+
+        await voucher.save();
+        res.json({ success: true, message: `Voucher successfully declared as ${action}ed.`, data: voucher });
     } catch (err) {
         res.status(500).json({ success: false, message: err.message });
     }
