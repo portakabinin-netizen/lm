@@ -35,6 +35,25 @@ exports.getLeadsForPicker = async (req, res) => {
         const ACTIVE_STATUSES = ["Engaged", "Accepted", "Tax Invoice"];
         const leads = await Leads.find({ status: { $in: ACTIVE_STATUSES } }).lean();
 
+        // Proactively check and create ledgers for Accepted / Tax Invoice leads
+        for (const lead of leads) {
+            const statusLower = lead.status?.toLowerCase() || "";
+            if (statusLower === "accepted" || statusLower === "tax invoice") {
+                try {
+                    await ensureLedgerFolioInternal(req.tenantModels, {
+                        name: lead.sender_name || "Client-" + lead.lead_no,
+                        group: "Sundry Debtors",
+                        parentGroup: "Current Assets",
+                        refId: lead._id,
+                        refType: "Lead",
+                        nature: "Dr"
+                    });
+                } catch (pcErr) {
+                    console.error(`Failed to auto-create ledger for lead ${lead.lead_no}:`, pcErr.message);
+                }
+            }
+        }
+
         // Map to legacy format
         const picker = leads.map(l => ({
             _id:          l._id,

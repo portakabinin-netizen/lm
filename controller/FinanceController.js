@@ -51,9 +51,12 @@ exports.ensureLedgerFolioInternal = async (tenantModels, options) => {
 
         groupDoc = new Groups({
             groupName: finalGroup,
-            parentGroup: parentGroup || null,
+            parentGroup: parentGroup || (finalGroup.toLowerCase() === "sundry debtors" ? "Current Assets" : null),
             nature: resolvedGroupNature
         });
+        await groupDoc.save();
+    } else if (finalGroup.toLowerCase() === "sundry debtors" && !groupDoc.parentGroup) {
+        groupDoc.parentGroup = "Current Assets";
         await groupDoc.save();
     }
 
