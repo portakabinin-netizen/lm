@@ -20,10 +20,34 @@ exports.ensureLedgerFolioInternal = async (tenantModels, options) => {
     // 1. Find or create group
     let groupDoc = await Groups.findOne({ name: { $regex: new RegExp(`^${group}$`, "i") } });
     if (!groupDoc) {
+        // Resolve group nature to a valid category enum: ["Assets", "Liabilities", "Income", "Expenses"]
+        let resolvedGroupNature = "Assets";
+        const groupLower = group.toLowerCase();
+
+        if (groupLower.includes("creditor") || groupLower.includes("liability") || groupLower.includes("payable") || groupLower.includes("capital")) {
+            resolvedGroupNature = "Liabilities";
+        } else if (groupLower.includes("debtor") || groupLower.includes("asset") || groupLower.includes("receivable") || groupLower.includes("cash") || groupLower.includes("bank")) {
+            resolvedGroupNature = "Assets";
+        } else if (groupLower.includes("expense") || groupLower.includes("purchase") || groupLower.includes("cost")) {
+            resolvedGroupNature = "Expenses";
+        } else if (groupLower.includes("income") || groupLower.includes("sale") || groupLower.includes("revenue")) {
+            resolvedGroupNature = "Income";
+        } else if (parentGroup) {
+            const parentLower = parentGroup.toLowerCase();
+            if (parentLower.includes("liabilit") || parentLower.includes("income")) {
+                resolvedGroupNature = parentLower.includes("liabilit") ? "Liabilities" : "Income";
+            } else {
+                resolvedGroupNature = parentLower.includes("expense") ? "Expenses" : "Assets";
+            }
+        } else {
+            // Default based on ledger's nature
+            resolvedGroupNature = (nature && nature.toLowerCase() === "cr") ? "Liabilities" : "Assets";
+        }
+
         groupDoc = new Groups({ 
             name: group, 
             parentGroup: parentGroup || null,
-            nature: nature || (parentGroup === "Liabilities" || group === "Current Liabilities" ? "Liabilities" : "Assets") 
+            nature: resolvedGroupNature
         });
         await groupDoc.save();
     }
@@ -37,13 +61,21 @@ exports.ensureLedgerFolioInternal = async (tenantModels, options) => {
     });
 
     if (!ledger) {
+        // Normalize explicit ledger nature: ["Dr", "Cr"]
+        let ledgerNature = "Dr";
+        if (nature && (nature.toLowerCase() === "dr" || nature.toLowerCase() === "cr")) {
+            ledgerNature = nature.toLowerCase() === "dr" ? "Dr" : "Cr";
+        } else {
+            ledgerNature = (groupDoc.nature === "Assets" || groupDoc.nature === "Expenses") ? "Dr" : "Cr";
+        }
+
         ledger = new Ledgers({
             name,
             groupId: groupDoc._id,
             refId: refId || null,
             refType: refType || "Manual",
             openingBal: openingBalance || 0,
-            nature: (groupDoc.nature === "Assets" || groupDoc.nature === "Expenses") ? "Dr" : "Cr"
+            nature: ledgerNature
         });
         await ledger.save();
     } else if (name && ledger.name !== name) {
@@ -125,6 +157,28 @@ exports.getAccountingMaster = async (req, res) => {
             if (newLedgers.length > 0) {
                 await Ledgers.insertMany(newLedgers);
             }
+        }
+
+        // Auto-create user-specific petty cash books for ALL registered users in this tenant
+        try {
+            const userMaster = require("../models/userMaster");
+            const staffList = await userMaster.find({
+                userActive: true,
+                "accessCorporate.dbName": req.tenantDbName || req.user?.dbName
+            }).select("userDisplayName").lean();
+
+            for (const staff of staffList) {
+                const staffPettyCashName = `Petty Cash - ${staff.userDisplayName || "General User"}`;
+                await exports.ensureLedgerFolioInternal(req.tenantModels, {
+                    name: staffPettyCashName,
+                    group: "Cash-in-hand",
+                    nature: "Dr",
+                    refId: staff._id,
+                    refType: "User"
+                });
+            }
+        } catch (uErr) {
+            console.error("Proactive Staff Petty Cash Sync Failed:", uErr.message);
         }
 
         const finalLedgers = await Ledgers.find({}).lean();
@@ -256,6 +310,29 @@ exports.manageLedgers = {
     list: async (req, res) => {
         try {
             const { Ledgers } = req.tenantModels;
+
+            // Auto-create user-specific petty cash books for ALL registered users in this tenant
+            try {
+                const userMaster = require("../models/userMaster");
+                const staffList = await userMaster.find({
+                    userActive: true,
+                    "accessCorporate.dbName": req.tenantDbName || req.user?.dbName
+                }).select("userDisplayName").lean();
+
+                for (const staff of staffList) {
+                    const staffPettyCashName = `Petty Cash - ${staff.userDisplayName || "General User"}`;
+                    await exports.ensureLedgerFolioInternal(req.tenantModels, {
+                        name: staffPettyCashName,
+                        group: "Cash-in-hand",
+                        nature: "Dr",
+                        refId: staff._id,
+                        refType: "User"
+                    });
+                }
+            } catch (uErr) {
+                console.error("Proactive Staff Petty Cash Sync Failed:", uErr.message);
+            }
+
             const ledgers = await Ledgers.find({}).lean();
             res.json({ success: true, data: ledgers });
         } catch (err) { res.status(500).json({ success: false, message: err.message }); }
@@ -758,3 +835,160 @@ exports.getSalaryVoucher = async (req, res) => {
         res.json({ success: true, data: voucher });
     } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
+
+/**
+ * 💸 ADMIN REPORTING: View all users' petty cash balances
+ */
+exports.getPettyCashBalances = async (req, res) => {
+    try {
+        const userRole = req.user?.userRole;
+        if (userRole !== "CorpAdmin" && userRole !== "userAdmin" && userRole !== "Finance") {
+            return res.status(403).json({ success: false, message: "Unauthorized. Admin or Finance role required." });
+        }
+
+        const { Ledgers, Vouchers } = req.tenantModels;
+
+        // 1. Proactively sync/create user-specific petty cash books for ALL registered users in this tenant first
+        try {
+            const userMaster = require("../models/userMaster");
+            const staffList = await userMaster.find({
+                userActive: true,
+                "accessCorporate.dbName": req.tenantDbName || req.user?.dbName
+            }).select("userDisplayName").lean();
+
+            for (const staff of staffList) {
+                const staffPettyCashName = `Petty Cash - ${staff.userDisplayName || "General User"}`;
+                await exports.ensureLedgerFolioInternal(req.tenantModels, {
+                    name: staffPettyCashName,
+                    group: "Cash-in-hand",
+                    nature: "Dr",
+                    refId: staff._id,
+                    refType: "User"
+                });
+            }
+        } catch (uErr) {
+            console.error("Proactive Staff Petty Cash Sync Failed:", uErr.message);
+        }
+
+        // 2. Fetch all user Petty Cash books (refType: "User") under Group "Cash-in-hand" (or generally whose name has "Petty Cash -")
+        const pettyCashLedgers = await Ledgers.find({
+            $or: [
+                { refType: "User" },
+                { name: { $regex: /^Petty Cash -/i } }
+            ]
+        }).lean();
+
+        // 3. For each ledger, query the database to calculate current balance and count transactions
+        const results = [];
+        for (const ledger of pettyCashLedgers) {
+            // Find all vouchers containing this ledgerId
+            const vouchers = await Vouchers.find({ "entries.ledgerId": ledger._id }).lean();
+            
+            let totalDebit = 0;
+            let totalCredit = 0;
+
+            for (const v of vouchers) {
+                const entry = v.entries.find(e => String(e.ledgerId) === String(ledger._id));
+                if (entry) {
+                    totalDebit += (entry.debit || 0);
+                    totalCredit += (entry.credit || 0);
+                }
+            }
+
+            // Since Petty Cash is a Dr nature Asset ledger:
+            const currentBalance = (ledger.openingBal || 0) + totalDebit - totalCredit;
+
+            results.push({
+                _id: ledger._id,
+                name: ledger.name,
+                userName: ledger.name.replace(/^Petty Cash - /i, ""),
+                refId: ledger.refId,
+                openingBal: ledger.openingBal || 0,
+                totalDebit,
+                totalCredit,
+                balance: currentBalance,
+                transactionCount: vouchers.length
+            });
+        }
+
+        res.json({ success: true, data: results });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+};
+
+/**
+ * 💸 ADMIN REPORTING: View specific petty cash book's transaction history
+ */
+exports.getPettyCashTransactions = async (req, res) => {
+    try {
+        const userRole = req.user?.userRole;
+        if (userRole !== "CorpAdmin" && userRole !== "userAdmin" && userRole !== "Finance") {
+            return res.status(403).json({ success: false, message: "Unauthorized. Admin or Finance role required." });
+        }
+
+        const { ledgerId } = req.query;
+        const { startDate, endDate } = req.query;
+        const { Ledgers, Vouchers } = req.tenantModels;
+
+        if (!ledgerId) {
+            return res.status(400).json({ success: false, message: "ledgerId is required" });
+        }
+
+        const ledger = await Ledgers.findById(ledgerId).lean();
+        if (!ledger) {
+            return res.status(404).json({ success: false, message: "Ledger not found" });
+        }
+
+        // Build Voucher Query
+        const query = { "entries.ledgerId": ledgerId };
+
+        if (startDate || endDate) {
+            query.date = {};
+            if (startDate) query.date.$gte = new Date(startDate);
+            if (endDate) {
+                const end = new Date(endDate);
+                end.setHours(23, 59, 59, 999); // include full day
+                query.date.$lte = end;
+            }
+        }
+
+        const vouchers = await Vouchers.find(query).sort({ date: 1 }).lean();
+
+        // Map and extract details
+        const transactions = vouchers.map(v => {
+            const entry = v.entries.find(e => String(e.ledgerId) === String(ledgerId));
+            const otherEntries = v.entries.filter(e => String(e.ledgerId) !== String(ledgerId));
+
+            return {
+                _id: v._id,
+                date: v.date,
+                voucherNo: v.voucherNo,
+                voucherType: v.voucherType,
+                narration: v.narration || "No narration provided",
+                debit: entry?.debit || 0,
+                credit: entry?.credit || 0,
+                type: (entry?.debit || 0) > 0 ? "Dr" : "Cr",
+                amount: (entry?.debit || 0) > 0 ? entry.debit : (entry?.credit || 0),
+                otherLegs: otherEntries.map(oe => ({
+                    ledgerId: oe.ledgerId,
+                    ledgerName: oe.ledgerName,
+                    amount: oe.debit || oe.credit
+                }))
+            };
+        });
+
+        res.json({
+            success: true,
+            ledger: {
+                _id: ledger._id,
+                name: ledger.name,
+                openingBal: ledger.openingBal || 0
+            },
+            data: transactions
+        });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+};
+

@@ -29,11 +29,13 @@ router.put("/groups/:id",       ctrl.manageGroups.update);
 router.delete("/groups/:id",    ctrl.manageGroups.delete);
 
 // --- 📖 LEDGERS ---
-router.get("/ledgers",           ctrl.manageLedgers.list);
-router.get("/ledgers/lookup",    ctrl.manageLedgers.lookupEntities);
-router.post("/ledgers",          ctrl.manageLedgers.create);
-router.put("/ledgers/:id",       ctrl.manageLedgers.update);
-router.delete("/ledgers/:id",    ctrl.manageLedgers.delete);
+router.get("/ledgers",                 ctrl.manageLedgers.list);
+router.get("/ledgers/lookup",          ctrl.manageLedgers.lookupEntities);
+router.post("/ledgers",                ctrl.manageLedgers.create);
+router.put("/ledgers/:id",             ctrl.manageLedgers.update);
+router.delete("/ledgers/:id",          ctrl.manageLedgers.delete);
+router.get("/petty-cash/balances",     ctrl.getPettyCashBalances);
+router.get("/petty-cash/transactions", ctrl.getPettyCashTransactions);
 
 // --- 🎫 VOUCHERS ---
 router.get("/vouchers",          ctrl.manageVouchers.list);
