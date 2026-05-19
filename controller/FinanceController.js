@@ -203,6 +203,28 @@ exports.getAccountingMaster = async (req, res) => {
             console.error("Proactive Staff Petty Cash Sync Failed:", uErr.message);
         }
 
+        // Auto-create ledgers for active billable clients (Leads) with 'Accepted' status
+        try {
+            const { Leads } = req.tenantModels;
+            const activeLeads = await Leads.find({ 
+                status: { $regex: /^accepted$/i } 
+            }).lean();
+            
+            for (const lead of activeLeads) {
+                if (lead.sender_name) {
+                    await exports.ensureLedgerFolioInternal(req.tenantModels, {
+                        ledgerName: lead.sender_name,
+                        groupName: "Sundry Debtors",
+                        nature: "Dr",
+                        refId: lead._id,
+                        refType: "Lead"
+                    });
+                }
+            }
+        } catch (lErr) {
+            console.error("Proactive Client Ledger Sync Failed:", lErr.message);
+        }
+
         const finalLedgers = await Ledgers.find({}).lean();
         res.json({ success: true, data: { groups, ledgers: finalLedgers } });
     } catch (err) { res.status(500).json({ success: false, message: err.message }); }
