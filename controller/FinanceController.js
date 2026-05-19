@@ -211,15 +211,14 @@ exports.getAccountingMaster = async (req, res) => {
             }).lean();
 
             for (const lead of activeLeads) {
-                if (lead.sender_name) {
-                    await exports.ensureLedgerFolioInternal(req.tenantModels, {
-                        ledgerName: lead.sender_name,
-                        groupName: "Sundry Debtors",
-                        nature: "Dr",
-                        refId: lead._id,
-                        refType: "Lead"
-                    });
-                }
+                const nameToUse = lead.sender_name ? lead.sender_name.trim() : `Client-${lead.lead_no}`;
+                await exports.ensureLedgerFolioInternal(req.tenantModels, {
+                    ledgerName: nameToUse,
+                    groupName: "Sundry Debtors",
+                    nature: "Dr",
+                    refId: lead._id,
+                    refType: "Lead"
+                });
             }
         } catch (lErr) {
             console.error("Proactive Client Ledger Sync Failed:", lErr.message);

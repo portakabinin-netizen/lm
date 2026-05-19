@@ -80,6 +80,19 @@ exports.manageLeads = {
             
             const lead = new Leads({ ...req.body, lead_no: counter.seq, locationId });
             await lead.save();
+
+            // Auto-create ledger if status is Accepted
+            if (lead.status && lead.status.toLowerCase() === "accepted") {
+                try {
+                    const FinanceController = require('./FinanceController');
+                    await FinanceController.ensureLedgerFolioInternal(req.tenantModels, {
+                        name: lead.sender_name || "Client-" + lead.lead_no,
+                        group: "Sundry Debtors",
+                        refId: lead._id,
+                        refType: "Lead"
+                    });
+                } catch (ferr) { console.error("Leads-Finance Auto Linkage Failed:", ferr.message); }
+            }
             
             // 🚀 REAL-TIME: Notify clients
             req.io.to(req.tenantDbName).emit("lead:created", { data: lead });
@@ -125,11 +138,11 @@ exports.manageLeads = {
             const lead = await Leads.findByIdAndUpdate(req.params.id, req.body, { new: true });
             if (!lead) return res.status(404).json({ success: false, message: "Lead not found" });
             
-            if (req.body.status === "Accepted") {
+            if (lead.status && lead.status.toLowerCase() === "accepted") {
                 try {
                     const FinanceController = require('./FinanceController');
                     await FinanceController.ensureLedgerFolioInternal(req.tenantModels, {
-                        name: lead.sender_name || "Client",
+                        name: lead.sender_name || "Client-" + lead.lead_no,
                         group: "Sundry Debtors",
                         refId: lead._id,
                         refType: "Lead"
@@ -261,6 +274,19 @@ exports.manageLeads = {
                 const counter = await Counters.findByIdAndUpdate("lead", { $inc: { seq: 1 } }, { upsert: true, new: true });
                 const lead = new Leads({ ...data, lead_no: counter.seq });
                 await lead.save();
+
+                if (lead.status && lead.status.toLowerCase() === "accepted") {
+                    try {
+                        const FinanceController = require('./FinanceController');
+                        await FinanceController.ensureLedgerFolioInternal(req.tenantModels, {
+                            name: lead.sender_name || "Client-" + lead.lead_no,
+                            group: "Sundry Debtors",
+                            refId: lead._id,
+                            refType: "Lead"
+                        });
+                    } catch (ferr) { console.error("Leads-Finance Auto Linkage Failed:", ferr.message); }
+                }
+
                 results.push(lead);
             }
             // 🚀 REAL-TIME: Notify clients
