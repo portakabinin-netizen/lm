@@ -16,6 +16,15 @@ const { resolveDatePreset } = require("../utils/dateUtils");
 const SENDERS = require('../models/senders.json');
 const CITY_STATE_MAP = require('../models/cityStateMap.json');
 
+const normalizeLeadStatusAlias = (body = {}) => {
+    if (body.status || !body.role) return body;
+
+    const roleAsStatus = String(body.role).trim().toLowerCase();
+    if (roleAsStatus === "accepted") return { ...body, status: "Accepted" };
+    if (roleAsStatus === "tax invoice") return { ...body, status: "Tax Invoice" };
+    return body;
+};
+
 /**
  * 🛠️ Internal Helper: Dynamic Spoke Resolver (for Hub Data)
  */
@@ -78,7 +87,8 @@ exports.manageLeads = {
             // Link lead to user's location if not provided
             const locationId = req.body.locationId || req.user.accessCorporate?.locationId;
             
-            const lead = new Leads({ ...req.body, lead_no: counter.seq, locationId });
+            const leadInput = normalizeLeadStatusAlias(req.body);
+            const lead = new Leads({ ...leadInput, lead_no: counter.seq, locationId });
             await lead.save();
 
             // Auto-create ledger if status is Accepted or Tax Invoice
@@ -136,7 +146,8 @@ exports.manageLeads = {
     update: async (req, res) => {
         try {
             const { Leads } = req.tenantModels;
-            const lead = await Leads.findByIdAndUpdate(req.params.id, req.body, { new: true });
+            const leadInput = normalizeLeadStatusAlias(req.body);
+            const lead = await Leads.findByIdAndUpdate(req.params.id, leadInput, { new: true });
             if (!lead) return res.status(404).json({ success: false, message: "Lead not found" });
             
             const leadStatusLower = lead.status?.toLowerCase() || "";

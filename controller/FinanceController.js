@@ -9,6 +9,74 @@
 
 const mongoose = require("mongoose");
 
+const BILLABLE_LEAD_STATES = ["accepted", "tax invoice"];
+
+const normalizeLeadState = (value) => String(value || "").trim().toLowerCase();
+
+const getLeadBillingState = (lead = {}) => normalizeLeadState(lead.status || lead.role);
+
+const isBillableLead = (lead = {}) => BILLABLE_LEAD_STATES.includes(getLeadBillingState(lead));
+
+const getLeadLedgerName = (lead = {}) => {
+    const senderName = String(lead.sender_name || "").trim();
+    return senderName || `Client-${lead.lead_no || lead._id}`;
+};
+
+const billableLeadQuery = {
+    $or: [
+        { status: { $regex: /^(Accepted|Tax Invoice)$/i } },
+        { role: { $regex: /^(Accepted|Tax Invoice)$/i } }
+    ]
+};
+
+const syncBillableLeadLedgers = async (tenantModels) => {
+    const { Leads } = tenantModels;
+    if (!Leads) return;
+
+    const activeLeads = await Leads.find(billableLeadQuery).lean();
+    for (const lead of activeLeads.filter(isBillableLead)) {
+        await exports.ensureLedgerFolioInternal(tenantModels, {
+            ledgerName: getLeadLedgerName(lead),
+            groupName: "Sundry Debtors",
+            parentGroup: "Current Assets",
+            nature: "Dr",
+            refId: lead._id,
+            refType: "Lead"
+        });
+    }
+};
+
+const getActiveCashFlowUsers = async (tenantDbName) => {
+    const userMaster = require("../models/userMaster");
+    const query = {
+        userActive: true,
+        allowCashFlow: true
+    };
+
+    if (tenantDbName) {
+        query.accessCorporate = { $elemMatch: { dbName: tenantDbName, isActive: { $ne: false } } };
+    }
+
+    return userMaster.find(query).select("userDisplayName allowCashFlow userActive").lean();
+};
+
+const syncActiveUserPettyCashBooks = async (tenantModels, tenantDbName) => {
+    const staffList = await getActiveCashFlowUsers(tenantDbName);
+
+    for (const staff of staffList) {
+        const staffPettyCashName = `Petty Cash - ${staff.userDisplayName || "General User"}`;
+        await exports.ensureLedgerFolioInternal(tenantModels, {
+            name: staffPettyCashName,
+            group: "Cash-in-hand",
+            nature: "Dr",
+            refId: staff._id,
+            refType: "User"
+        });
+    }
+
+    return staffList;
+};
+
 /**
  * 🛠️ Internal Helper: Ensure Ledger Folio
  * Used for auto-creating ledgers for Leads/Suppliers/Employees.
@@ -223,45 +291,16 @@ exports.getAccountingMaster = async (req, res) => {
             }
         }
 
-        // Auto-create user-specific petty cash books for ALL registered users in this tenant
+        // Auto-create user-specific petty cash books for active cash-flow users in this tenant
         try {
-            const userMaster = require("../models/userMaster");
-            const staffList = await userMaster.find({
-                userActive: true,
-                "accessCorporate.dbName": req.tenantDbName || req.user?.dbName
-            }).select("userDisplayName").lean();
-
-            for (const staff of staffList) {
-                const staffPettyCashName = `Petty Cash - ${staff.userDisplayName || "General User"}`;
-                await exports.ensureLedgerFolioInternal(req.tenantModels, {
-                    name: staffPettyCashName,
-                    group: "Cash-in-hand",
-                    nature: "Dr",
-                    refId: staff._id,
-                    refType: "User"
-                });
-            }
+            await syncActiveUserPettyCashBooks(req.tenantModels, req.tenantDbName || req.user?.dbName);
         } catch (uErr) {
             console.error("Proactive Staff Petty Cash Sync Failed:", uErr.message);
         }
 
-        // Auto-create ledgers for active billable clients (Leads) with 'Accepted' or 'Tax Invoice' status
+        // Auto-create ledgers for active billable clients (Leads) with Accepted or Tax Invoice state
         try {
-            const { Leads } = req.tenantModels;
-            const activeLeads = await Leads.find({
-                status: { $regex: /^(Accepted|Tax Invoice)$/i }
-            }).lean();
-
-            for (const lead of activeLeads) {
-                const nameToUse = lead.sender_name ? lead.sender_name.trim() : `Client-${lead.lead_no}`;
-                await exports.ensureLedgerFolioInternal(req.tenantModels, {
-                    ledgerName: nameToUse,
-                    groupName: "Sundry Debtors",
-                    nature: "Dr",
-                    refId: lead._id,
-                    refType: "Lead"
-                });
-            }
+            await syncBillableLeadLedgers(req.tenantModels);
         } catch (lErr) {
             console.error("Proactive Client Ledger Sync Failed:", lErr.message);
         }
@@ -396,47 +435,16 @@ exports.manageLedgers = {
         try {
             const { Ledgers } = req.tenantModels;
 
-            // Auto-create user-specific petty cash books for ALL registered users in this tenant
+            // Auto-create user-specific petty cash books for active cash-flow users in this tenant
             try {
-                const userMaster = require("../models/userMaster");
-                const staffList = await userMaster.find({
-                    userActive: true,
-                    "accessCorporate.dbName": req.tenantDbName || req.user?.dbName
-                }).select("userDisplayName").lean();
-
-                for (const staff of staffList) {
-                    const staffPettyCashName = `Petty Cash - ${staff.userDisplayName || "General User"}`;
-                    await exports.ensureLedgerFolioInternal(req.tenantModels, {
-                        name: staffPettyCashName,
-                        group: "Cash-in-hand",
-                        nature: "Dr",
-                        refId: staff._id,
-                        refType: "User"
-                    });
-                }
+                await syncActiveUserPettyCashBooks(req.tenantModels, req.tenantDbName || req.user?.dbName);
             } catch (uErr) {
                 console.error("Proactive Staff Petty Cash Sync Failed:", uErr.message);
             }
 
             // Auto-create ledgers for active billable clients (Leads)
             try {
-                const { Leads } = req.tenantModels;
-                // Auto-create ledgers for leads with status 'Accepted' only
-                const activeLeads = await Leads.find({
-                    status: { $regex: /^accepted$/i }
-                }).lean();
-
-                for (const lead of activeLeads) {
-                    if (lead.sender_name) {
-                        await exports.ensureLedgerFolioInternal(req.tenantModels, {
-                            ledgerName: lead.sender_name,
-                            groupName: "Sundry Debtors",
-                            nature: "Dr",
-                            refId: lead._id,
-                            refType: "Lead"
-                        });
-                    }
-                }
+                await syncBillableLeadLedgers(req.tenantModels);
             } catch (lErr) {
                 console.error("Proactive Client Ledger Sync Failed:", lErr.message);
             }
@@ -492,7 +500,7 @@ exports.manageLedgers = {
 
             if (type === "Leads") {
                 results = await Leads.find({
-                    status: "Accepted",
+                    ...billableLeadQuery,
                     sender_name: { $regex: new RegExp(q, "i") }
                 }).limit(10).lean();
             } else if (type === "Vendors") {
@@ -548,6 +556,39 @@ exports.manageVouchers = {
 
             if (!entries || !Array.isArray(entries)) {
                 return res.status(400).json({ success: false, message: "entries array is required" });
+            }
+
+            if (voucherType === "Receipt") {
+                const activeCashFlowUsers = await getActiveCashFlowUsers(req.tenantDbName || req.user?.dbName);
+                const activeUserIds = new Set(activeCashFlowUsers.map(user => String(user._id)));
+                const debitEntries = entries.filter(e => (e.type === "Dr" || e.debit > 0) && (e.debit || 0) > 0);
+
+                for (const debitEntry of debitEntries) {
+                    if (debitEntry.ledgerId === "cash_in_hand") {
+                        if (!activeUserIds.has(String(req.user?._id))) {
+                            return res.status(400).json({
+                                success: false,
+                                message: "Receipt must be received into an active user's Petty Cash book."
+                            });
+                        }
+                        continue;
+                    }
+
+                    if (!mongoose.Types.ObjectId.isValid(debitEntry.ledgerId)) {
+                        return res.status(400).json({
+                            success: false,
+                            message: "Receipt debit account must be an active user's Petty Cash book."
+                        });
+                    }
+
+                    const debitLedger = await req.tenantModels.Ledgers.findById(debitEntry.ledgerId).lean();
+                    if (!debitLedger || debitLedger.refType !== "User" || !activeUserIds.has(String(debitLedger.refId))) {
+                        return res.status(400).json({
+                            success: false,
+                            message: "Receipt must be received into an active user's Petty Cash book."
+                        });
+                    }
+                }
             }
 
             // --- CONTRA RULES ENFORCEMENT ---
@@ -1045,33 +1086,24 @@ exports.getPettyCashBalances = async (req, res) => {
     try {
         const { Ledgers, Vouchers } = req.tenantModels;
 
-        // 1. Proactively sync/create user-specific petty cash books for ALL registered users in this tenant first
+        // 1. Proactively sync/create user-specific petty cash books for active cash-flow users in this tenant first
+        let activeCashFlowUsers = [];
         try {
-            const userMaster = require("../models/userMaster");
-            const staffList = await userMaster.find({
-                userActive: true,
-                "accessCorporate.dbName": req.tenantDbName || req.user?.dbName
-            }).select("userDisplayName").lean();
-
-            for (const staff of staffList) {
-                const staffPettyCashName = `Petty Cash - ${staff.userDisplayName || "General User"}`;
-                await exports.ensureLedgerFolioInternal(req.tenantModels, {
-                    name: staffPettyCashName,
-                    group: "Cash-in-hand",
-                    nature: "Dr",
-                    refId: staff._id,
-                    refType: "User"
-                });
-            }
+            activeCashFlowUsers = await syncActiveUserPettyCashBooks(req.tenantModels, req.tenantDbName || req.user?.dbName);
         } catch (uErr) {
             console.error("Proactive Staff Petty Cash Sync Failed:", uErr.message);
         }
 
-        // 2. Fetch all user Petty Cash books (refType: "User") under Group "Cash-in-hand" (or generally whose name has "Petty Cash -")
+        const activeUserIds = new Set(activeCashFlowUsers.map(user => String(user._id)));
+        const activePettyCashNames = new Set(
+            activeCashFlowUsers.map(user => `Petty Cash - ${user.userDisplayName || "General User"}`.toLowerCase())
+        );
+
+        // 2. Fetch active cash-flow users' Petty Cash books only.
         const pettyCashLedgers = await Ledgers.find({
             $or: [
-                { refType: "User" },
-                { ledgerName: { $regex: /^Petty Cash -/i } }
+                { refType: "User", refId: { $in: [...activeUserIds] } },
+                { ledgerName: { $in: [...activePettyCashNames].map(name => new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i")) } }
             ]
         }).lean();
 
@@ -1105,6 +1137,8 @@ exports.getPettyCashBalances = async (req, res) => {
                 name: finalLedgerName,
                 userName: finalLedgerName ? finalLedgerName.replace(/^Petty Cash - /i, "") : "",
                 refId: ledger.refId,
+                userActive: true,
+                allowCashFlow: true,
                 openingBal: ledger.openingBalance || ledger.openingBal || 0,
                 totalDebit,
                 totalCredit,
@@ -1254,4 +1288,3 @@ exports.approveContraVoucher = async (req, res) => {
         res.status(500).json({ success: false, message: err.message });
     }
 };
-
