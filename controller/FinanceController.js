@@ -85,7 +85,7 @@ exports.ensureLedgerFolioInternal = async (tenantModels, options) => {
     const finalName = options.ledgerName || options.name;
     const finalGroup = options.groupName || options.group;
     const { parentGroup, refId, refType, openingBalance, nature, leadIds, purchaseOrders } = options;
-    const { Groups, Ledgers } = tenantModels;
+    const { Groups, Ledgers, Leads } = tenantModels;
 
     if (!finalGroup) throw new Error("Group name is required to ensure a ledger folio");
     if (!finalName) throw new Error("Ledger name is required to ensure a ledger folio");
@@ -116,7 +116,7 @@ exports.ensureLedgerFolioInternal = async (tenantModels, options) => {
             }
             resolvedParentGroupId = parentGroupDoc._id;
         }
-    } else if (finalGroup.toLowerCase() === "sundry debtors") {
+    } else if (finalGroup.toLowerCase() === "sundry debtors" || finalGroup.toLowerCase() === "sundry debtor") {
         let parentGroupDoc = await Groups.findOne({ groupName: { $regex: new RegExp("^Current Assets$", "i") } });
         if (!parentGroupDoc) {
             parentGroupDoc = new Groups({
@@ -168,12 +168,35 @@ exports.ensureLedgerFolioInternal = async (tenantModels, options) => {
     }
 
     // 2. Find or create ledger
-    let ledger = await Ledgers.findOne({
-        $or: [
-            { ledgerName: { $regex: new RegExp(`^${finalName}$`, "i") } },
-            ... (refId ? [{ refId }] : [])
-        ]
-    });
+    let ledger = null;
+    let currentLead = null;
+    if (refType === "Lead" && refId) {
+        currentLead = await Leads.findById(refId);
+        if (currentLead && currentLead.ledgerId) {
+            ledger = await Ledgers.findById(currentLead.ledgerId);
+        }
+        if (!ledger && currentLead && currentLead.sender_mobile) {
+            const cleanMobile = String(currentLead.sender_mobile).replace(/\D/g, '').slice(-10);
+            if (cleanMobile.length === 10) {
+                const otherLead = await Leads.findOne({
+                    sender_mobile: { $regex: new RegExp(cleanMobile.split('').join('\\D*') + '\\D*$') },
+                    ledgerId: { $exists: true, $ne: null }
+                });
+                if (otherLead) {
+                    ledger = await Ledgers.findById(otherLead.ledgerId);
+                }
+            }
+        }
+    }
+
+    if (!ledger) {
+        ledger = await Ledgers.findOne({
+            $or: [
+                { ledgerName: { $regex: new RegExp(`^${finalName}$`, "i") } },
+                ... (refId ? [{ refId }] : [])
+            ]
+        });
+    }
 
     if (!ledger) {
         // Normalize explicit ledger nature: ["Dr", "Cr"]
@@ -213,6 +236,45 @@ exports.ensureLedgerFolioInternal = async (tenantModels, options) => {
         }
         if (changed) {
             await ledger.save();
+        }
+    }
+
+    // 3. Link back ledgerId to leads and sync leadIds in ledger
+    if (refType === "Lead" && ledger) {
+        if (currentLead && currentLead.sender_mobile) {
+            const cleanMobile = String(currentLead.sender_mobile).replace(/\D/g, '').slice(-10);
+            if (cleanMobile.length === 10) {
+                const matchingLeads = await Leads.find({
+                    sender_mobile: { $regex: new RegExp(cleanMobile.split('').join('\\D*') + '\\D*$') }
+                });
+                const matchingIds = matchingLeads.map(l => l._id);
+
+                // Update ledgerId on all matching leads in the database
+                await Leads.updateMany(
+                    { _id: { $in: matchingIds } },
+                    { $set: { ledgerId: ledger._id } }
+                );
+
+                // Ensure the ledger lists all matching lead IDs
+                if (!ledger.leadIds) ledger.leadIds = [];
+                let ledgerChanged = false;
+                for (const lid of matchingIds) {
+                    if (!ledger.leadIds.some(existingId => String(existingId) === String(lid))) {
+                        ledger.leadIds.push(lid);
+                        ledgerChanged = true;
+                    }
+                }
+                if (ledgerChanged) {
+                    await ledger.save();
+                }
+            }
+        } else if (refId) {
+            await Leads.updateOne({ _id: refId }, { $set: { ledgerId: ledger._id } });
+            if (!ledger.leadIds) ledger.leadIds = [];
+            if (!ledger.leadIds.some(existingId => String(existingId) === String(refId))) {
+                ledger.leadIds.push(refId);
+                await ledger.save();
+            }
         }
     }
 

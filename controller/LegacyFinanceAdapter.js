@@ -159,11 +159,28 @@ exports.createTransaction = async (req, res) => {
         });
 
         let partyLedgerName = txnData.party_name || txnData.txn_type;
-        let partyLedger = await ensureLedgerFolioInternal(req.tenantModels, {
-            name: partyLedgerName,
-            group: direction === "PAYMENT" ? "Sundry Creditors" : "Sundry Debtors",
-            nature: direction === "PAYMENT" ? "Cr" : "Dr"
-        });
+        let partyLedger;
+        if (txnData.ref_lead_id && mongoose.Types.ObjectId.isValid(txnData.ref_lead_id)) {
+            const { Leads } = req.tenantModels;
+            const lead = await Leads.findById(txnData.ref_lead_id).lean();
+            if (lead) {
+                partyLedger = await ensureLedgerFolioInternal(req.tenantModels, {
+                    name: lead.sender_name || partyLedgerName,
+                    group: "Sundry Debtors",
+                    parentGroup: "Current Assets",
+                    refId: lead._id,
+                    refType: "Lead",
+                    nature: "Dr"
+                });
+            }
+        }
+        if (!partyLedger) {
+            partyLedger = await ensureLedgerFolioInternal(req.tenantModels, {
+                name: partyLedgerName,
+                group: direction === "PAYMENT" ? "Sundry Creditors" : "Sundry Debtors",
+                nature: direction === "PAYMENT" ? "Cr" : "Dr"
+            });
+        }
 
         // Double Entry setup
         const amount = parseFloat(txnData.amount) || 0;
@@ -305,7 +322,25 @@ exports.getLeadLedger = async (req, res) => {
         const lead = await Leads.findById(req.params.leadId).lean();
         if (!lead) return res.json({ success: true, data: null });
 
-        const vouchers = await Vouchers.find({ "legacyMetadata.ref_lead_id": lead._id.toString() }).sort({ date: 1 }).lean();
+        // Resolve all lead IDs sharing this client/ledger to consolidate
+        let leadIds = [lead._id];
+        if (lead.ledgerId) {
+            const relatedLeads = await Leads.find({ ledgerId: lead.ledgerId }).lean();
+            leadIds = relatedLeads.map(l => l._id);
+        } else if (lead.sender_mobile) {
+            const cleanMobile = String(lead.sender_mobile).replace(/\D/g, '').slice(-10);
+            if (cleanMobile.length === 10) {
+                const relatedLeads = await Leads.find({
+                    sender_mobile: { $regex: new RegExp(cleanMobile.split('').join('\\D*') + '\\D*$') }
+                }).lean();
+                leadIds = relatedLeads.map(l => l._id);
+            }
+        }
+
+        const stringLeadIds = leadIds.map(id => id.toString());
+        const vouchers = await Vouchers.find({ 
+            "legacyMetadata.ref_lead_id": { $in: stringLeadIds } 
+        }).sort({ date: 1 }).lean();
         
         const ledger = vouchers.map(v => {
             const isPayment = v.legacyMetadata.direction === "PAYMENT";
@@ -349,32 +384,57 @@ exports.getLeadLedger = async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 exports.getContactLedger = async (req, res) => {
     try {
-        const { Vouchers, Parties, Employees, Ledgers } = req.tenantModels;
+        const { Vouchers, Parties, Employees, Ledgers, Leads } = req.tenantModels;
         const mobile = req.params.mobile;
-        
-        // 1. Resolve Entity (Staff or Party)
-        let entity = await Employees.findOne({ mobile }).lean();
-        let refType = "Staff";
-        
-        if (!entity) {
-            entity = await Parties.findOne({ mobile }).lean();
-            refType = "Manual"; // Standard parties use Manual or specific types
-        }
 
-        if (!entity) return res.json({ success: true, data: { balance: 0, ledger: [] } });
-
-        // 2. Find associated Ledger
-        const ledgerDoc = await Ledgers.findOne({ refId: entity._id }).lean();
-        
+        let ledgerDoc = null;
+        let leadIds = [];
         let vouchers = [];
-        if (ledgerDoc) {
-            // Find by double-entry ledger link
-            vouchers = await Vouchers.find({ "entries.ledgerId": ledgerDoc._id }).sort({ date: 1 }).lean();
-        } else {
-            // Fallback: search by legacy metadata mobile
-            vouchers = await Vouchers.find({ "legacyMetadata.contact_mobile": mobile }).sort({ date: 1 }).lean();
+
+        // 1. Check if this mobile belongs to Leads (CRM client)
+        const cleanMobile = String(mobile).replace(/\D/g, '').slice(-10);
+        if (cleanMobile.length === 10) {
+            const matchingLeads = await Leads.find({
+                sender_mobile: { $regex: new RegExp(cleanMobile.split('').join('\\D*') + '\\D*$') }
+            }).lean();
+            if (matchingLeads.length > 0) {
+                leadIds = matchingLeads.map(l => l._id);
+                const leadWithLedger = matchingLeads.find(l => l.ledgerId);
+                if (leadWithLedger) {
+                    ledgerDoc = await Ledgers.findById(leadWithLedger.ledgerId).lean();
+                }
+            }
         }
-        
+
+        // 2. If it's a lead and we found a ledger, get vouchers for all linked leads / ledger
+        if (ledgerDoc) {
+            vouchers = await Vouchers.find({
+                $or: [
+                    { "entries.ledgerId": ledgerDoc._id },
+                    { "legacyMetadata.ref_lead_id": { $in: leadIds.map(id => id.toString()) } }
+                ]
+            }).sort({ date: 1 }).lean();
+        } else if (leadIds.length > 0) {
+            // Found leads, but no ledger has been created yet (i.e. status not Accepted yet)
+            return res.json({ success: true, data: { balance: 0, ledger: [] } });
+        } else {
+            // 3. Fallback to standard Staff/Party lookup
+            let entity = await Employees.findOne({ mobile }).lean();
+            if (!entity) {
+                entity = await Parties.findOne({ mobile }).lean();
+            }
+            if (!entity) {
+                return res.json({ success: true, data: { balance: 0, ledger: [] } });
+            }
+            ledgerDoc = await Ledgers.findOne({ refId: entity._id }).lean();
+            if (ledgerDoc) {
+                vouchers = await Vouchers.find({ "entries.ledgerId": ledgerDoc._id }).sort({ date: 1 }).lean();
+            } else {
+                vouchers = await Vouchers.find({ "legacyMetadata.contact_mobile": mobile }).sort({ date: 1 }).lean();
+            }
+        }
+
+        // 4. Map vouchers to legacy format
         let balance = 0;
         const ledger = vouchers.map(v => {
             const entry = v.entries?.find(e => String(e.ledgerId) === String(ledgerDoc?._id)) || {};
@@ -392,7 +452,7 @@ exports.getContactLedger = async (req, res) => {
                 voucherNarration: v.narration || v.legacyMetadata?.description || "Transaction"
             };
         });
-        
+
         res.json({ success: true, data: { balance, ledger } });
     } catch (err) {
         console.error("🔴 getContactLedger Error:", err.message);

@@ -397,7 +397,7 @@ exports.unregisteredLogin = async (req, res) => {
             if (!corp.isActive) continue;
 
             const dbName = corp.dbName;
-            const mobileRegex = new RegExp(cleanMobile.slice(-10) + "$");
+            const mobileRegex = new RegExp(cleanMobile.slice(-10).split('').join('\\D*') + '\\D*$');
 
             const tenantConnection = await dbConnector.getTenantConnection(dbName);
             const models = getTenantModels(tenantConnection);

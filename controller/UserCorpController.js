@@ -315,7 +315,7 @@ exports.manageLeads = {
             const { mobile } = req.query;
             const { Leads } = req.tenantModels;
             const clean = mobile.replace(/\D/g, '').slice(-10);
-            const q = { sender_mobile: { $regex: new RegExp(clean + "$") } };
+            const q = { sender_mobile: { $regex: new RegExp(clean.split('').join('\\D*') + '\\D*$') } };
             const accessibleIds = req.user?.accessibleLocationIds;
             if (req.user?.userRole !== "CorpAdmin" && accessibleIds?.length > 0) {
                 q.locationId = { $in: accessibleIds };

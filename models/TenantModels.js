@@ -111,6 +111,7 @@ const leadSchema = new mongoose.Schema({
     status: { type: String, default: "Recent" },
     generated_date: { type: Date, default: Date.now },
     clientId: { type: mongoose.Schema.Types.ObjectId },
+    ledgerId: { type: mongoose.Schema.Types.ObjectId, ref: "Ledgers" }, // Link to isolated client ledger
     activity: [new mongoose.Schema({
         action: { type: String },
         byUser: { type: String },
