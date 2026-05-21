@@ -214,7 +214,7 @@ exports.ensureLedgerFolioInternal = async (tenantModels, options) => {
             refType: refType || "Manual",
             openingBalance: openingBalance || 0,
             openingBalanceType: ledgerNature,
-            currentBalance: openingBalance || 0,
+            currentBalance: ledgerNature === "Cr" ? -(openingBalance || 0) : (openingBalance || 0),
             leadIds: leadIds || ((refType === "Lead" && refId) ? [refId] : []),
             purchaseOrders: purchaseOrders || []
         });
@@ -367,6 +367,8 @@ exports.getAccountingMaster = async (req, res) => {
             console.error("Proactive Client Ledger Sync Failed:", lErr.message);
         }
 
+        await recalculateAllLedgerBalances(req.tenantModels);
+
         const finalLedgers = await Ledgers.find({}).lean();
         res.json({ success: true, data: { groups, ledgers: finalLedgers } });
     } catch (err) { res.status(500).json({ success: false, message: err.message }); }
@@ -511,6 +513,8 @@ exports.manageLedgers = {
                 console.error("Proactive Client Ledger Sync Failed:", lErr.message);
             }
 
+            await recalculateAllLedgerBalances(req.tenantModels);
+
             const ledgers = await Ledgers.find({}).lean();
             res.json({ success: true, data: ledgers });
         } catch (err) { res.status(500).json({ success: false, message: err.message }); }
@@ -536,7 +540,9 @@ exports.manageLedgers = {
                 req.body.currentBalance = (oldLedger.currentBalance || 0) + diff;
             }
 
-            const ledger = await Ledgers.findByIdAndUpdate(req.params.id, req.body, { new: true });
+            await Ledgers.findByIdAndUpdate(req.params.id, req.body, { new: true });
+            await recalculateLedgerBalances(req.tenantModels, [req.params.id]);
+            const ledger = await Ledgers.findById(req.params.id).lean();
             res.json({ success: true, data: ledger });
         } catch (err) { res.status(500).json({ success: false, message: err.message }); }
     },
@@ -873,6 +879,9 @@ exports.manageVouchers = {
             });
             await voucher.save();
 
+            const ledgerIds = voucher.entries.map(e => e.ledgerId);
+            await recalculateLedgerBalances(req.tenantModels, ledgerIds);
+
             // 🚀 REAL-TIME: Notify clients
             req.io.to(req.tenantDbName).emit("voucher:created", { data: voucher });
 
@@ -897,8 +906,16 @@ exports.manageVouchers = {
     update: async (req, res) => {
         try {
             const { Vouchers } = req.tenantModels;
+            const oldVoucher = await Vouchers.findById(req.params.id).lean();
+            const oldLedgerIds = oldVoucher ? oldVoucher.entries.map(e => e.ledgerId) : [];
+
             const item = await Vouchers.findByIdAndUpdate(req.params.id, req.body, { new: true });
             if (!item) return res.status(404).json({ success: false, message: "Voucher not found" });
+
+            const newLedgerIds = item.entries.map(e => e.ledgerId);
+            const allLedgerIds = [...oldLedgerIds, ...newLedgerIds];
+            await recalculateLedgerBalances(req.tenantModels, allLedgerIds);
+
             req.io.to(req.tenantDbName).emit("voucher:updated", { data: item });
             res.json({ success: true, data: item });
         } catch (err) { res.status(500).json({ success: false, message: err.message }); }
@@ -906,7 +923,12 @@ exports.manageVouchers = {
     delete: async (req, res) => {
         try {
             const { Vouchers } = req.tenantModels;
+            const oldVoucher = await Vouchers.findById(req.params.id).lean();
+            const oldLedgerIds = oldVoucher ? oldVoucher.entries.map(e => e.ledgerId) : [];
+
             await Vouchers.findByIdAndDelete(req.params.id);
+            await recalculateLedgerBalances(req.tenantModels, oldLedgerIds);
+
             req.io.to(req.tenantDbName).emit("voucher:deleted", { id: req.params.id });
             res.json({ success: true, message: "Voucher deleted" });
         } catch (err) { res.status(500).json({ success: false, message: err.message }); }
@@ -1067,6 +1089,7 @@ exports.postSalaryJournal = async (req, res) => {
             voucher.narration = `Salary Dues for ${month || 'Current Month'} - ${employeeName} (Updated)`;
             voucher.date = new Date();
             await voucher.save();
+            await recalculateLedgerBalances(req.tenantModels, voucher.entries.map(e => e.ledgerId));
         } else {
             // Create New Journal Voucher
             const counterId = `voucher_Journal_${locationId || 'global'}`;
@@ -1086,6 +1109,7 @@ exports.postSalaryJournal = async (req, res) => {
                 legacyMetadata: { clientId, month, type: 'SalaryJournal' }
             });
             await voucher.save();
+            await recalculateLedgerBalances(req.tenantModels, voucher.entries.map(e => e.ledgerId));
         }
 
         // 4. Mark Attendance as Posted
@@ -1133,6 +1157,7 @@ exports.postSalaryPayment = async (req, res) => {
             legacyMetadata: { clientId, month, type: 'SalaryPayment' }
         });
         await voucher.save();
+        await recalculateLedgerBalances(req.tenantModels, voucher.entries.map(e => e.ledgerId));
 
         res.status(201).json({ success: true, data: voucher });
     } catch (err) { res.status(500).json({ success: false, message: err.message }); }
@@ -1360,8 +1385,86 @@ exports.approveContraVoucher = async (req, res) => {
         }
 
         await voucher.save();
+        const ledgerIds = voucher.entries.map(e => e.ledgerId);
+        await recalculateLedgerBalances(req.tenantModels, ledgerIds);
         res.json({ success: true, message: `Voucher successfully declared as ${action}ed.`, data: voucher });
     } catch (err) {
         res.status(500).json({ success: false, message: err.message });
     }
 };
+
+const recalculateLedgerBalances = async (tenantModels, ledgerIds) => {
+    const { Ledgers, Vouchers } = tenantModels;
+    const uniqueIds = [...new Set(ledgerIds.filter(Boolean).map(id => id.toString()))];
+    if (uniqueIds.length === 0) return;
+
+    const objectIds = uniqueIds.map(id => new mongoose.Types.ObjectId(id));
+    const voucherSums = await Vouchers.aggregate([
+        { $unwind: "$entries" },
+        { $match: { "entries.ledgerId": { $in: objectIds } } },
+        {
+            $group: {
+                _id: "$entries.ledgerId",
+                totalDr: { $sum: "$entries.debit" },
+                totalCr: { $sum: "$entries.credit" }
+            }
+        }
+    ]);
+
+    const sumMap = {};
+    voucherSums.forEach(item => {
+        if (item._id) {
+            sumMap[item._id.toString()] = {
+                totalDr: item.totalDr || 0,
+                totalCr: item.totalCr || 0
+            };
+        }
+    });
+
+    for (const idStr of uniqueIds) {
+        const ledger = await Ledgers.findById(idStr);
+        if (!ledger) continue;
+        const sums = sumMap[idStr] || { totalDr: 0, totalCr: 0 };
+        const initialBal = ledger.openingBalanceType === 'Cr' ? -(ledger.openingBalance || 0) : (ledger.openingBalance || 0);
+        const currentBalance = initialBal + sums.totalDr - sums.totalCr;
+        if (ledger.currentBalance !== currentBalance) {
+            await Ledgers.findByIdAndUpdate(idStr, { currentBalance });
+        }
+    }
+};
+
+const recalculateAllLedgerBalances = async (tenantModels) => {
+    const { Ledgers, Vouchers } = tenantModels;
+    const voucherSums = await Vouchers.aggregate([
+        { $unwind: "$entries" },
+        {
+            $group: {
+                _id: "$entries.ledgerId",
+                totalDr: { $sum: "$entries.debit" },
+                totalCr: { $sum: "$entries.credit" }
+            }
+        }
+    ]);
+
+    const sumMap = {};
+    voucherSums.forEach(item => {
+        if (item._id) {
+            sumMap[item._id.toString()] = {
+                totalDr: item.totalDr || 0,
+                totalCr: item.totalCr || 0
+            };
+        }
+    });
+
+    const ledgers = await Ledgers.find({});
+    for (const ledger of ledgers) {
+        const sums = sumMap[ledger._id.toString()] || { totalDr: 0, totalCr: 0 };
+        const initialBal = ledger.openingBalanceType === 'Cr' ? -(ledger.openingBalance || 0) : (ledger.openingBalance || 0);
+        const currentBalance = initialBal + sums.totalDr - sums.totalCr;
+        if (ledger.currentBalance !== currentBalance) {
+            ledger.currentBalance = currentBalance;
+            await ledger.save();
+        }
+    }
+};
+
