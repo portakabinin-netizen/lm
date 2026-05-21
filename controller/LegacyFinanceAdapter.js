@@ -31,14 +31,14 @@ function resolveDirection(txn_type) {
 exports.getLeadsForPicker = async (req, res) => {
     try {
         const { Leads } = req.tenantModels;
-        // Find leads that are "Engaged", "Accepted", or "Tax Invoice"
-        const ACTIVE_STATUSES = ["Engaged", "Accepted", "Tax Invoice"];
+        // Find leads that are "Accepted", "Tax Invoice", or "Fully Paid"
+        const ACTIVE_STATUSES = ["Accepted", "Tax Invoice", "Fully Paid"];
         const leads = await Leads.find({ status: { $in: ACTIVE_STATUSES } }).lean();
 
-        // Proactively check and create ledgers for Accepted / Tax Invoice leads
+        // Proactively check and create ledgers for Accepted / Tax Invoice / Fully Paid leads
         for (const lead of leads) {
             const statusLower = lead.status?.toLowerCase() || "";
-            if (statusLower === "accepted" || statusLower === "tax invoice") {
+            if (statusLower === "accepted" || statusLower === "tax invoice" || statusLower === "fully paid") {
                 try {
                     await ensureLedgerFolioInternal(req.tenantModels, {
                         name: lead.sender_name || "Client-" + lead.lead_no,

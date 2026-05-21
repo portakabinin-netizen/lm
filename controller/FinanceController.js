@@ -9,7 +9,7 @@
 
 const mongoose = require("mongoose");
 
-const BILLABLE_LEAD_STATES = ["accepted", "tax invoice"];
+const BILLABLE_LEAD_STATES = ["accepted", "tax invoice", "fully paid"];
 
 const normalizeLeadState = (value) => String(value || "").trim().toLowerCase();
 
@@ -24,8 +24,8 @@ const getLeadLedgerName = (lead = {}) => {
 
 const billableLeadQuery = {
     $or: [
-        { status: { $regex: /^(Accepted|Tax Invoice)$/i } },
-        { role: { $regex: /^(Accepted|Tax Invoice)$/i } }
+        { status: { $regex: /^(Accepted|Tax Invoice|Fully Paid)$/i } },
+        { role: { $regex: /^(Accepted|Tax Invoice|Fully Paid)$/i } }
     ]
 };
 

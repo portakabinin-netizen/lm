@@ -148,8 +148,8 @@ exports.getLeadsForPicker = async (req, res) => {
 
         const allLeads = corpEntry?.leads || [];
 
-        // Return leads that are project-active (Accepted | Tax Invoice | Engaged)
-        const ACTIVE_STATUSES = new Set(["Engaged", "Accepted", "Tax Invoice"]);
+        // Return leads that are project-active (Accepted | Tax Invoice | Fully Paid)
+        const ACTIVE_STATUSES = new Set(["Accepted", "Tax Invoice", "Fully Paid"]);
         const picker = allLeads
             .filter(l => ACTIVE_STATUSES.has(l.status))
             .map(l => ({
