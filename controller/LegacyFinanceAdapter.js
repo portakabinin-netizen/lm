@@ -337,28 +337,73 @@ exports.getLeadLedger = async (req, res) => {
             }
         }
 
-        const stringLeadIds = leadIds.map(id => id.toString());
+                const stringLeadIds = leadIds.map(id => id.toString());
         const vouchers = await Vouchers.find({ 
-            "legacyMetadata.ref_lead_id": { $in: stringLeadIds } 
+            $or: [
+                { leadId: { $in: leadIds } },
+                { "legacyMetadata.ref_lead_id": { $in: stringLeadIds } }
+            ]
         }).sort({ date: 1 }).lean();
         
         const ledger = vouchers.map(v => {
-            const isPayment = v.legacyMetadata.direction === "PAYMENT";
-            return {
-                _id: v._id,
-                voucherDate: v.date,
-                paymentType: isPayment ? "Dr" : "Cr",
-                amt: v.legacyMetadata.amount,
-                paymentFromTo: v.legacyMetadata.party_name || v.legacyMetadata.staff_name || v.legacyMetadata.txn_type,
-                voucherNarration: v.narration || v.legacyMetadata.description
-            };
+            if (v.legacyMetadata) {
+                const isPayment = v.legacyMetadata.direction === "PAYMENT";
+                return {
+                    _id: v._id,
+                    voucherDate: v.date,
+                    paymentType: isPayment ? "Dr" : "Cr",
+                    amt: v.legacyMetadata.amount,
+                    paymentFromTo: v.legacyMetadata.party_name || v.legacyMetadata.staff_name || v.legacyMetadata.txn_type,
+                    voucherNarration: v.narration || v.legacyMetadata.description
+                };
+            } else {
+                const isPayment = v.voucherType === "Payment";
+                let amt = 0;
+                let paymentFromTo = "";
+                if (isPayment) {
+                    const drEntry = (v.entries || []).find(e => e.debit > 0);
+                    if (drEntry) {
+                        amt = drEntry.debit;
+                        paymentFromTo = drEntry.ledgerName;
+                    }
+                } else {
+                    const crEntry = (v.entries || []).find(e => e.credit > 0);
+                    if (crEntry) {
+                        amt = crEntry.credit;
+                        paymentFromTo = crEntry.ledgerName;
+                    }
+                }
+                if (!paymentFromTo) {
+                    paymentFromTo = v.entries?.[0]?.ledgerName || "Voucher Entry";
+                    amt = v.entries?.[0]?.debit || v.entries?.[0]?.credit || 0;
+                }
+                return {
+                    _id: v._id,
+                    voucherDate: v.date,
+                    paymentType: isPayment ? "Dr" : "Cr",
+                    amt: amt,
+                    paymentFromTo: paymentFromTo,
+                    voucherNarration: v.narration
+                };
+            }
         });
 
         let totalCost = 0;
         let totalRevenue = 0;
         vouchers.forEach(v => {
-            if (v.legacyMetadata.direction === "PAYMENT") totalCost += v.legacyMetadata.amount || 0;
-            if (v.legacyMetadata.direction === "RECEIPT") totalRevenue += v.legacyMetadata.amount || 0;
+            if (v.legacyMetadata) {
+                if (v.legacyMetadata.direction === "PAYMENT") totalCost += v.legacyMetadata.amount || 0;
+                if (v.legacyMetadata.direction === "RECEIPT") totalRevenue += v.legacyMetadata.amount || 0;
+            } else {
+                const isPayment = v.voucherType === "Payment";
+                if (isPayment) {
+                    const drEntry = (v.entries || []).find(e => e.debit > 0);
+                    totalCost += drEntry ? (drEntry.debit || 0) : 0;
+                } else {
+                    const crEntry = (v.entries || []).find(e => e.credit > 0);
+                    totalRevenue += crEntry ? (crEntry.credit || 0) : 0;
+                }
+            }
         });
 
         res.json({ 
