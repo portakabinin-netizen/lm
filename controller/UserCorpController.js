@@ -22,7 +22,14 @@ const normalizeLeadStatusAlias = (body = {}) => {
     const roleAsStatus = String(body.role).trim().toLowerCase();
     if (roleAsStatus === "accepted") return { ...body, status: "Accepted" };
     if (roleAsStatus === "tax invoice") return { ...body, status: "Tax Invoice" };
+    if (roleAsStatus === "fully paid") return { ...body, status: "Fully Paid" };
     return body;
+};
+
+// Helper: check if a lead status requires a Sundry Debtor ledger
+const isBillableLeadStatus = (status = "") => {
+    const s = String(status).trim().toLowerCase();
+    return s === "accepted" || s === "tax invoice" || s === "fully paid";
 };
 
 /**
@@ -91,16 +98,17 @@ exports.manageLeads = {
             const lead = new Leads({ ...leadInput, lead_no: counter.seq, locationId });
             await lead.save();
 
-            // Auto-create ledger if status is Accepted or Tax Invoice
-            const leadStatusLower = lead.status?.toLowerCase() || "";
-            if (leadStatusLower === "accepted" || leadStatusLower === "tax invoice") {
+            // Auto-create ledger if status is Accepted, Tax Invoice, or Fully Paid
+            if (isBillableLeadStatus(lead.status)) {
                 try {
                     const FinanceController = require('./FinanceController');
                     await FinanceController.ensureLedgerFolioInternal(req.tenantModels, {
-                        name: lead.sender_name || "Client-" + lead.lead_no,
-                        group: "Sundry Debtors",
+                        ledgerName: lead.sender_name || "Client-" + lead.lead_no,
+                        groupName: "Sundry Debtors",
+                        parentGroup: "Current Assets",
                         refId: lead._id,
-                        refType: "Lead"
+                        refType: "Lead",
+                        nature: "Dr"
                     });
                 } catch (ferr) { console.error("Leads-Finance Auto Linkage Failed:", ferr.message); }
             }
@@ -150,15 +158,17 @@ exports.manageLeads = {
             const lead = await Leads.findByIdAndUpdate(req.params.id, leadInput, { new: true });
             if (!lead) return res.status(404).json({ success: false, message: "Lead not found" });
             
-            const leadStatusLower = lead.status?.toLowerCase() || "";
-            if (leadStatusLower === "accepted" || leadStatusLower === "tax invoice") {
+            // Auto-create ledger if status is Accepted, Tax Invoice, or Fully Paid
+            if (isBillableLeadStatus(lead.status)) {
                 try {
                     const FinanceController = require('./FinanceController');
                     await FinanceController.ensureLedgerFolioInternal(req.tenantModels, {
-                        name: lead.sender_name || "Client-" + lead.lead_no,
-                        group: "Sundry Debtors",
+                        ledgerName: lead.sender_name || "Client-" + lead.lead_no,
+                        groupName: "Sundry Debtors",
+                        parentGroup: "Current Assets",
                         refId: lead._id,
-                        refType: "Lead"
+                        refType: "Lead",
+                        nature: "Dr"
                     });
                 } catch (ferr) { console.error("Leads-Finance Auto Linkage Failed:", ferr.message); }
             }
@@ -288,15 +298,17 @@ exports.manageLeads = {
                 const lead = new Leads({ ...data, lead_no: counter.seq });
                 await lead.save();
 
-                const leadStatusLower = lead.status?.toLowerCase() || "";
-                if (leadStatusLower === "accepted" || leadStatusLower === "tax invoice") {
+                // Auto-create ledger if status is Accepted, Tax Invoice, or Fully Paid
+                if (isBillableLeadStatus(lead.status)) {
                     try {
                         const FinanceController = require('./FinanceController');
                         await FinanceController.ensureLedgerFolioInternal(req.tenantModels, {
-                            name: lead.sender_name || "Client-" + lead.lead_no,
-                            group: "Sundry Debtors",
+                            ledgerName: lead.sender_name || "Client-" + lead.lead_no,
+                            groupName: "Sundry Debtors",
+                            parentGroup: "Current Assets",
                             refId: lead._id,
-                            refType: "Lead"
+                            refType: "Lead",
+                            nature: "Dr"
                         });
                     } catch (ferr) { console.error("Leads-Finance Auto Linkage Failed:", ferr.message); }
                 }

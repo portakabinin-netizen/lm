@@ -626,6 +626,7 @@ exports.manageVouchers = {
                 const debitEntries = entries.filter(e => (e.type === "Dr" || e.debit > 0) && (e.debit || 0) > 0);
 
                 for (const debitEntry of debitEntries) {
+                    // ✅ Allow cash_in_hand (active user's own petty cash)
                     if (debitEntry.ledgerId === "cash_in_hand") {
                         if (!activeUserIds.has(String(req.user?._id))) {
                             return res.status(400).json({
@@ -636,20 +637,34 @@ exports.manageVouchers = {
                         continue;
                     }
 
+                    // ✅ Allow main_bank (direct bank deposit)
+                    if (debitEntry.ledgerId === "main_bank") continue;
+
                     if (!mongoose.Types.ObjectId.isValid(debitEntry.ledgerId)) {
                         return res.status(400).json({
                             success: false,
-                            message: "Receipt debit account must be an active user's Petty Cash book."
+                            message: "Receipt debit account must be an active user's Petty Cash book or Bank Account."
                         });
                     }
 
                     const debitLedger = await req.tenantModels.Ledgers.findById(debitEntry.ledgerId).lean();
-                    if (!debitLedger || debitLedger.refType !== "User" || !activeUserIds.has(String(debitLedger.refId))) {
-                        return res.status(400).json({
-                            success: false,
-                            message: "Receipt must be received into an active user's Petty Cash book."
-                        });
+
+                    // ✅ Allow ledgers in the Bank Accounts group
+                    if (debitLedger) {
+                        const debitGroup = await req.tenantModels.Groups.findById(debitLedger.ledgerGroupId).lean();
+                        if (debitGroup && (debitGroup.groupName === "Bank Accounts" || debitGroup.groupName === "Cash-in-hand")) {
+                            continue; // Bank or Cash group — allowed
+                        }
+                        // ✅ Allow active user's registered petty cash book
+                        if (debitLedger.refType === "User" && activeUserIds.has(String(debitLedger.refId))) {
+                            continue;
+                        }
                     }
+
+                    return res.status(400).json({
+                        success: false,
+                        message: "Receipt must be received into an active user's Petty Cash book or a Bank Account."
+                    });
                 }
             }
 
