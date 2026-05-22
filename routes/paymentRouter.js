@@ -1,10 +1,12 @@
 const express = require("express");
 const router  = express.Router();
 const authMiddleware = require("../middleware/authMiddleware");
+const tenantMiddleware = require("../middleware/tenantMiddleware");
 const ctrl = require("../controller/LegacyFinanceAdapter");
 
 // All payment routes require authentication
 router.use(authMiddleware);
+router.use(tenantMiddleware);
 
 // ── Lead-linked endpoints ─────────────────────────────────────────────────────
 router.get("/leads-picker",          ctrl.getLeadsForPicker);        // GET: leads list for form picker

@@ -934,16 +934,31 @@ exports.manageEmployees = {
             const activeShift = (emp.employmentHistory || []).find(h => h.active) || 
                                 (emp.employmentHistory || []).slice(-1)[0];
             
-            const [h, m] = (activeShift?.shiftStartTime || "08:00").split(':').map(Number);
+            let diffMins = 0;
             if (activeShift && !isSpecialAction) {
-                const shiftStart = new Date(now);
-                shiftStart.setHours(h, m, 0, 0);
+                const [h, m] = (activeShift.shiftStartTime || "08:00").split(':').map(Number);
                 
-                // Buffer check: allowed to join 15 mins before or up to 15 mins late
-                const bufferTime = new Date(shiftStart.getTime() - 15 * 60000);
-                const lateTime = new Date(shiftStart.getTime() + 15 * 60000);
+                // Get difference in minutes to the nearest shift start in Asia/Kolkata timezone
+                const istString = now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" });
+                const nowIST = new Date(istString);
+
+                const todayShift = new Date(nowIST);
+                todayShift.setHours(h, m, 0, 0);
+
+                const yesterdayShift = new Date(todayShift.getTime() - 24 * 3600000);
+                const tomorrowShift = new Date(todayShift.getTime() + 24 * 3600000);
+
+                const diffs = [
+                    { diff: (nowIST.getTime() - todayShift.getTime()) / 60000, target: todayShift },
+                    { diff: (nowIST.getTime() - yesterdayShift.getTime()) / 60000, target: yesterdayShift },
+                    { diff: (nowIST.getTime() - tomorrowShift.getTime()) / 60000, target: tomorrowShift }
+                ];
+
+                diffs.sort((a, b) => Math.abs(a.diff) - Math.abs(b.diff));
+                const nearestShift = diffs[0];
+                diffMins = nearestShift.diff;
                 
-                if (now < bufferTime) {
+                if (diffMins < -15) {
                     if (req.body.requestPermission) {
                         const { Messages } = req.tenantModels;
                         if (Messages) {
@@ -982,7 +997,7 @@ exports.manageEmployees = {
                     });
                 }
                 
-                if (now > lateTime) {
+                if (diffMins > 15) {
                     const isSpecialRole = ['Project', 'Sales', 'Finance'].includes(emp.userRole || emp.role);
                     if (isSpecialRole) {
                         if (req.body.requestPermission) {
@@ -1050,8 +1065,8 @@ exports.manageEmployees = {
                     site_name: site_name || 'HQ/Remote',
                     siteId: siteId || null,
                     leadId: leadId || null,
-                    isLate: activeShift ? (now > new Date(new Date(now).setHours(h, m, 0, 0) + 15 * 60000)) : false,
-                    remarks: (activeShift && now > new Date(new Date(now).setHours(h, m, 0, 0) + 15 * 60000)) ? 'On Duty-Late Coming' : undefined
+                    isLate: activeShift ? (diffMins > 15) : false,
+                    remarks: (activeShift && diffMins > 15) ? 'On Duty-Late Coming' : undefined
                 });
                 await record.save();
                 req.io.to(req.tenantDbName).emit('attendance:duty_on', {

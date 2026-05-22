@@ -8,7 +8,7 @@
  */
 
 const mongoose = require("mongoose");
-const { ensureLedgerFolioInternal } = require("./FinanceController");
+const { ensureLedgerFolioInternal, recalculateLedgerBalances } = require("./FinanceController");
 
 const PAYMENT_TYPES = [
     "vendor_payment", "labour_charge", "freight_cartage", "misc_expense", 
@@ -31,9 +31,15 @@ function resolveDirection(txn_type) {
 exports.getLeadsForPicker = async (req, res) => {
     try {
         const { Leads } = req.tenantModels;
-        // Find leads that are "Accepted", "Tax Invoice", or "Fully Paid"
-        const ACTIVE_STATUSES = ["Accepted", "Tax Invoice", "Fully Paid"];
-        const leads = await Leads.find({ status: { $in: ACTIVE_STATUSES } }).lean();
+        
+        // Construct query filter with location-based scoping for non-CorpAdmin users
+        const q = {};
+        const accessibleIds = req.user?.accessibleLocationIds;
+        if (req.user?.userRole !== "CorpAdmin" && accessibleIds?.length > 0) {
+            q.locationId = { $in: accessibleIds };
+        }
+
+        const leads = await Leads.find(q).lean();
 
         // Proactively check and create ledgers for Accepted / Tax Invoice / Fully Paid leads
         for (const lead of leads) {
@@ -241,6 +247,10 @@ exports.createTransaction = async (req, res) => {
 
         await voucher.save();
         
+        // Sync ledger balances
+        const ledgerIds = entries.map(e => e.ledgerId);
+        await recalculateLedgerBalances(req.tenantModels, ledgerIds);
+        
         // Return exactly what the legacy UI expects
         res.status(201).json({ success: true, data: { ...txnData, _id: voucher._id } });
     } catch (err) {
@@ -335,7 +345,14 @@ exports.getPaymentSummary = async (req, res) => {
 exports.deleteTransaction = async (req, res) => {
     try {
         const { Vouchers } = req.tenantModels;
-        await Vouchers.findByIdAndDelete(req.params.id);
+        const voucher = await Vouchers.findById(req.params.id);
+        if (voucher) {
+            const ledgerIds = (voucher.entries || []).map(e => e.ledgerId);
+            await Vouchers.findByIdAndDelete(req.params.id);
+            await recalculateLedgerBalances(req.tenantModels, ledgerIds);
+        } else {
+            await Vouchers.findByIdAndDelete(req.params.id);
+        }
         res.json({ success: true, message: "Transaction deleted" });
     } catch (err) {
         res.status(500).json({ success: false, message: err.message });

@@ -1540,15 +1540,25 @@ const recalculateLedgerBalances = async (tenantModels, ledgerIds) => {
         }
     });
 
-    for (const idStr of uniqueIds) {
-        const ledger = await Ledgers.findById(idStr);
-        if (!ledger) continue;
+    const ledgers = await Ledgers.find({ _id: { $in: uniqueIds } });
+    const bulkOps = [];
+    for (const ledger of ledgers) {
+        const idStr = ledger._id.toString();
         const sums = sumMap[idStr] || { totalDr: 0, totalCr: 0 };
         const initialBal = ledger.openingBalanceType === 'Cr' ? -(ledger.openingBalance || 0) : (ledger.openingBalance || 0);
         const currentBalance = initialBal + sums.totalDr - sums.totalCr;
         if (ledger.currentBalance !== currentBalance) {
-            await Ledgers.findByIdAndUpdate(idStr, { currentBalance });
+            bulkOps.push({
+                updateOne: {
+                    filter: { _id: ledger._id },
+                    update: { $set: { currentBalance } }
+                }
+            });
         }
+    }
+
+    if (bulkOps.length > 0) {
+        await Ledgers.bulkWrite(bulkOps);
     }
 };
 
@@ -1576,14 +1586,26 @@ const recalculateAllLedgerBalances = async (tenantModels) => {
     });
 
     const ledgers = await Ledgers.find({});
+    const bulkOps = [];
     for (const ledger of ledgers) {
         const sums = sumMap[ledger._id.toString()] || { totalDr: 0, totalCr: 0 };
         const initialBal = ledger.openingBalanceType === 'Cr' ? -(ledger.openingBalance || 0) : (ledger.openingBalance || 0);
         const currentBalance = initialBal + sums.totalDr - sums.totalCr;
         if (ledger.currentBalance !== currentBalance) {
-            ledger.currentBalance = currentBalance;
-            await ledger.save();
+            bulkOps.push({
+                updateOne: {
+                    filter: { _id: ledger._id },
+                    update: { $set: { currentBalance } }
+                }
+            });
         }
     }
+
+    if (bulkOps.length > 0) {
+        await Ledgers.bulkWrite(bulkOps);
+    }
 };
+
+exports.recalculateLedgerBalances = recalculateLedgerBalances;
+exports.recalculateAllLedgerBalances = recalculateAllLedgerBalances;
 
