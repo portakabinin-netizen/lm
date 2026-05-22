@@ -48,6 +48,7 @@ const partySchema = new mongoose.Schema({
     email: { type: String, trim: true, lowercase: true },
     type: { type: String, enum: ["Client", "Supplier"], required: true },
     active: { type: Boolean, default: true },
+    ledgerId: { type: mongoose.Schema.Types.ObjectId, ref: "Ledgers" },
 }, { timestamps: true });
 
 // 4. Employees
@@ -94,7 +95,8 @@ const employeeSchema = new mongoose.Schema({
     employmentHistory: { type: [employmentEntrySchema], default: [] },
     bank: bankAccountSchema,
     addresses: employeeAddressSchema,
-    active: { type: Boolean, default: true }
+    active: { type: Boolean, default: true },
+    ledgerId: { type: mongoose.Schema.Types.ObjectId, ref: "Ledgers" }
 }, { timestamps: true });
 
 // 5. Leads (CRM)

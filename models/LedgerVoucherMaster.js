@@ -54,7 +54,7 @@ const ledgerSchema = new mongoose.Schema(
         openingBalance: { type: Number, default: 0 },
         currentBalance: { type: Number, default: 0 },
         refId: { type: mongoose.Schema.Types.ObjectId }, // Link to Lead, Vendor, etc.
-        refType: { type: String, enum: ["Lead", "Vendor", "Staff", "Other"] },
+        refType: { type: String, enum: ["Lead", "Vendor", "Staff", "Client", "Other"] },
         leadIds: [{ type: mongoose.Schema.Types.ObjectId }], // Multiple inquiries for Debtors
         purchaseOrders: [{ type: mongoose.Schema.Types.ObjectId }], // Linked POs for Creditors
         isActive: { type: Boolean, default: true },

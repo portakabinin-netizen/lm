@@ -276,6 +276,16 @@ exports.ensureLedgerFolioInternal = async (tenantModels, options) => {
                 await ledger.save();
             }
         }
+    } else if (refType === "Staff" && ledger) {
+        const { Employees } = tenantModels;
+        if (Employees && refId) {
+            await Employees.updateOne({ _id: refId }, { $set: { ledgerId: ledger._id } });
+        }
+    } else if ((refType === "Client" || refType === "Vendor") && ledger) {
+        const { Parties } = tenantModels;
+        if (Parties && refId) {
+            await Parties.updateOne({ _id: refId }, { $set: { ledgerId: ledger._id } });
+        }
     }
 
     return ledger;
@@ -586,6 +596,294 @@ exports.manageLedgers = {
 /**
  * 🎫 VOUCHERS MANAGEMENT
  */
+const isAllowedUserCashFlowLedger = async (tenantModels, ledgerId, activeUserId) => {
+    if (ledgerId === "cash_in_hand" || ledgerId === "main_bank") return true;
+    if (!mongoose.Types.ObjectId.isValid(ledgerId)) return false;
+    const ledger = await tenantModels.Ledgers.findById(ledgerId).lean();
+    if (!ledger) return false;
+
+    // If it's a Bank Account, anyone can transact through it
+    const group = await tenantModels.Groups.findById(ledger.ledgerGroupId).lean();
+    if (group && group.groupName === "Bank Accounts") {
+        return true;
+    }
+
+    // If it's in Cash-in-hand, it must belong to the active user or be general
+    if (group && group.groupName === "Cash-in-hand") {
+        if (ledger.refType === "User") {
+            return String(ledger.refId) === String(activeUserId);
+        }
+        return true;
+    }
+
+    return false;
+};
+
+const resolveAndValidateVoucher = async (req, voucherType, entries, leadId, legacyMetadata) => {
+    const { Leads, Employees, Ledgers, Groups } = req.tenantModels;
+    const resolvedEntries = [];
+
+    // Active cash-flow users
+    const activeCashFlowUsers = await getActiveCashFlowUsers(req.tenantDbName || req.user?.dbName);
+    const activeUserIds = new Set(activeCashFlowUsers.map(user => String(user._id)));
+
+    // Helper to check if a ledger is a cash flow account
+    const isCashFlow = async (lId) => {
+        if (lId === "cash_in_hand" || lId === "main_bank") return true;
+        if (!mongoose.Types.ObjectId.isValid(lId)) return false;
+        const ledgerDoc = await Ledgers.findById(lId).lean();
+        if (!ledgerDoc) return false;
+        if (ledgerDoc.refType === "User" && activeUserIds.has(String(ledgerDoc.refId))) {
+            return true;
+        }
+        const gDoc = await Groups.findById(ledgerDoc.ledgerGroupId).lean();
+        if (gDoc && (gDoc.groupName === "Bank Accounts" || gDoc.groupName === "Cash-in-hand")) {
+            return true;
+        }
+        return false;
+    };
+
+    // Helper to check if a ledger is an employee account
+    const isEmployeeLedger = async (lId) => {
+        if (!mongoose.Types.ObjectId.isValid(lId)) return false;
+        const ledgerDoc = await Ledgers.findById(lId).lean();
+        return ledgerDoc && ledgerDoc.refType === "Staff";
+    };
+
+    // 1. Resolve all entries
+    for (const entry of entries) {
+        let ledgerId = entry.ledgerId;
+        let ledgerName = entry.ledgerName || "";
+        const accountType = entry.accountType;
+
+        // A. Placeholders
+        if (ledgerId === "cash_in_hand" || ledgerId === "main_bank" || ledgerId === "office_rent" ||
+            ledgerId === "electricity_bill" || ledgerId === "stationary_expense" ||
+            ledgerId === "interest_income" || ledgerId === "uniform_equipment") {
+
+            let targetName = "Cash Book";
+            let targetGroup = "Cash-in-hand";
+            let nature = "Dr";
+            let refId = null;
+            let refType = null;
+
+            if (ledgerId === "cash_in_hand") {
+                targetName = `Petty Cash - ${req.user?.userDisplayName || "General User"}`;
+                targetGroup = "Cash-in-hand";
+                refId = req.user?._id || null;
+                refType = "User";
+            } else if (ledgerId === "main_bank") {
+                targetName = "Main Bank Account";
+                targetGroup = "Bank Accounts";
+            } else if (ledgerId === "office_rent") {
+                targetName = "Office Rent";
+                targetGroup = "Indirect Expenses";
+            } else if (ledgerId === "electricity_bill") {
+                targetName = "Electricity Bill";
+                targetGroup = "Indirect Expenses";
+            } else if (ledgerId === "stationary_expense") {
+                targetName = "Stationary & Printing";
+                targetGroup = "Indirect Expenses";
+            } else if (ledgerId === "interest_income") {
+                targetName = "Interest Income";
+                targetGroup = "Indirect Income";
+                nature = "Cr";
+            } else if (ledgerId === "uniform_equipment") {
+                targetName = "Uniform & Equipment";
+                targetGroup = "Direct Expenses";
+            }
+
+            const resolvedLedger = await exports.ensureLedgerFolioInternal(req.tenantModels, {
+                name: targetName,
+                group: targetGroup,
+                nature,
+                refId,
+                refType
+            });
+            ledgerId = resolvedLedger._id;
+            ledgerName = resolvedLedger.ledgerName || resolvedLedger.name;
+        }
+        // B. Lead placeholders
+        else if (accountType === "Lead" || (mongoose.Types.ObjectId.isValid(ledgerId) && await Leads.exists({ _id: ledgerId }))) {
+            const lead = await Leads.findById(ledgerId).lean();
+            if (lead) {
+                const resolvedLedger = await exports.ensureLedgerFolioInternal(req.tenantModels, {
+                    name: lead.sender_name,
+                    group: "Sundry Debtors",
+                    refId: lead._id,
+                    refType: "Lead",
+                    nature: "Dr"
+                });
+                ledgerId = resolvedLedger._id;
+                ledgerName = resolvedLedger.ledgerName || resolvedLedger.name;
+            }
+        }
+        // C. Employee placeholders (Upgraded resolve: target Account Payables / nature Cr)
+        else if (accountType === "Staff" || (mongoose.Types.ObjectId.isValid(ledgerId) && await Employees.exists({ _id: ledgerId }))) {
+            const employee = await Employees.findById(ledgerId).lean();
+            if (employee) {
+                const resolvedLedger = await exports.ensureLedgerFolioInternal(req.tenantModels, {
+                    name: employee.name,
+                    group: "Account Payables",
+                    parentGroup: "Current Liabilities",
+                    refId: employee._id,
+                    refType: "Staff",
+                    nature: "Cr"
+                });
+                ledgerId = resolvedLedger._id;
+                ledgerName = resolvedLedger.ledgerName || resolvedLedger.name;
+            }
+        }
+        // D. Fallback for invalid ObjectIds
+        else if (!mongoose.Types.ObjectId.isValid(ledgerId)) {
+            const resolvedLedger = await exports.ensureLedgerFolioInternal(req.tenantModels, {
+                name: ledgerName || "General Suspense",
+                group: "Current Assets",
+                nature: "Dr"
+            });
+            ledgerId = resolvedLedger._id;
+            ledgerName = resolvedLedger.ledgerName || resolvedLedger.name;
+        }
+
+        resolvedEntries.push({
+            ledgerId,
+            ledgerName,
+            debit: entry.debit || 0,
+            credit: entry.credit || 0,
+            accountType: entry.accountType
+        });
+    }
+
+    // 2. Validate double-entry totals
+    let totalDebit = 0;
+    let totalCredit = 0;
+    for (const e of resolvedEntries) {
+        totalDebit += e.debit;
+        totalCredit += e.credit;
+    }
+    if (Math.abs(totalDebit - totalCredit) > 0.01) {
+        return { error: "Voucher entries are unbalanced: Total Debits must equal Total Credits." };
+    }
+
+    // 3. Validation Rules by Voucher Type
+
+    // Payment & Receipt rules
+    if (voucherType === "Payment" || voucherType === "Receipt") {
+        const mode = legacyMetadata?.mode;
+
+        // Ensure there is at least one cash/bank ledger (cash flow source/destination)
+        const cashFlowEntries = [];
+        for (const entry of resolvedEntries) {
+            if (await isCashFlow(entry.ledgerId)) {
+                cashFlowEntries.push(entry);
+            }
+        }
+
+        if (cashFlowEntries.length === 0) {
+            return { error: `${voucherType} voucher must target at least one cash/bank account.` };
+        }
+
+        // Enforce that cash flow ledger must be Bank or the logged-in user's own Petty Cash book
+        for (const cfEntry of cashFlowEntries) {
+            const isAllowed = await isAllowedUserCashFlowLedger(req.tenantModels, cfEntry.ledgerId, req.user?._id);
+            if (!isAllowed) {
+                return { error: `${voucherType} cash flow must target Bank or your own Petty Cash book.` };
+            }
+        }
+
+        // Check if any entry targets a Staff ledger
+        let hasStaff = false;
+        let staffDebitOnly = true;
+        for (const entry of resolvedEntries) {
+            if (await isEmployeeLedger(entry.ledgerId)) {
+                hasStaff = true;
+                if (entry.credit > 0) {
+                    staffDebitOnly = false;
+                }
+            }
+        }
+
+        if (hasStaff) {
+            if (mode !== "salary" && mode !== "advance") {
+                return { error: `Employee accounts cannot be targeted in standard ${voucherType} vouchers. Use Salary or Advance mode.` };
+            }
+            if (!staffDebitOnly) {
+                return { error: `Employee account must be debited in ${mode} mode.` };
+            }
+        }
+    }
+
+    // Contra rules
+    else if (voucherType === "Contra") {
+        if (resolvedEntries.length !== 2) {
+            return { error: "Contra fund transfer must have exactly 2 entries (one Dr and one Cr)." };
+        }
+        // Both entries must be cash flow accounts
+        for (const entry of resolvedEntries) {
+            if (!(await isCashFlow(entry.ledgerId))) {
+                return { error: "Contra entries must strictly mobilize funds between cash/bank accounts." };
+            }
+        }
+
+        // Payer user checking (relaxed to check only if Cr is petty cash/user)
+        const crEntry = resolvedEntries.find(e => e.credit > 0);
+        if (crEntry) {
+            const ledger = await Ledgers.findById(crEntry.ledgerId).lean();
+            if (ledger && ledger.refType === "User") {
+                const isAdmin = ["CorpAdmin", "userAdmin", "Finance"].includes(req.user?.userRole);
+                if (!isAdmin && String(ledger.refId) !== String(req.user?._id)) {
+                    return { error: "Contra: You can only transfer cash OUT of your own Petty Cash book." };
+                }
+            }
+        }
+    }
+
+    // Journal rules
+    else if (voucherType === "Journal") {
+        for (const entry of resolvedEntries) {
+            if (await isCashFlow(entry.ledgerId)) {
+                return { error: "Journal vouchers cannot contain cash or bank accounts. Use Payment, Receipt, or Contra." };
+            }
+        }
+    }
+
+    // 4. Project-wise Analytics (leadId) enforcement
+    let requiresLead = false;
+    if (voucherType === "Sales" || voucherType === "Purchase") {
+        requiresLead = true;
+    }
+    for (const entry of resolvedEntries) {
+        if (await isEmployeeLedger(entry.ledgerId)) {
+            requiresLead = true;
+            break;
+        }
+        const ledger = await Ledgers.findById(entry.ledgerId).lean();
+        if (ledger) {
+            const group = await Groups.findById(ledger.ledgerGroupId).lean();
+            if (group) {
+                const gName = (group.groupName || "").toLowerCase();
+                const gNature = (group.nature || "").toLowerCase();
+                if (gNature === "expense" || gNature === "revenue" ||
+                    gName.includes("expense") || gName.includes("purchase") ||
+                    gName.includes("sales") || gName.includes("income") ||
+                    gName.includes("revenue")) {
+                    requiresLead = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (requiresLead && (!leadId || !mongoose.Types.ObjectId.isValid(leadId))) {
+        return { error: "Project/Enquiry linkage (leadId) is required for Sales, Purchase, Salary, and Expense entries." };
+    }
+
+    return { resolvedEntries };
+};
+
+/**
+ * 🎫 VOUCHERS MANAGEMENT
+ */
 exports.manageVouchers = {
     list: async (req, res) => {
         try {
@@ -609,8 +907,8 @@ exports.manageVouchers = {
     },
     create: async (req, res) => {
         try {
-            const { Vouchers, Counters, Leads, Employees } = req.tenantModels;
-            const { voucherType, locationId, entries } = req.body;
+            const { Vouchers, Counters } = req.tenantModels;
+            const { voucherType, locationId, entries, leadId, legacyMetadata } = req.body;
 
             // 1. Resolve Branch Location ID
             let resolvedLocId = locationId;
@@ -626,122 +924,34 @@ exports.manageVouchers = {
                 return res.status(400).json({ success: false, message: "entries array is required" });
             }
 
-            if (voucherType === "Receipt") {
-                const activeCashFlowUsers = await getActiveCashFlowUsers(req.tenantDbName || req.user?.dbName);
-                const activeUserIds = new Set(activeCashFlowUsers.map(user => String(user._id)));
-                const debitEntries = entries.filter(e => (e.type === "Dr" || e.debit > 0) && (e.debit || 0) > 0);
-
-                for (const debitEntry of debitEntries) {
-                    // ✅ Allow cash_in_hand (active user's own petty cash)
-                    if (debitEntry.ledgerId === "cash_in_hand") {
-                        if (!activeUserIds.has(String(req.user?._id))) {
-                            return res.status(400).json({
-                                success: false,
-                                message: "Receipt must be received into an active user's Petty Cash book."
-                            });
-                        }
-                        continue;
-                    }
-
-                    // ✅ Allow main_bank (direct bank deposit)
-                    if (debitEntry.ledgerId === "main_bank") continue;
-
-                    if (!mongoose.Types.ObjectId.isValid(debitEntry.ledgerId)) {
-                        return res.status(400).json({
-                            success: false,
-                            message: "Receipt debit account must be an active user's Petty Cash book or Bank Account."
-                        });
-                    }
-
-                    const debitLedger = await req.tenantModels.Ledgers.findById(debitEntry.ledgerId).lean();
-
-                    // ✅ Allow ledgers in the Bank Accounts group
-                    if (debitLedger) {
-                        const debitGroup = await req.tenantModels.Groups.findById(debitLedger.ledgerGroupId).lean();
-                        if (debitGroup && (debitGroup.groupName === "Bank Accounts" || debitGroup.groupName === "Cash-in-hand")) {
-                            continue; // Bank or Cash group — allowed
-                        }
-                        // ✅ Allow active user's registered petty cash book
-                        if (debitLedger.refType === "User" && activeUserIds.has(String(debitLedger.refId))) {
-                            continue;
-                        }
-                    }
-
-                    return res.status(400).json({
-                        success: false,
-                        message: "Receipt must be received into an active user's Petty Cash book or a Bank Account."
-                    });
-                }
+            // 2. Resolve and Validate entries using the unified helper
+            const validation = await resolveAndValidateVoucher(req, voucherType, entries, leadId, legacyMetadata);
+            if (validation.error) {
+                return res.status(400).json({ success: false, message: validation.error });
             }
 
-            // --- CONTRA RULES ENFORCEMENT ---
+            const resolvedEntries = validation.resolvedEntries;
+
+            // 3. Resolve Contra approvals and metadata if applicable
+            let approvalPending = false;
+            let contraMetadata = null;
+
             if (voucherType === "Contra") {
-                if (entries.length !== 2) {
-                    return res.status(400).json({ success: false, message: "Contra fund transfer must have exactly 2 entries (one Dr and one Cr)." });
-                }
-
-                const drEntry = entries.find(e => e.type === "Dr" || e.debit > 0);
-                const crEntry = entries.find(e => e.type === "Cr" || e.credit > 0);
-
-                if (!drEntry || !crEntry) {
-                    return res.status(400).json({ success: false, message: "Contra must contain one debit (receiving) and one credit (paying) entry." });
-                }
-
-                // Enforce payer (CrEntry) is the user's own cash account (maps to cash_in_hand or logged in user's Petty Cash book)
-                let crLedgerId = crEntry.ledgerId;
-                if (crLedgerId !== "cash_in_hand") {
-                    if (mongoose.Types.ObjectId.isValid(crLedgerId)) {
-                        const crLedger = await req.tenantModels.Ledgers.findById(crLedgerId).lean();
-                        if (crLedger) {
-                            if (crLedger.refType !== "User" || String(crLedger.refId) !== String(req.user?._id)) {
-                                return res.status(400).json({
-                                    success: false,
-                                    message: "Contra Security Guard: You can only transfer funds OUT of your own Petty Cash book."
-                                });
-                            }
-                        }
-                    } else {
-                        return res.status(400).json({
-                            success: false,
-                            message: "Contra Security Guard: Payer account must be your own Petty Cash book."
-                        });
-                    }
-                }
-
-                // Enforce destination (DrEntry) is either Main Bank or another user's petty cash book
-                let drLedgerId = drEntry.ledgerId;
-                let isDrValid = false;
+                const drEntry = resolvedEntries.find(e => e.debit > 0);
                 let destUserId = null;
-
-                if (drLedgerId === "main_bank") {
-                    isDrValid = true;
-                } else if (mongoose.Types.ObjectId.isValid(drLedgerId)) {
-                    const drLedger = await req.tenantModels.Ledgers.findById(drLedgerId).lean();
-                    if (drLedger) {
-                        const drGroup = await req.tenantModels.Groups.findById(drLedger.ledgerGroupId).lean();
-                        const drGroupName = drGroup ? drGroup.groupName : "";
-                        if (drGroupName === "Bank Accounts" || drGroupName === "Cash-in-hand" || drLedger.ledgerName.includes("Petty Cash")) {
-                            isDrValid = true;
-                            if (drLedger.refType === "User" || drLedger.refId) {
-                                destUserId = drLedger.refId;
-                            }
-                        }
+                if (drEntry) {
+                    const drLedger = await req.tenantModels.Ledgers.findById(drEntry.ledgerId).lean();
+                    if (drLedger && drLedger.refType === "User") {
+                        destUserId = drLedger.refId;
                     }
-                }
-
-                if (!isDrValid) {
-                    return res.status(400).json({
-                        success: false,
-                        message: "Contra Security Guard: Destination must be Main Bank or another user's Petty Cash book."
-                    });
                 }
 
                 const userRole = req.user?.userRole;
                 const isAdmin = userRole === "CorpAdmin" || userRole === "userAdmin" || userRole === "Finance";
 
                 if (isAdmin) {
-                    req.body.approvalPending = false;
-                    req.body.contraMetadata = {
+                    approvalPending = false;
+                    contraMetadata = {
                         payerUserId: req.user?._id,
                         receiverUserId: destUserId,
                         payerApproved: true,
@@ -750,8 +960,8 @@ exports.manageVouchers = {
                         receiverDeclarationDate: new Date()
                     };
                 } else {
-                    req.body.approvalPending = true;
-                    req.body.contraMetadata = {
+                    approvalPending = true;
+                    contraMetadata = {
                         payerUserId: req.user?._id,
                         receiverUserId: destUserId,
                         payerApproved: true, // Payer declares paid immediately
@@ -761,113 +971,7 @@ exports.manageVouchers = {
                 }
             }
 
-            // 2. Resolve or Auto-Create Ledger Folios for all entries
-            const resolvedEntries = [];
-            for (const entry of entries) {
-                let ledgerId = entry.ledgerId;
-                let ledgerName = entry.ledgerName || "";
-                const accountType = entry.accountType;
-
-                // A. Resolve core cash / bank / expense placeholders
-                if (ledgerId === "cash_in_hand" || ledgerId === "main_bank" || ledgerId === "office_rent" ||
-                    ledgerId === "electricity_bill" || ledgerId === "stationary_expense" ||
-                    ledgerId === "interest_income" || ledgerId === "uniform_equipment") {
-
-                    let targetName = "Cash Book";
-                    let targetGroup = "Cash-in-hand";
-                    let nature = "Dr";
-                    let refId = null;
-                    let refType = null;
-
-                    if (ledgerId === "cash_in_hand") {
-                        targetName = `Petty Cash - ${req.user?.userDisplayName || "General User"}`;
-                        targetGroup = "Cash-in-hand";
-                        refId = req.user?._id || null;
-                        refType = "User";
-                    } else if (ledgerId === "main_bank") {
-                        targetName = "Main Bank Account";
-                        targetGroup = "Bank Accounts";
-                    } else if (ledgerId === "office_rent") {
-                        targetName = "Office Rent";
-                        targetGroup = "Indirect Expenses";
-                    } else if (ledgerId === "electricity_bill") {
-                        targetName = "Electricity Bill";
-                        targetGroup = "Indirect Expenses";
-                    } else if (ledgerId === "stationary_expense") {
-                        targetName = "Stationary & Printing";
-                        targetGroup = "Indirect Expenses";
-                    } else if (ledgerId === "interest_income") {
-                        targetName = "Interest Income";
-                        targetGroup = "Indirect Income";
-                        nature = "Cr";
-                    } else if (ledgerId === "uniform_equipment") {
-                        targetName = "Uniform & Equipment";
-                        targetGroup = "Direct Expenses";
-                    }
-
-                    const resolvedLedger = await exports.ensureLedgerFolioInternal(req.tenantModels, {
-                        name: targetName,
-                        group: targetGroup,
-                        nature,
-                        refId,
-                        refType
-                    });
-                    ledgerId = resolvedLedger._id;
-                    ledgerName = resolvedLedger.ledgerName || resolvedLedger.name;
-                }
-
-                // B. Resolve Lead-linked folios
-                else if (accountType === "Lead" || (mongoose.Types.ObjectId.isValid(ledgerId) && await Leads.exists({ _id: ledgerId }))) {
-                    const lead = await Leads.findById(ledgerId).lean();
-                    if (lead) {
-                        const resolvedLedger = await exports.ensureLedgerFolioInternal(req.tenantModels, {
-                            name: lead.sender_name,
-                            group: "Sundry Debtors",
-                            refId: lead._id,
-                            refType: "Lead",
-                            nature: "Dr"
-                        });
-                        ledgerId = resolvedLedger._id;
-                        ledgerName = resolvedLedger.ledgerName || resolvedLedger.name;
-                    }
-                }
-
-                // C. Resolve Employee/Staff-linked folios
-                else if (accountType === "Staff" || (mongoose.Types.ObjectId.isValid(ledgerId) && await Employees.exists({ _id: ledgerId }))) {
-                    const employee = await Employees.findById(ledgerId).lean();
-                    if (employee) {
-                        const resolvedLedger = await exports.ensureLedgerFolioInternal(req.tenantModels, {
-                            name: employee.name,
-                            group: "Direct Expenses",
-                            refId: employee._id,
-                            refType: "Staff",
-                            nature: "Dr"
-                        });
-                        ledgerId = resolvedLedger._id;
-                        ledgerName = resolvedLedger.ledgerName || resolvedLedger.name;
-                    }
-                }
-
-                // D. Fallback for invalid ObjectIds
-                else if (!mongoose.Types.ObjectId.isValid(ledgerId)) {
-                    const resolvedLedger = await exports.ensureLedgerFolioInternal(req.tenantModels, {
-                        name: ledgerName || "General Suspense",
-                        group: "Current Assets",
-                        nature: "Dr"
-                    });
-                    ledgerId = resolvedLedger._id;
-                    ledgerName = resolvedLedger.ledgerName || resolvedLedger.name;
-                }
-
-                resolvedEntries.push({
-                    ledgerId,
-                    ledgerName,
-                    debit: entry.debit || 0,
-                    credit: entry.credit || 0,
-                });
-            }
-
-            // 3. Location-specific counter & Voucher generation
+            // 4. Location-specific counter & Voucher generation
             const counterId = `voucher_${voucherType}_${resolvedLocId}`;
             const counter = await Counters.findByIdAndUpdate(counterId, { $inc: { seq: 1 } }, { upsert: true, new: true });
 
@@ -875,6 +979,8 @@ exports.manageVouchers = {
                 ...req.body,
                 locationId: resolvedLocId,
                 entries: resolvedEntries,
+                approvalPending,
+                contraMetadata,
                 voucherNo: `${voucherType.substring(0, 3).toUpperCase()}-${resolvedLocId.toString().slice(-4)}-${counter.seq}`
             });
             await voucher.save();
@@ -907,11 +1013,24 @@ exports.manageVouchers = {
         try {
             const { Vouchers } = req.tenantModels;
             const oldVoucher = await Vouchers.findById(req.params.id).lean();
-            const oldLedgerIds = oldVoucher ? oldVoucher.entries.map(e => e.ledgerId) : [];
+            if (!oldVoucher) return res.status(404).json({ success: false, message: "Voucher not found" });
 
+            const voucherType = req.body.voucherType || oldVoucher.voucherType;
+            const entries = req.body.entries || oldVoucher.entries;
+            const leadId = req.body.leadId !== undefined ? req.body.leadId : oldVoucher.leadId;
+            const legacyMetadata = req.body.legacyMetadata || oldVoucher.legacyMetadata;
+
+            // Validate and resolve
+            const validation = await resolveAndValidateVoucher(req, voucherType, entries, leadId, legacyMetadata);
+            if (validation.error) {
+                return res.status(400).json({ success: false, message: validation.error });
+            }
+
+            // Overwrite entries with resolved ones
+            req.body.entries = validation.resolvedEntries;
+
+            const oldLedgerIds = oldVoucher.entries.map(e => e.ledgerId);
             const item = await Vouchers.findByIdAndUpdate(req.params.id, req.body, { new: true });
-            if (!item) return res.status(404).json({ success: false, message: "Voucher not found" });
-
             const newLedgerIds = item.entries.map(e => e.ledgerId);
             const allLedgerIds = [...oldLedgerIds, ...newLedgerIds];
             await recalculateLedgerBalances(req.tenantModels, allLedgerIds);

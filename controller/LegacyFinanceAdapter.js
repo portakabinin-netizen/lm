@@ -122,13 +122,42 @@ exports.getStaffPicker = async (req, res) => {
 exports.addContact = async (req, res) => {
     try {
         const { Parties } = req.tenantModels;
+        const isSupplier = req.body.type === "Supplier";
         const newParty = new Parties({
             name: req.body.name,
             mobile: req.body.mobile,
-            type: req.body.type === "Supplier" ? "Supplier" : "Client" // Simplified mapping
+            type: isSupplier ? "Supplier" : "Client" // Simplified mapping
         });
         await newParty.save();
-        res.status(201).json({ success: true, data: { _id: newParty._id, name: newParty.name, mobile: newParty.mobile, type: req.body.type } });
+
+        // Auto-create ledger folio
+        try {
+            const ledger = await ensureLedgerFolioInternal(req.tenantModels, {
+                ledgerName: newParty.name,
+                groupName: isSupplier ? "Sundry Creditors" : "Sundry Debtors",
+                parentGroup: isSupplier ? "Current Liabilities" : "Current Assets",
+                refId: newParty._id,
+                refType: isSupplier ? "Vendor" : "Client",
+                nature: isSupplier ? "Cr" : "Dr"
+            });
+            if (ledger) {
+                newParty.ledgerId = ledger._id;
+                await newParty.save();
+            }
+        } catch (err) {
+            console.error("Legacy addContact ledger creation failed:", err.message);
+        }
+
+        res.status(201).json({
+            success: true,
+            data: {
+                _id: newParty._id,
+                name: newParty.name,
+                mobile: newParty.mobile,
+                type: req.body.type,
+                ledgerId: newParty.ledgerId
+            }
+        });
     } catch (err) {
         res.status(500).json({ success: false, message: err.message });
     }

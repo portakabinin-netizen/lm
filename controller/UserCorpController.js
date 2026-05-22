@@ -678,13 +678,17 @@ exports.manageEmployees = {
             // 🚀 Auto-create Ledger
             try {
                 const FinanceController = require('./FinanceController');
-                await FinanceController.ensureLedgerFolioInternal(req.tenantModels, {
+                const ledger = await FinanceController.ensureLedgerFolioInternal(req.tenantModels, {
                     name: emp.name,
                     group: "Account Payables",
                     parentGroup: "Current Liabilities",
                     refId: emp._id,
                     refType: "Staff"
                 });
+                if (ledger) {
+                    emp.ledgerId = ledger._id;
+                    await emp.save();
+                }
             } catch (err) { console.error("Employee-Ledger Auto Init Failed:", err.message); }
 
             res.status(201).json({ success: true, data: emp });
@@ -712,17 +716,17 @@ exports.manageEmployees = {
             // 🚀 Auto-create/Update Ledger Name
             try {
                 const FinanceController = require('./FinanceController');
-                // Ensure ledger exists (postSalaryJournal logic handles existence)
-                // We don't want to post a 0 journal every update, so maybe we need a dedicated ensureLedger logic
-                // But the user said "create employee ledger if not exit", so I'll just use a dedicated helper if I add one.
-                // Actually, I'll just use ensureLedgerFolioInternal for simplicity if available.
-                await FinanceController.ensureLedgerFolioInternal(req.tenantModels, {
+                const ledger = await FinanceController.ensureLedgerFolioInternal(req.tenantModels, {
                     name: emp.name,
                     group: "Account Payables",
                     refId: emp._id,
                     refType: "Staff",
                     nature: "Cr"
                 });
+                if (ledger && !emp.ledgerId) {
+                    emp.ledgerId = ledger._id;
+                    await emp.save();
+                }
             } catch (err) { console.error("Employee-Ledger Auto Sync Failed:", err.message); }
 
             res.json({ success: true, data: emp });
@@ -1555,10 +1559,53 @@ exports.manageClients = {
             const { Parties } = req.tenantModels;
             const item = new Parties({ ...req.body, type: "Client" });
             await item.save();
+
+            // Auto-create client ledger
+            try {
+                const FinanceController = require('./FinanceController');
+                const ledger = await FinanceController.ensureLedgerFolioInternal(req.tenantModels, {
+                    ledgerName: item.name,
+                    groupName: "Sundry Debtors",
+                    parentGroup: "Current Assets",
+                    refId: item._id,
+                    refType: "Client",
+                    nature: "Dr"
+                });
+                if (ledger) {
+                    item.ledgerId = ledger._id;
+                    await item.save();
+                }
+            } catch (err) { console.error("Client-Ledger Auto Init Failed:", err.message); }
+
             res.status(201).json({ success: true, data: item });
         } catch (err) { res.status(500).json({ success: false, message: err.message }); }
     },
-    update: (req, res) => manageSpoke.update(req, res, "Parties"),
+    update: async (req, res) => {
+        try {
+            const { Parties } = req.tenantModels;
+            const item = await Parties.findByIdAndUpdate(req.params.id, req.body, { new: true });
+            if (!item) return res.status(404).json({ success: false, message: "Client not found" });
+
+            // Auto-create/update client ledger
+            try {
+                const FinanceController = require('./FinanceController');
+                const ledger = await FinanceController.ensureLedgerFolioInternal(req.tenantModels, {
+                    ledgerName: item.name,
+                    groupName: "Sundry Debtors",
+                    parentGroup: "Current Assets",
+                    refId: item._id,
+                    refType: "Client",
+                    nature: "Dr"
+                });
+                if (ledger && !item.ledgerId) {
+                    item.ledgerId = ledger._id;
+                    await item.save();
+                }
+            } catch (err) { console.error("Client-Ledger Auto Sync Failed:", err.message); }
+
+            res.json({ success: true, data: item });
+        } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+    },
     delete: (req, res) => manageSpoke.delete(req, res, "Parties")
 };
 
@@ -1569,9 +1616,52 @@ exports.manageSuppliers = {
             const { Parties } = req.tenantModels;
             const item = new Parties({ ...req.body, type: "Supplier" });
             await item.save();
+
+            // Auto-create supplier ledger
+            try {
+                const FinanceController = require('./FinanceController');
+                const ledger = await FinanceController.ensureLedgerFolioInternal(req.tenantModels, {
+                    ledgerName: item.name,
+                    groupName: "Sundry Creditors",
+                    parentGroup: "Current Liabilities",
+                    refId: item._id,
+                    refType: "Vendor",
+                    nature: "Cr"
+                });
+                if (ledger) {
+                    item.ledgerId = ledger._id;
+                    await item.save();
+                }
+            } catch (err) { console.error("Supplier-Ledger Auto Init Failed:", err.message); }
+
             res.status(201).json({ success: true, data: item });
         } catch (err) { res.status(500).json({ success: false, message: err.message }); }
     },
-    update: (req, res) => manageSpoke.update(req, res, "Parties"),
+    update: async (req, res) => {
+        try {
+            const { Parties } = req.tenantModels;
+            const item = await Parties.findByIdAndUpdate(req.params.id, req.body, { new: true });
+            if (!item) return res.status(404).json({ success: false, message: "Supplier not found" });
+
+            // Auto-create/update supplier ledger
+            try {
+                const FinanceController = require('./FinanceController');
+                const ledger = await FinanceController.ensureLedgerFolioInternal(req.tenantModels, {
+                    ledgerName: item.name,
+                    groupName: "Sundry Creditors",
+                    parentGroup: "Current Liabilities",
+                    refId: item._id,
+                    refType: "Vendor",
+                    nature: "Cr"
+                });
+                if (ledger && !item.ledgerId) {
+                    item.ledgerId = ledger._id;
+                    await item.save();
+                }
+            } catch (err) { console.error("Supplier-Ledger Auto Sync Failed:", err.message); }
+
+            res.json({ success: true, data: item });
+        } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+    },
     delete: (req, res) => manageSpoke.delete(req, res, "Parties")
 };
