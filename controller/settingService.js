@@ -282,11 +282,11 @@ const updateAdminUser = {
   // ── GET ────────────────────────────────────────────────────────────────────
   getAdminUser: async (req, res) => {
     try {
-      const admin = await resolveCorpAdmin(req);
-      if (!admin) return res.status(404).json({ message: "CorpAdmin not found" });
+      const user = await userMaster.findById(req.user.userId).lean();
+      if (!user) return res.status(404).json({ message: "User not found" });
 
-      const { userPassword, ...safe } = admin; // never return hashed password
-      return res.status(200).json({ message: "Admin user fetched", data: safe });
+      const { userPassword, ...safe } = user; // never return hashed password
+      return res.status(200).json({ message: "User fetched", data: { user: safe } });
     } catch (err) {
       console.error("[getAdminUser]", err);
       return res.status(500).json({ message: "Server error", error: err.message });
@@ -294,12 +294,12 @@ const updateAdminUser = {
   },
 
   // ── PUT ───────────────────────────────────────────────────────────────────
-    postAdminUser: async (req, res) => {
+  postAdminUser: async (req, res) => {
     try {
-      const admin = await resolveCorpAdmin(req);
-      if (!admin) {
-        console.warn("⚠️ [postAdminUser] resolveCorpAdmin failed to find admin for user:", req.user?.userId);
-        return res.status(404).json({ message: "CorpAdmin not found" });
+      const user = await userMaster.findById(req.user.userId);
+      if (!user) {
+        console.warn("⚠️ [postAdminUser] Failed to find user:", req.user?.userId);
+        return res.status(404).json({ message: "User not found" });
       }
 
       const b = req.body;
@@ -311,22 +311,18 @@ const updateAdminUser = {
       if (clean(b.userMobile)) $set.userMobile = clean(b.userMobile);
       if (clean(b.userAadhar)) $set.userAadhar = clean(b.userAadhar);
       if (b.userDoB) $set.userDoB = new Date(b.userDoB);
-      if (typeof b.userActive === "boolean") $set.userActive = b.userActive;
+      if (req.user?.userRole === "CorpAdmin" && typeof b.userActive === "boolean") {
+        $set.userActive = b.userActive;
+      }
       if (clean(b.userProfileImage)) $set.userProfileImage = clean(b.userProfileImage);
       if (b.addresses) $set.addresses = b.addresses;
-
 
       // ── Password change (optional) ─────────────────────────────────────────
       if (clean(b.newPassword)) {
         if (!clean(b.currentPassword)) {
           return res.status(400).json({ message: "currentPassword is required to change password" });
         }
-        const doc = await userMaster.findById(admin._id); // need the document for bcrypt
-        if (!doc) {
-           console.error(`❌ [postAdminUser] Document not found for ID ${admin._id}`);
-           return res.status(404).json({ message: "User document not found" });
-        }
-        const ok = await bcrypt.compare(b.currentPassword, doc.userPassword);
+        const ok = await bcrypt.compare(b.currentPassword, user.userPassword);
         if (!ok) return res.status(401).json({ message: "Current password is incorrect" });
 
         const salt = await bcrypt.genSalt(10);
@@ -338,18 +334,18 @@ const updateAdminUser = {
       }
 
       const updated = await userMaster.findByIdAndUpdate(
-        admin._id,
+        req.user.userId,
         { $set },
         { new: true, runValidators: true }
       ).lean();
 
       if (!updated) {
-          console.error(`❌ [postAdminUser] findByIdAndUpdate returned null for ${admin._id}`);
+          console.error(`❌ [postAdminUser] findByIdAndUpdate returned null for ${req.user.userId}`);
           return res.status(500).json({ message: "Failed to update user document" });
       }
 
       const { userPassword, ...safe } = updated;
-      return res.status(200).json({ message: "Admin user updated", data: safe });
+      return res.status(200).json({ message: "User updated", data: { user: safe } });
     } catch (err) {
       console.error("🔴 [postAdminUser] Critical Error:", err);
       if (err.name === 'ValidationError') {
