@@ -139,6 +139,7 @@ const leadSchema = new mongoose.Schema({
 //   N2 = Night 12h  (18:00–06:00)
 const attendanceSchema = new mongoose.Schema({
     employeeId: { type: mongoose.Schema.Types.ObjectId, ref: 'Employees', required: true },
+    role: { type: String, trim: true },
     date: { type: Date, required: true },
     status: { type: String, enum: ["Present", "Absent", "Leave"], default: "Present" },
     dutyLevel: { type: Number, default: 1 },

@@ -779,7 +779,7 @@ exports.manageEmployees = {
     },
     markAttendance: async (req, res) => {
         try {
-            const { Attendance } = req.tenantModels;
+            const { Attendance, Employees } = req.tenantModels;
             const {
                 employeeId, leadId, status, dutyLevel, rate, date, site_name, remarks,
                 dutyStart, dutyEnd, forcedOff, forcedOffReason, clientId, location, geoHistory,
@@ -787,8 +787,18 @@ exports.manageEmployees = {
                 shiftCode, shiftType, shiftPeriod, shiftLockHours
             } = req.body;
 
+            let role = 'project';
+            const emp = await Employees.findById(employeeId).lean();
+            if (emp) role = emp.role || 'project';
+            else {
+                const userMaster = require("../models/userMaster");
+                const user = await userMaster.findById(employeeId).lean();
+                if (user) role = user.userRole || 'project';
+            }
+
             const record = new Attendance({
                 employeeId,
+                role,
                 leadId,
                 clientId: clientId || null,
                 status: status || "Present",
@@ -1052,6 +1062,7 @@ exports.manageEmployees = {
                 const scheduledEnd = new Date(now.getTime() + lockHrs * 3600000);
                 record = new Attendance({
                     employeeId,
+                    role: emp.role || emp.userRole || 'project',
                     date: now,
                     dutyStart: now,
                     dutyEndScheduled: scheduledEnd,

@@ -132,7 +132,18 @@ const employeeSchema = new mongoose.Schema({
     dob: { type: Date },
     gender: { type: String, enum: ["Male", "Female", "Transgender"], default: "Male" },
     photo_url: { type: String, trim: true },
-    employmentHistory: [employmentHistoryEntrySchema],
+    employmentHistory: [{
+        joinDate: { type: Date },
+        daily_rate: { type: Number, default: 0 },
+        monthly_rate: { type: Number, default: 0 },
+        shiftStartTime: { type: String, trim: true },
+        shiftHours: { type: Number, default: 8 },
+        groupName: { type: String, enum: ['MANG', 'DaNi', null], default: null },
+        shiftName: { type: String, enum: ['Morning', 'Afternoon', 'Night', 'General', 'Day', null], default: null },
+        active: { type: Boolean, default: true },
+        endDate: { type: Date },
+        notes: { type: String, trim: true },
+    }],
     bank: bankAccountSchema,
     addresses: employeeAddressSchema,
     joinDate: { type: Date },
@@ -195,6 +206,7 @@ const voucherSchema = new mongoose.Schema({
 // 📅 Attendance Schema
 const attendanceSchema = new mongoose.Schema({
     employeeId: { type: mongoose.Schema.Types.ObjectId, required: true },
+    role: { type: String, trim: true },
     date: { type: Date, required: true },
     status: { type: String, enum: ["Present", "Absent", "Leave"], default: "Present" },
     dutyStart: { type: Date },
