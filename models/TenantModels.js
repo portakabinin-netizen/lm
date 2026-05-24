@@ -96,7 +96,12 @@ const employeeSchema = new mongoose.Schema({
     bank: bankAccountSchema,
     addresses: employeeAddressSchema,
     active: { type: Boolean, default: true },
-    ledgerId: { type: mongoose.Schema.Types.ObjectId, ref: "Ledgers" }
+    ledgerId: { type: mongoose.Schema.Types.ObjectId, ref: "Ledgers" },
+    user_id: { type: mongoose.Schema.Types.ObjectId, ref: 'userMaster' },
+    userRole: { type: String, trim: true },
+    shiftGroupName: { type: String, enum: ['MANG', 'DaNi', null], default: null },
+    selectedShift: { type: String, trim: true },
+    monthlyRate: { type: Number, default: 0 }
 }, { timestamps: true });
 
 // 5. Leads (CRM)
@@ -153,10 +158,18 @@ const attendanceSchema = new mongoose.Schema({
     // ── Shift Control ──
     // MANG = 8hr group: M(Morning), A(Afternoon), N(Night), G(General)
     // DaNi = 12hr group: D(Day), N2(Night)
+    shiftGroupName: { type: String, enum: ['MANG', 'DaNi', null], default: null },
     shiftCode: { type: String, enum: ['M', 'A', 'N', 'G', 'D', 'N2', null], default: null },
     shiftType: { type: String, enum: ['8hr', '12hr'], default: '8hr' },
     shiftPeriod: { type: String, enum: ['Morning', 'Afternoon', 'Night', 'General', 'Day', 'Night12'], default: 'Morning' },
+    shiftHours: { type: Number, default: 8 },
     shiftLockHours: { type: Number, default: 8 }, // 8 or 12 depending on shift
+    defaultShiftStart: { type: String, trim: true }, // e.g. "06:00"
+    // ── Rates & Earnings ──
+    monthlyRate: { type: Number, default: 0 },
+    dailyRate: { type: Number, default: 0 },
+    dailyEarn: { type: Number, default: 0 },
+    dutyCount: { type: Number, default: 1 },
     // ── Double / Consecutive Shift ──
     isDoubleShift: { type: Boolean, default: false },           // true if worker continued into next shift
     previousShiftId: { type: mongoose.Schema.Types.ObjectId, ref: 'Attendance', default: null }, // links to prior shift record

@@ -755,7 +755,7 @@ exports.manageEmployees = {
                 }
                 
                 if (Object.keys(dateFilter).length > 0) {
-                    // Include either the date range OR anything that is still "On Duty" (if filtering for specific user)
+                    // Include either the date range OR anything that is still "On Duty"
                     if (q.employeeId) {
                         q = {
                             employeeId: q.employeeId,
@@ -766,7 +766,13 @@ exports.manageEmployees = {
                             ]
                         };
                     } else {
-                        q.date = dateFilter;
+                        q = {
+                            $or: [
+                                { date: dateFilter },
+                                { dutyEnd: { $exists: false } },
+                                { dutyEnd: null }
+                            ]
+                        };
                     }
                 }
             }
@@ -829,7 +835,8 @@ exports.manageEmployees = {
             const allowed = [
                 'forcedOff', 'forcedOffReason', 'status', 'rate',
                 'geoHistory', 'emergencyOff', 'emergencyReason',
-                'emergencyByUser', 'shiftCode', 'shiftType', 'shiftPeriod'
+                'emergencyByUser', 'shiftCode', 'shiftType', 'shiftPeriod', 'dutyEnd',
+                'dailyRate', 'dailyEarn'
             ];
             const update = {};
             allowed.forEach(k => { if (req.body[k] !== undefined) update[k] = req.body[k]; });
@@ -838,31 +845,53 @@ exports.manageEmployees = {
             const mongoUpdate = Object.keys(update).length ? { $set: update } : {};
             if (req.body.$push) mongoUpdate.$push = req.body.$push;
 
-            // Auto-calculate hours worked on duty end
+            // Auto-calculate hours worked and daily earn on duty end
             if (update.dutyEnd) {
-                const existing = await Attendance.findById(req.params.id).select('dutyStart').lean();
+                const existing = await Attendance.findById(req.params.id).select('dutyStart shiftHours shiftLockHours dailyRate rate').lean();
                 if (existing?.dutyStart) {
                     const hrs = (new Date(update.dutyEnd) - new Date(existing.dutyStart)) / 3600000;
                     update.hoursWorked = parseFloat(Math.max(0, hrs).toFixed(2));
-                    mongoUpdate.$set = { ...update };
+                    
+                    const standardHours = existing.shiftHours || existing.shiftLockHours || 8;
+                    const usedRate = update.dailyRate || existing.dailyRate || existing.rate || 0;
+                    update.dailyEarn = parseFloat(((update.hoursWorked / standardHours) * usedRate).toFixed(2));
                 }
             }
 
             const record = await Attendance.findById(req.params.id);
-            if (!record) return res.status(404).json({ success: false, message: "Attendance record not found" });
+            if (!record) {
+                console.log("🔴 [updateAttendance] Record not found:", req.params.id);
+                return res.status(404).json({ success: false, message: "Attendance record not found" });
+            }
 
             // 🔐 Permission Check: If salary is posted, only Admin/CorpAdmin can change rate
             if (record.isPosted && req.body.rate !== undefined && record.rate !== req.body.rate) {
                 const role = req.user?.userRole;
                 if (!['CorpAdmin', 'userAdmin'].includes(role)) {
+                    console.log("🔴 [updateAttendance] Forbidden. Role:", role);
                     return res.status(403).json({ success: false, message: "Only CorpAdmin or userAdmin can modify the rate after salary is posted." });
                 }
             }
 
+            // Apply manual updates
             Object.assign(record, update);
+            
+            // Apply $push if present
+            if (req.body.$push) {
+                for (const key in req.body.$push) {
+                    if (Array.isArray(record[key])) {
+                        record[key].push(req.body.$push[key]);
+                    }
+                }
+            }
+
             await record.save();
+            console.log("🟢 [updateAttendance] Saved successfully:", record._id);
             res.json({ success: true, data: record });
-        } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+        } catch (err) { 
+            console.error("🔴 [updateAttendance] Error:", err.message);
+            res.status(500).json({ success: false, message: err.message }); 
+        }
     },
     getRateLookup: async (req, res) => {
         try {
@@ -1060,17 +1089,26 @@ exports.manageEmployees = {
             if (record) return res.status(400).json({ success: false, message: "Duty already started" });
 
                 const scheduledEnd = new Date(now.getTime() + lockHrs * 3600000);
+                const fetchedMonthlyRate = emp.monthlyRate || 0;
+                const fetchedDailyRate = parseFloat((fetchedMonthlyRate / 30).toFixed(2));
+                const finalShiftCode = emp.selectedShift || shiftCode || activeShift?.shiftName?.substring(0,1) || 'G';
+                const finalShiftGroupName = emp.shiftGroupName || 'MANG';
+
                 record = new Attendance({
                     employeeId,
                     role: emp.role || emp.userRole || 'project',
                     date: now,
                     dutyStart: now,
                     dutyEndScheduled: scheduledEnd,
-                    shiftCode: shiftCode || activeShift?.shiftName?.substring(0,1) || 'G',
+                    shiftCode: finalShiftCode,
                     shiftType: shiftType || (lockHrs === 12 ? '12hr' : '8hr'),
                     shiftPeriod: shiftPeriod || activeShift?.shiftName || 'General',
+                    shiftGroupName: finalShiftGroupName,
+                    shiftHours: lockHrs,
                     shiftLockHours: lockHrs,
-                    rate: currentRate,
+                    monthlyRate: fetchedMonthlyRate,
+                    dailyRate: fetchedDailyRate,
+                    rate: fetchedDailyRate || currentRate,
                     geoHistory: [{ lat, long, address: address || '', type: 'start', timestamp: now }],
                     status: 'Present',
                     site_name: site_name || 'HQ/Remote',
@@ -1091,7 +1129,12 @@ exports.manageEmployees = {
                 const now = new Date();
                 const lockHrs = record.shiftLockHours || 8;
                 const elapsedHrs = (now - record.dutyStart) / 3600000;
-                const isLocked = elapsedHrs < lockHrs;
+                
+                let minRequiredHrs = lockHrs;
+                if (lockHrs === 8) minRequiredHrs = 7.5;
+                if (lockHrs === 12) minRequiredHrs = 11.5;
+                
+                const isLocked = elapsedHrs < minRequiredHrs;
 
                 // Shift lock enforcement
                 const requesterRole = req.user?.userRole;
@@ -1104,13 +1147,15 @@ exports.manageEmployees = {
                         success: false,
                         locked: true,
                         message: `Shift lock active. ${lockHrs}h shift not complete (${elapsedHrs.toFixed(1)}h elapsed). Contact supervisor to override.`,
-                        remainingHrs: parseFloat((lockHrs - elapsedHrs).toFixed(2))
+                        remainingHrs: parseFloat((minRequiredHrs - elapsedHrs).toFixed(2))
                     });
                 }
 
                 record.dutyEnd = now;
                 record.geoHistory.push({ lat, long, address: address || '', type: 'end', timestamp: now });
                 record.hoursWorked = parseFloat(Math.max(0, elapsedHrs).toFixed(2));
+                const standardHours = record.shiftHours || record.shiftLockHours || 8;
+                record.dailyEarn = parseFloat(((record.hoursWorked / standardHours) * (record.dailyRate || 0)).toFixed(2));
 
                 if (forcedOff) { record.forcedOff = true; record.forcedOffReason = forcedOffReason || 'Manual override'; }
                 if (emergencyOff) {
