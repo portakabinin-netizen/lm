@@ -446,13 +446,18 @@ exports.manageLeads = {
                 $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }]
             });
             if (active) {
-                active.geoHistory.push({
+                const tick = {
                     lat: location?.latitude || location?.lat,
                     long: location?.longitude || location?.long,
                     timestamp: new Date(),
                     note: `PIN Site: ${lead.sender_name}`
-                });
+                };
+                active.geoHistory.push(tick);
                 await active.save();
+                req.io.to(req.tenantDbName).emit('attendance:geo_update', {
+                    attendanceId: active._id,
+                    tick
+                });
             }
 
             req.io.to(req.tenantDbName).emit("lead:updated", { data: updatedLead });
@@ -846,8 +851,11 @@ exports.manageEmployees = {
             if (req.body.$push) mongoUpdate.$push = req.body.$push;
 
             // Auto-calculate hours worked and daily earn on duty end
+            let newlyEnded = false;
             if (update.dutyEnd) {
-                const existing = await Attendance.findById(req.params.id).select('dutyStart shiftHours shiftLockHours dailyRate rate').lean();
+                const existing = await Attendance.findById(req.params.id).select('dutyStart shiftHours shiftLockHours dailyRate rate dutyEnd').lean();
+                if (existing && !existing.dutyEnd) newlyEnded = true;
+                
                 if (existing?.dutyStart) {
                     const hrs = (new Date(update.dutyEnd) - new Date(existing.dutyStart)) / 3600000;
                     update.hoursWorked = parseFloat(Math.max(0, hrs).toFixed(2));
@@ -877,15 +885,39 @@ exports.manageEmployees = {
             Object.assign(record, update);
             
             // Apply $push if present
+            let emittedGeoUpdate = null;
             if (req.body.$push) {
                 for (const key in req.body.$push) {
                     if (Array.isArray(record[key])) {
-                        record[key].push(req.body.$push[key]);
+                        const pushData = req.body.$push[key];
+                        if (pushData && pushData.$each && Array.isArray(pushData.$each)) {
+                            record[key].push(...pushData.$each);
+                            if (key === 'geoHistory') emittedGeoUpdate = pushData.$each;
+                        } else {
+                            record[key].push(pushData);
+                            if (key === 'geoHistory') emittedGeoUpdate = pushData;
+                        }
                     }
                 }
             }
 
             await record.save();
+            
+            if (emittedGeoUpdate) {
+                req.io.to(req.tenantDbName).emit('attendance:geo_update', {
+                    attendanceId: record._id,
+                    tick: emittedGeoUpdate
+                });
+            }
+
+            if (update.dutyEnd && newlyEnded) {
+                req.io.to(req.tenantDbName).emit('attendance:duty_off', {
+                    employeeId: record.employeeId,
+                    attendanceId: record._id,
+                    hoursWorked: record.hoursWorked
+                });
+            }
+
             console.log("🟢 [updateAttendance] Saved successfully:", record._id);
             res.json({ success: true, data: record });
         } catch (err) { 
@@ -1094,6 +1126,45 @@ exports.manageEmployees = {
                 const finalShiftCode = emp.selectedShift || shiftCode || activeShift?.shiftName?.substring(0,1) || 'G';
                 const finalShiftGroupName = emp.shiftGroupName || 'MANG';
 
+                let finalLat = lat;
+                let finalLong = long;
+                let finalSiteName = site_name || 'HQ/Remote';
+
+                const targetLeadId = leadId || siteId;
+                const { Leads } = req.tenantModels;
+                if (targetLeadId && Leads) {
+                    const site = await Leads.findById(targetLeadId).lean();
+                    if (site && site.location && site.location.lat && site.location.long) {
+                        const isSelf = String(req.user._id || req.user.userId) === String(queryId);
+                        
+                        if (!isSelf) {
+                            // 🚀 Started by someone else -> use site coordinates
+                            finalLat = site.location.lat;
+                            finalLong = site.location.long;
+                            finalSiteName = site.sender_name || finalSiteName;
+                        } else {
+                            // 🚀 Started by self -> compare coordinates
+                            if (finalLat && finalLong) {
+                                const getDistance = (lat1, lon1, lat2, lon2) => {
+                                    const R = 6371e3;
+                                    const dLat = (lat2 - lat1) * Math.PI / 180;
+                                    const dLon = (lon2 - lon1) * Math.PI / 180;
+                                    const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                                              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                                              Math.sin(dLon / 2) * Math.sin(dLon / 2);
+                                    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+                                };
+                                const dist = getDistance(finalLat, finalLong, site.location.lat, site.location.long);
+                                if (dist > 50) {
+                                    finalSiteName = 'start duty from unknown place';
+                                } else {
+                                    finalSiteName = site.sender_name || finalSiteName;
+                                }
+                            }
+                        }
+                    }
+                }
+
                 record = new Attendance({
                     employeeId,
                     role: emp.role || emp.userRole || 'project',
@@ -1109,9 +1180,9 @@ exports.manageEmployees = {
                     monthlyRate: fetchedMonthlyRate,
                     dailyRate: fetchedDailyRate,
                     rate: fetchedDailyRate || currentRate,
-                    geoHistory: [{ lat, long, address: address || '', type: 'start', timestamp: now }],
+                    geoHistory: [{ lat: finalLat, long: finalLong, address: address || '', type: 'start', timestamp: now }],
                     status: 'Present',
-                    site_name: site_name || 'HQ/Remote',
+                    site_name: finalSiteName,
                     siteId: siteId || null,
                     leadId: leadId || null,
                     isLate: activeShift ? (diffMins > 15) : false,
@@ -1423,7 +1494,7 @@ exports.manageEmployees = {
 
             let emps = [];
             try {
-                emps = await Employees.find({ _id: { $in: employeeIds } }).select("name photo_url role user_id").lean();
+                emps = await Employees.find({ _id: { $in: employeeIds } }).select("name photo_url role user_id mobile phone").lean();
             } catch (empErr) {
                 // Non-fatal
             }
@@ -1441,7 +1512,7 @@ exports.manageEmployees = {
                 
                 if (queryIds.length > 0) {
                     users = await userMaster.find({ _id: { $in: queryIds } })
-                        .select("userDisplayName userProfileImage userRole")
+                        .select("userDisplayName userProfileImage userRole userMobile")
                         .lean()
                         .maxTimeMS(5000);
                 }
@@ -1469,7 +1540,8 @@ exports.manageEmployees = {
                     location: { lat: currentLat, long: currentLong },
                     displayName,
                     photo: emp?.photo_url || user?.userProfileImage || null,
-                    role: emp?.role || user?.userRole || "Staff"
+                    role: emp?.role || user?.userRole || "Staff",
+                    mobile: emp?.mobile || emp?.phone || user?.userMobile || null
                 };
             });
 
