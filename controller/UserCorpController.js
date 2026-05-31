@@ -95,6 +95,9 @@ exports.manageLeads = {
             const locationId = req.body.locationId || req.user.accessCorporate?.locationId;
             
             const leadInput = normalizeLeadStatusAlias(req.body);
+            if (leadInput.source === "Other" && (!leadInput.status || leadInput.status === "Recent")) {
+                leadInput.status = "Engaged";
+            }
             const lead = new Leads({ ...leadInput, lead_no: counter.seq, locationId });
             await lead.save();
 
@@ -295,7 +298,11 @@ exports.manageLeads = {
             const results = [];
             for (const data of leads) {
                 const counter = await Counters.findByIdAndUpdate("lead", { $inc: { seq: 1 } }, { upsert: true, new: true });
-                const lead = new Leads({ ...data, lead_no: counter.seq });
+                const leadInput = { ...data };
+                if (leadInput.source === "Other" && (!leadInput.status || leadInput.status === "Recent")) {
+                    leadInput.status = "Engaged";
+                }
+                const lead = new Leads({ ...leadInput, lead_no: counter.seq });
                 await lead.save();
 
                 // Auto-create ledger if status is Accepted, Tax Invoice, or Fully Paid
@@ -799,9 +806,70 @@ exports.manageEmployees = {
             } = req.body;
 
             let role = 'project';
-            const emp = await Employees.findById(employeeId).lean();
-            if (emp) role = emp.role || 'project';
-            else {
+            const employeeDoc = await Employees.findById(employeeId);
+            let emp = employeeDoc ? employeeDoc.toObject() : null;
+
+            if (emp) {
+                role = emp.role || 'project';
+                // If employee has null/missing shiftGroupName, assign it now
+                if (!emp.shiftGroupName) {
+                    const targetGroupName = (shiftType === '12hr' || ['Day', 'Night12'].includes(shiftPeriod)) ? 'DaNi' : 'MANG';
+                    const targetSelectedShift = shiftCode || (targetGroupName === 'DaNi' ? 'D' : 'G');
+
+                    let targetShiftName = shiftPeriod || 'General';
+                    if (targetShiftName === 'Night12') {
+                        targetShiftName = 'Night';
+                    }
+                    let targetShiftStartTime = '08:00';
+                    if (targetGroupName === 'DaNi') {
+                        if (targetSelectedShift === 'N2' || targetShiftName === 'Night') {
+                            targetShiftStartTime = '18:00';
+                        } else {
+                            targetShiftStartTime = '06:00';
+                        }
+                    } else {
+                        if (targetSelectedShift === 'M' || targetShiftName === 'Morning') {
+                            targetShiftStartTime = '06:00';
+                        } else if (targetSelectedShift === 'A' || targetShiftName === 'Afternoon') {
+                            targetShiftStartTime = '14:00';
+                        } else if (targetSelectedShift === 'N' || targetShiftName === 'Night') {
+                            targetShiftStartTime = '22:00';
+                        } else {
+                            targetShiftStartTime = '08:00';
+                        }
+                    }
+                    const targetShiftHours = shiftLockHours || (targetGroupName === 'DaNi' ? 12 : 8);
+
+                    employeeDoc.shiftGroupName = targetGroupName;
+                    employeeDoc.selectedShift = targetSelectedShift;
+
+                    let activeHistoryEntry = employeeDoc.employmentHistory.find(h => h.active);
+                    if (activeHistoryEntry) {
+                        activeHistoryEntry.groupName = targetGroupName;
+                        activeHistoryEntry.shiftName = targetShiftName;
+                        activeHistoryEntry.shiftStartTime = targetShiftStartTime;
+                        activeHistoryEntry.shiftHours = targetShiftHours;
+                        if (rate && !activeHistoryEntry.daily_rate) {
+                            activeHistoryEntry.daily_rate = rate;
+                        }
+                    } else {
+                        employeeDoc.employmentHistory.push({
+                            joinDate: new Date(),
+                            daily_rate: rate || (employeeDoc.monthlyRate ? parseFloat((employeeDoc.monthlyRate / 30).toFixed(2)) : 0),
+                            monthly_rate: employeeDoc.monthlyRate || 0,
+                            shiftStartTime: targetShiftStartTime,
+                            shiftHours: targetShiftHours,
+                            groupName: targetGroupName,
+                            shiftName: targetShiftName,
+                            active: true,
+                            notes: "Auto-assigned on first attendance marking"
+                        });
+                    }
+
+                    await employeeDoc.save();
+                    emp = employeeDoc.toObject();
+                }
+            } else {
                 const userMaster = require("../models/userMaster");
                 const user = await userMaster.findById(employeeId).lean();
                 if (user) role = user.userRole || 'project';
@@ -977,6 +1045,71 @@ exports.manageEmployees = {
             if (!emp) {
                 const userMaster = require("../models/userMaster");
                 emp = await userMaster.findById(queryId).lean();
+            }
+
+            if (type === 'ON' && emp && !emp.shiftGroupName) {
+                // Find employee document to update
+                const employeeDoc = await Employees.findOne({
+                    $or: [
+                        { _id: emp._id },
+                        { user_id: emp.user_id || emp._id },
+                        { mobile: emp.mobile || emp.userMobile }
+                    ].filter(q => q._id || q.user_id || q.mobile)
+                });
+                if (employeeDoc) {
+                    const targetGroupName = (shiftType === '12hr' || ['Day', 'Night12'].includes(shiftPeriod)) ? 'DaNi' : 'MANG';
+                    const targetSelectedShift = shiftCode || (targetGroupName === 'DaNi' ? 'D' : 'G');
+
+                    let targetShiftName = shiftPeriod || 'General';
+                    if (targetShiftName === 'Night12') {
+                        targetShiftName = 'Night';
+                    }
+                    let targetShiftStartTime = '08:00';
+                    if (targetGroupName === 'DaNi') {
+                        if (targetSelectedShift === 'N2' || targetShiftName === 'Night') {
+                            targetShiftStartTime = '18:00';
+                        } else {
+                            targetShiftStartTime = '06:00';
+                        }
+                    } else {
+                        if (targetSelectedShift === 'M' || targetShiftName === 'Morning') {
+                            targetShiftStartTime = '06:00';
+                        } else if (targetSelectedShift === 'A' || targetShiftName === 'Afternoon') {
+                            targetShiftStartTime = '14:00';
+                        } else if (targetSelectedShift === 'N' || targetShiftName === 'Night') {
+                            targetShiftStartTime = '22:00';
+                        } else {
+                            targetShiftStartTime = '08:00';
+                        }
+                    }
+                    const targetShiftHours = shiftLockHours || (targetGroupName === 'DaNi' ? 12 : 8);
+
+                    employeeDoc.shiftGroupName = targetGroupName;
+                    employeeDoc.selectedShift = targetSelectedShift;
+
+                    let activeHistoryEntry = employeeDoc.employmentHistory.find(h => h.active);
+                    if (activeHistoryEntry) {
+                        activeHistoryEntry.groupName = targetGroupName;
+                        activeHistoryEntry.shiftName = targetShiftName;
+                        activeHistoryEntry.shiftStartTime = targetShiftStartTime;
+                        activeHistoryEntry.shiftHours = targetShiftHours;
+                    } else {
+                        employeeDoc.employmentHistory.push({
+                            joinDate: new Date(),
+                            daily_rate: employeeDoc.monthlyRate ? parseFloat((employeeDoc.monthlyRate / 30).toFixed(2)) : 0,
+                            monthly_rate: employeeDoc.monthlyRate || 0,
+                            shiftStartTime: targetShiftStartTime,
+                            shiftHours: targetShiftHours,
+                            groupName: targetGroupName,
+                            shiftName: targetShiftName,
+                            active: true,
+                            notes: "Auto-assigned on first attendance marking"
+                        });
+                    }
+
+                    await employeeDoc.save();
+                    emp = employeeDoc.toObject();
+                }
             }
             
             const linkedIds = [queryId];
