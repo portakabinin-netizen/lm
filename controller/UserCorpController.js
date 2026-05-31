@@ -767,7 +767,8 @@ exports.manageEmployees = {
                             $or: [
                                 { date: dateFilter },
                                 { dutyEnd: { $exists: false } },
-                                { dutyEnd: null }
+                                { dutyEnd: null },
+                                { dutyEnd: "" }
                             ]
                         };
                     } else {
@@ -775,7 +776,8 @@ exports.manageEmployees = {
                             $or: [
                                 { date: dateFilter },
                                 { dutyEnd: { $exists: false } },
-                                { dutyEnd: null }
+                                { dutyEnd: null },
+                                { dutyEnd: "" }
                             ]
                         };
                     }
