@@ -259,21 +259,206 @@ exports.createTransaction = async (req, res) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Helper Functions for Legacy Finance Adapter / Double-Entry Integration
+// ─────────────────────────────────────────────────────────────────────────────
+
+const getCategoryByGroupName = (groupName) => {
+    if (!groupName) return null;
+    const name = groupName.trim().toLowerCase();
+    if (name === "sales accounts" || name === "sales account") return "Sales";
+    if (name === "purchase accounts" || name === "purchase account") return "Purchases";
+    if (name === "direct incomes" || name === "direct income") return "Direct Income";
+    if (name === "direct expenses" || name === "direct expense") return "Direct Expenses";
+    if (name === "indirect incomes" || name === "indirect income") return "Indirect Income";
+    if (name === "indirect expenses" || name === "indirect expense") return "Indirect Expenses";
+    if (name === "cash-in-hand" || name === "bank accounts" || name === "bank account") return "CashBank";
+    return null;
+};
+
+const inferPaymentTxnType = (ledgerName, groupName) => {
+    const lName = (ledgerName || "").toLowerCase();
+    const gName = (groupName || "").toLowerCase();
+    
+    if (gName.includes("purchase")) return "vendor_payment";
+    if (gName.includes("direct expense")) {
+        if (lName.includes("freight") || lName.includes("cartage") || lName.includes("transp") || lName.includes("delivery")) {
+            return "freight_cartage";
+        }
+        return "labour_charge";
+    }
+    if (gName.includes("indirect expense")) {
+        return "misc_expense";
+    }
+    if (gName.includes("capital")) {
+        return "capital_expense";
+    }
+    if (gName.includes("employee") || lName.includes("advance") || lName.includes("salary") || lName.includes("wage")) {
+        return "advance_employee";
+    }
+    if (gName.includes("creditor")) {
+        return "vendor_payment";
+    }
+    return "misc_expense";
+};
+
+const inferReceiptTxnType = (ledgerName, groupName) => {
+    const lName = (ledgerName || "").toLowerCase();
+    const gName = (groupName || "").toLowerCase();
+    
+    if (gName.includes("sale")) return "client_invoice_payment";
+    if (gName.includes("direct income")) return "direct_income";
+    if (gName.includes("indirect income") || gName.includes("other income")) {
+        if (lName.includes("scrap")) return "scrap_sale";
+        return "misc_income";
+    }
+    if (gName.includes("debtor")) {
+        return "client_invoice_payment";
+    }
+    if (gName.includes("liability") && lName.includes("advance")) {
+        return "client_advance";
+    }
+    return "misc_income";
+};
+
+const mapVoucherToLegacy = (v, ledgerGroupMap, leadMap) => {
+    if (v.legacyMetadata) {
+        return {
+            ...v.legacyMetadata,
+            _id: v._id,
+            txn_date: v.date,
+        };
+    }
+
+    let direction = "RECEIPT";
+    if (v.voucherType === "Payment" || v.voucherType === "Purchase") {
+        direction = "PAYMENT";
+    }
+
+    let amount = 0;
+    let payment_mode = "Cash";
+    let party_name = "";
+    let txn_type = direction === "PAYMENT" ? "misc_expense" : "misc_income";
+
+    const entries = v.entries || [];
+    const cashBankEntries = [];
+    const nonCashBankEntries = [];
+
+    entries.forEach(e => {
+        const ledId = e.ledgerId?.toString();
+        const info = ledgerGroupMap[ledId];
+        const cat = info ? getCategoryByGroupName(info.groupName) : null;
+        if (cat === "CashBank") {
+            cashBankEntries.push(e);
+        } else {
+            nonCashBankEntries.push(e);
+        }
+    });
+
+    if (cashBankEntries.length > 0) {
+        const primaryCB = cashBankEntries[0];
+        const cbLedgerName = (primaryCB.ledgerName || "").toLowerCase();
+        if (cbLedgerName.includes("bank") || cbLedgerName.includes("sbi") || cbLedgerName.includes("hdfc") || cbLedgerName.includes("icici") || cbLedgerName.includes("axis")) {
+            payment_mode = "NEFT";
+        }
+        
+        const totalCbDebit = cashBankEntries.reduce((sum, e) => sum + (e.debit || 0), 0);
+        const totalCbCredit = cashBankEntries.reduce((sum, e) => sum + (e.credit || 0), 0);
+        if (totalCbCredit > totalCbDebit) {
+            direction = "PAYMENT";
+            amount = totalCbCredit;
+        } else {
+            direction = "RECEIPT";
+            amount = totalCbDebit;
+        }
+    } else {
+        const totalDebit = entries.reduce((sum, e) => sum + (e.debit || 0), 0);
+        amount = totalDebit;
+    }
+
+    if (nonCashBankEntries.length > 0) {
+        const primaryNonCB = nonCashBankEntries[0];
+        party_name = primaryNonCB.ledgerName || "";
+        const ledId = primaryNonCB.ledgerId?.toString();
+        const info = ledgerGroupMap[ledId];
+        const gName = info ? info.groupName : "";
+        if (direction === "PAYMENT") {
+            txn_type = inferPaymentTxnType(party_name, gName);
+        } else {
+            txn_type = inferReceiptTxnType(party_name, gName);
+        }
+    }
+
+    let lead_name = "";
+    let lead_no = null;
+    let project_name = "";
+    let ref_lead_id = "";
+
+    const leadDoc = v.leadId ? leadMap[v.leadId.toString()] : null;
+    if (leadDoc) {
+        lead_name = leadDoc.sender_name || "";
+        lead_no = leadDoc.lead_no;
+        project_name = leadDoc.product_name || "";
+        ref_lead_id = leadDoc._id.toString();
+    }
+
+    return {
+        _id: v._id,
+        txn_number: v.voucherNumber || v.voucherNo || `VCH-${v._id.toString().slice(-6).toUpperCase()}`,
+        txn_type,
+        direction,
+        amount,
+        txn_date: v.date,
+        party_name,
+        ref_invoice_no: v.refDocNo || "",
+        ref_lead_id,
+        lead_no,
+        lead_name,
+        project_name,
+        payment_mode,
+        status: "Cleared",
+        description: v.narration || "",
+        createdAt: v.createdAt || v.date,
+    };
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 4. LIST TRANSACTIONS (Reconstruct Flat from Vouchers)
 // ─────────────────────────────────────────────────────────────────────────────
 exports.listTransactions = async (req, res) => {
     try {
-        const { Vouchers } = req.tenantModels;
-        const vouchers = await Vouchers.find({ legacyMetadata: { $exists: true } })
+        const { Vouchers, Ledgers, Groups, Leads } = req.tenantModels;
+
+        const groups = await Groups.find({}).lean();
+        const ledgers = await Ledgers.find({}).lean();
+        const leadsList = await Leads.find({}).lean();
+
+        const groupMap = {};
+        groups.forEach(g => {
+            groupMap[g._id.toString()] = g;
+        });
+
+        const ledgerGroupMap = {};
+        ledgers.forEach(l => {
+            const group = groupMap[l.ledgerGroupId?.toString()];
+            if (group) {
+                ledgerGroupMap[l._id.toString()] = {
+                    groupName: group.groupName,
+                    nature: group.nature
+                };
+            }
+        });
+
+        const leadMap = {};
+        leadsList.forEach(l => {
+            leadMap[l._id.toString()] = l;
+        });
+
+        const vouchers = await Vouchers.find({})
                                        .sort({ date: -1 })
                                        .limit(50)
                                        .lean();
         
-        const txns = vouchers.map(v => ({
-            ...v.legacyMetadata,
-            _id: v._id,
-            txn_date: v.date,
-        }));
+        const txns = vouchers.map(v => mapVoucherToLegacy(v, ledgerGroupMap, leadMap));
 
         res.json({ success: true, data: txns, total: txns.length });
     } catch (err) {
@@ -286,10 +471,88 @@ exports.listTransactions = async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 exports.getPaymentSummary = async (req, res) => {
     try {
-        const { Vouchers } = req.tenantModels;
-        const vouchers = await Vouchers.find({ legacyMetadata: { $exists: true } }).lean();
+        const { Vouchers, Ledgers, Groups, Leads } = req.tenantModels;
         
-        const txns = vouchers.map(v => v.legacyMetadata);
+        const groups = await Groups.find({}).lean();
+        const ledgers = await Ledgers.find({}).lean();
+        const leadsList = await Leads.find({}).lean();
+
+        const groupMap = {};
+        groups.forEach(g => {
+            groupMap[g._id.toString()] = g;
+        });
+
+        const ledgerGroupMap = {};
+        ledgers.forEach(l => {
+            const group = groupMap[l.ledgerGroupId?.toString()];
+            if (group) {
+                ledgerGroupMap[l._id.toString()] = {
+                    groupName: group.groupName,
+                    nature: group.nature
+                };
+            }
+        });
+
+        const leadMap = {};
+        leadsList.forEach(l => {
+            leadMap[l._id.toString()] = l;
+        });
+
+        const vouchers = await Vouchers.find({}).lean();
+
+        const txns = vouchers.map(v => mapVoucherToLegacy(v, ledgerGroupMap, leadMap));
+
+        let purchases = 0;
+        let sales = 0;
+        let directExpenses = 0;
+        let directIncome = 0;
+        let indirectExpenses = 0;
+        let indirectIncome = 0;
+
+        vouchers.forEach(v => {
+            if (v.legacyMetadata) {
+                const amt = parseFloat(v.legacyMetadata.amount) || 0;
+                const type = v.legacyMetadata.txn_type;
+                const status = v.legacyMetadata.status;
+                if (status === "Cancelled") return;
+
+                if (type === "vendor_payment") {
+                    purchases += amt;
+                } else if (type === "client_invoice_payment") {
+                    sales += amt;
+                } else if (type === "labour_charge" || type === "freight_cartage") {
+                    directExpenses += amt;
+                } else if (type === "direct_income") {
+                    directIncome += amt;
+                } else if (type === "misc_expense") {
+                    indirectExpenses += amt;
+                } else if (type === "scrap_sale" || type === "misc_income") {
+                    indirectIncome += amt;
+                }
+            } else {
+                v.entries.forEach(entry => {
+                    const ledId = entry.ledgerId?.toString();
+                    const info = ledgerGroupMap[ledId];
+                    if (!info) return;
+
+                    const category = getCategoryByGroupName(info.groupName);
+
+                    if (category === "Sales") {
+                        sales += (entry.credit || 0) - (entry.debit || 0);
+                    } else if (category === "Purchases") {
+                        purchases += (entry.debit || 0) - (entry.credit || 0);
+                    } else if (category === "Direct Income") {
+                        directIncome += (entry.credit || 0) - (entry.debit || 0);
+                    } else if (category === "Direct Expenses") {
+                        directExpenses += (entry.debit || 0) - (entry.credit || 0);
+                    } else if (category === "Indirect Income") {
+                        indirectIncome += (entry.credit || 0) - (entry.debit || 0);
+                    } else if (category === "Indirect Expenses") {
+                        indirectExpenses += (entry.debit || 0) - (entry.credit || 0);
+                    }
+                });
+            }
+        });
 
         const cleared = txns.filter(t => t.status !== "Cancelled");
         const totalPayments = cleared.filter(t => t.direction === "PAYMENT").reduce((s, t) => s + (t.amount || 0), 0);
@@ -303,7 +566,8 @@ exports.getPaymentSummary = async (req, res) => {
 
         const PAYMENT_LABELS = {
             vendor_payment: "Purchases", labour_charge: "Labour", freight_cartage: "Freight",
-            advance_employee: "Staff Advance", loan_repayment: "Loan Repayment", misc_expense: "Misc Expenses"
+            advance_employee: "Staff Advance", loan_repayment: "Loan Repayment", misc_expense: "Misc Expenses",
+            capital_expense: "Capital Expenses"
         };
         const RECEIPT_LABELS = {
             client_invoice_payment: "Sales Revenue", direct_income: "Direct Income",
@@ -312,13 +576,6 @@ exports.getPaymentSummary = async (req, res) => {
 
         const paymentBreakdown = Object.entries(PAYMENT_LABELS).map(([k, l]) => ({ label: l, value: byType[k] || 0 })).filter(i => i.value > 0);
         const receiptBreakdown = Object.entries(RECEIPT_LABELS).map(([k, l]) => ({ label: l, value: byType[k] || 0 })).filter(i => i.value > 0);
-
-        const purchases = byType["vendor_payment"] || 0;
-        const sales = byType["client_invoice_payment"] || 0;
-        const directExpenses = (byType["labour_charge"] || 0) + (byType["freight_cartage"] || 0);
-        const directIncome = byType["direct_income"] || 0;
-        const indirectExpenses = byType["misc_expense"] || 0;
-        const indirectIncome = (byType["scrap_sale"] || 0) + (byType["misc_income"] || 0);
 
         const grossMargin = (sales + directIncome) - (purchases + directExpenses);
         const netProfit = grossMargin + indirectIncome - indirectExpenses;
