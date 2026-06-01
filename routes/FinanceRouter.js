@@ -43,6 +43,7 @@ router.get("/vouchers",          ctrl.manageVouchers.list);
 router.get("/vouchers/ledger/:ledgerId", ctrl.manageVouchers.getByLedger);
 router.post("/vouchers",         ctrl.manageVouchers.create);
 router.put("/vouchers/:id",      ctrl.manageVouchers.update);
+router.delete("/vouchers/:id",   ctrl.manageVouchers.delete);
 
 // --- 💸 SALARY & PAYROLL ---
 router.get("/salary/voucher",      ctrl.getSalaryVoucher);
