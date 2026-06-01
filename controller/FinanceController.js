@@ -85,7 +85,7 @@ exports.ensureLedgerFolioInternal = async (tenantModels, options) => {
     const finalName = options.ledgerName || options.name;
     const finalGroup = options.groupName || options.group;
     const { parentGroup, refId, refType, openingBalance, nature, leadIds, purchaseOrders } = options;
-    const { Groups, Ledgers, Leads } = tenantModels;
+    const { Groups, Ledgers, Leads, Vouchers } = tenantModels;
 
     if (!finalGroup) throw new Error("Group name is required to ensure a ledger folio");
     if (!finalName) throw new Error("Ledger name is required to ensure a ledger folio");
@@ -224,6 +224,13 @@ exports.ensureLedgerFolioInternal = async (tenantModels, options) => {
         if (finalName && ledger.ledgerName !== finalName) {
             ledger.ledgerName = finalName;
             changed = true;
+            
+            // Cascade update ledgerName in all vouchers referencing this ledger
+            await Vouchers.updateMany(
+                { "entries.ledgerId": ledger._id },
+                { $set: { "entries.$[elem].ledgerName": finalName } },
+                { arrayFilters: [{ "elem.ledgerId": ledger._id }] }
+            );
         }
         if (refType === "Lead" && refId) {
             if (!ledger.leadIds) {
@@ -541,13 +548,22 @@ exports.manageLedgers = {
     },
     update: async (req, res) => {
         try {
-            const { Ledgers } = req.tenantModels;
+            const { Ledgers, Vouchers } = req.tenantModels;
             const oldLedger = await Ledgers.findById(req.params.id);
             if (!oldLedger) return res.status(404).json({ success: false, message: "Ledger not found" });
 
             if (req.body.openingBalance !== undefined) {
                 const diff = parseFloat(req.body.openingBalance) - (oldLedger.openingBalance || 0);
                 req.body.currentBalance = (oldLedger.currentBalance || 0) + diff;
+            }
+
+            // Cascading updates to all vouchers referencing this ledger
+            if (req.body.ledgerName && req.body.ledgerName !== oldLedger.ledgerName) {
+                await Vouchers.updateMany(
+                    { "entries.ledgerId": oldLedger._id },
+                    { $set: { "entries.$[elem].ledgerName": req.body.ledgerName } },
+                    { arrayFilters: [{ "elem.ledgerId": oldLedger._id }] }
+                );
             }
 
             await Ledgers.findByIdAndUpdate(req.params.id, req.body, { new: true });
