@@ -1341,10 +1341,11 @@ exports.manageEmployees = {
                 const isLocked = elapsedHrs < minRequiredHrs;
 
                 // Shift lock enforcement
-                const requesterRole = req.user?.userRole;
-                const employeeRole = emp?.userRole || emp?.role;
-                const canOverride = ['CorpAdmin', 'Project', 'userAdmin'].includes(requesterRole) ||
-                                   ['Project', 'Sales', 'Finance'].includes(employeeRole);
+                // Normalize role strings for case‑insensitive checks
+                const requesterRole = (req.user?.userRole || '').toLowerCase();
+                const employeeRole = (emp?.userRole || emp?.role || '').toLowerCase();
+                const canOverride = ['corpadmin', 'project', 'useradmin'].includes(requesterRole) ||
+                                   ['corpadmin', 'project', 'sales', 'finance', 'useradmin'].includes(employeeRole);
 
                 if (isLocked && !forcedOff && !emergencyOff && !canOverride) {
                     return res.status(403).json({

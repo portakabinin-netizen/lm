@@ -566,6 +566,22 @@ exports.manageLedgers = {
                 );
             }
 
+            // Handle group change if provided (accept name or id)
+            if (req.body.group) {
+                const { Groups } = req.tenantModels;
+                // Try to find existing group by name (case-insensitive)
+                let groupDoc = await Groups.findOne({ groupName: { $regex: new RegExp(`^${req.body.group}$`, "i") } });
+                if (!groupDoc) {
+                    // Determine nature based on ledger's existing nature
+                    const ledgerNature = oldLedger.openingBalanceType || (oldLedger.currentBalance < 0 ? "Cr" : "Dr");
+                    const resolvedGroupNature = ledgerNature === "Cr" ? "Liability" : "Asset";
+                    groupDoc = new Groups({ groupName: req.body.group, parentGroup: null, nature: resolvedGroupNature });
+                    await groupDoc.save();
+                }
+                // Set ledgerGroupId for update
+                req.body.ledgerGroupId = groupDoc._id;
+            }
+
             await Ledgers.findByIdAndUpdate(req.params.id, req.body, { new: true });
             await recalculateLedgerBalances(req.tenantModels, [req.params.id]);
             const ledger = await Ledgers.findById(req.params.id).lean();
