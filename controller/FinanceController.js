@@ -1641,3 +1641,68 @@ const recalculateAllLedgerBalances = async (tenantModels) => {
 exports.recalculateLedgerBalances = recalculateLedgerBalances;
 exports.recalculateAllLedgerBalances = recalculateAllLedgerBalances;
 
+exports.getLedgerTransactions = async (req, res) => {
+    try {
+        const { Ledgers, Vouchers } = req.tenantModels;
+        const { accountId, accountType, from_date, to_date } = req.query;
+
+        if (!accountId) {
+            return res.status(400).json({ success: false, message: "accountId query parameter is required" });
+        }
+
+        let ledger = null;
+        if (accountType === 'Staff') {
+            ledger = await Ledgers.findOne({ refId: accountId, refType: { $in: ["Staff", "User"] } });
+        } else if (accountType === 'Lead') {
+            ledger = await Ledgers.findOne({ refId: accountId, refType: { $in: ["Client", "Lead"] } });
+        }
+
+        // Fallback to Category/ID match if not resolved
+        if (!ledger) {
+            if (mongoose.Types.ObjectId.isValid(accountId)) {
+                ledger = await Ledgers.findById(accountId);
+            }
+        }
+
+        if (!ledger) {
+            return res.json({ success: true, data: [] });
+        }
+
+        const q = { "entries.ledgerId": ledger._id };
+        
+        // Enforce location filtering for non-CorpAdmins if needed
+        const accessibleIds = req.user?.accessibleLocationIds;
+        if (req.user?.userRole !== "CorpAdmin" && accessibleIds?.length > 0) {
+            q.locationId = { $in: accessibleIds };
+        }
+
+        if (from_date || to_date) {
+            q.date = {};
+            if (from_date) q.date.$gte = new Date(from_date);
+            if (to_date) {
+                const end = new Date(to_date);
+                end.setHours(23, 59, 59, 999);
+                q.date.$lte = end;
+            }
+        }
+
+        const vouchers = await Vouchers.find(q).sort({ date: -1 }).lean();
+
+        const formatted = vouchers.map(v => {
+            const entry = v.entries.find(e => String(e.ledgerId) === String(ledger._id));
+            const amt = entry ? (entry.debit || entry.credit || 0) : 0;
+            const paymentType = entry && entry.debit > 0 ? 'Dr' : 'Cr';
+
+            return {
+                amt,
+                paymentType,
+                voucherNarration: v.narration || "",
+                voucherDate: v.date || v.createdAt
+            };
+        });
+
+        res.json({ success: true, data: formatted });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+};

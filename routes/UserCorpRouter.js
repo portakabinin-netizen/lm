@@ -13,6 +13,7 @@ const auth = require("../middleware/authMiddleware");
 const tenant = require("../middleware/tenantMiddleware");
 const ctrl = require("../controller/UserCorpController");
 const chatCtrl = require("../controller/chatController");
+const financeCtrl = require("../controller/FinanceController");
 
 // Setup Multer for Bulk Uploads
 const storage = multer.memoryStorage();
@@ -99,5 +100,9 @@ router.put("/chat/seen", chatCtrl.markAsSeen);
 // --- 🏢 CORPORATE PROFILE ---
 router.get("/profile",           ctrl.manageProfile.get);
 router.put("/profile",           ctrl.manageProfile.update);
+
+// --- 📊 FINANCE SERVICE ADAPTERS (for frontend LedgerDetailModal / ledger.ts) ---
+router.get("/finance/ledgers", financeCtrl.getLedgerTransactions);
+router.put("/finance/ledgers/:id", financeCtrl.manageLedgers.update);
 
 module.exports = router;
