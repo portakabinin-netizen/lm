@@ -1717,8 +1717,8 @@ exports.manageStaff = {
 
             const staff = await userMaster.findByIdAndUpdate(req.params.id, req.body, { new: true }).select("-userPassword");
 
-            // 💸 Create Petty Cash Book if allowed cash flow
-            if (staff.allowCashFlow) {
+            // 💸 Create Petty Cash Book if allowed cash flow or is Project/Admin/Finance role
+            if (staff.allowCashFlow || ["CorpAdmin", "userAdmin", "Project", "Finance"].includes(staff.userRole)) {
                 try {
                     const dbConnector = require("../utils/dbConnector");
                     const { getTenantModels } = require("../models/TenantModels");
@@ -1732,7 +1732,7 @@ exports.manageStaff = {
                         await financeCtrl.ensureLedgerFolioInternal(models, {
                             name: `Petty Cash - ${staff.userDisplayName}`,
                             group: "Cash-in-hand",
-                            nature: "Assets",
+                            nature: "Dr",
                             refId: staff._id,
                             refType: "User"
                         });

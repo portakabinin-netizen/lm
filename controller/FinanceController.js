@@ -50,14 +50,17 @@ const getActiveCashFlowUsers = async (tenantDbName) => {
     const userMaster = require("../models/userMaster");
     const query = {
         userActive: true,
-        allowCashFlow: true
+        $or: [
+            { allowCashFlow: true },
+            { userRole: { $in: ["CorpAdmin", "userAdmin", "Project", "Finance"] } }
+        ]
     };
 
     if (tenantDbName) {
         query.accessCorporate = { $elemMatch: { dbName: tenantDbName, isActive: { $ne: false } } };
     }
 
-    return userMaster.find(query).select("userDisplayName allowCashFlow userActive").lean();
+    return userMaster.find(query).select("userDisplayName allowCashFlow userActive userRole").lean();
 };
 
 const syncActiveUserPettyCashBooks = async (tenantModels, tenantDbName) => {
