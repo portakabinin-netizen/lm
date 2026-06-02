@@ -130,8 +130,11 @@ const leadSchema = new mongoose.Schema({
         lat: { type: Number },
         long: { type: Number },
         address: { type: String }
-    },
 }, { timestamps: true });
+
+leadSchema.index({ locationId: 1 });
+leadSchema.index({ status: 1 });
+leadSchema.index({ ledgerId: 1 });
 
 // 6. Attendance
 // Shift Reference — Group MANG (8hr):
@@ -239,6 +242,8 @@ const ledgerSchema = new mongoose.Schema({
 
 ledgerSchema.index({ ledgerName: 1 });
 ledgerSchema.index({ ledgerGroupId: 1 });
+ledgerSchema.index({ refId: 1 });
+ledgerSchema.index({ refType: 1 });
 
 const voucherEntrySchema = new mongoose.Schema({
     ledgerId: { type: mongoose.Schema.Types.ObjectId, ref: "Ledgers", required: true },

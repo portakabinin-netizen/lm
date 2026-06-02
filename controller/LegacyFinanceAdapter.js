@@ -30,7 +30,7 @@ function resolveDirection(txn_type) {
 // ─────────────────────────────────────────────────────────────────────────────
 exports.getLeadsForPicker = async (req, res) => {
     try {
-        const { Leads } = req.tenantModels;
+        const { Leads, Ledgers } = req.tenantModels;
         
         // Construct query filter with location-based scoping for non-CorpAdmin users
         const q = {};
@@ -41,10 +41,32 @@ exports.getLeadsForPicker = async (req, res) => {
 
         const leads = await Leads.find(q).lean();
 
-        // Proactively check and create ledgers for Accepted / Tax Invoice / Fully Paid leads
+        // 1. Clean up ledgers for Recycled leads
+        const recycledLeads = leads.filter(l => (l.status || "").toLowerCase() === "recycle");
+        const recycledLedgerIds = recycledLeads.map(l => l.ledgerId).filter(Boolean);
+        if (recycledLedgerIds.length > 0 && Ledgers) {
+            try {
+                await Ledgers.deleteMany({ _id: { $in: recycledLedgerIds } });
+                await Leads.updateMany(
+                    { ledgerId: { $in: recycledLedgerIds } },
+                    { $unset: { ledgerId: "" } }
+                );
+                // Update local array elements
+                leads.forEach(l => {
+                    if (recycledLedgerIds.some(id => String(id) === String(l.ledgerId))) {
+                        delete l.ledgerId;
+                    }
+                });
+            } catch (cleanupErr) {
+                console.error("Failed to clean up recycled ledgers:", cleanupErr.message);
+            }
+        }
+
+        // 2. Proactively check and create ledgers for Accepted status leads only
         for (const lead of leads) {
             const statusLower = lead.status?.toLowerCase() || "";
-            if (statusLower === "accepted" || statusLower === "tax invoice" || statusLower === "fully paid") {
+            if (statusLower === "accepted") {
+                if (lead.ledgerId) continue;
                 try {
                     await ensureLedgerFolioInternal(req.tenantModels, {
                         name: lead.sender_name || "Client-" + lead.lead_no,

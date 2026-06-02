@@ -9,7 +9,7 @@
 
 const mongoose = require("mongoose");
 
-const BILLABLE_LEAD_STATES = ["accepted", "tax invoice", "fully paid"];
+const BILLABLE_LEAD_STATES = ["accepted"];
 
 const normalizeLeadState = (value) => String(value || "").trim().toLowerCase();
 
@@ -24,16 +24,38 @@ const getLeadLedgerName = (lead = {}) => {
 
 const billableLeadQuery = {
     $or: [
-        { status: { $regex: /^(Accepted|Tax Invoice|Fully Paid)$/i } },
-        { role: { $regex: /^(Accepted|Tax Invoice|Fully Paid)$/i } }
+        { status: { $regex: /^Accepted$/i } },
+        { role: { $regex: /^Accepted$/i } }
     ]
 };
 
 const syncBillableLeadLedgers = async (tenantModels) => {
-    const { Leads } = tenantModels;
-    if (!Leads) return;
+    const { Leads, Ledgers } = tenantModels;
+    if (!Leads || !Ledgers) return;
 
-    const activeLeads = await Leads.find(billableLeadQuery).lean();
+    // 1. Clean up ledgers for Recycled leads
+    const recycledLeads = await Leads.find({
+        status: { $regex: /^Recycle$/i },
+        ledgerId: { $ne: null }
+    }).lean();
+
+    if (recycledLeads.length > 0) {
+        const recycledLedgerIds = recycledLeads.map(l => l.ledgerId).filter(Boolean);
+        if (recycledLedgerIds.length > 0) {
+            await Ledgers.deleteMany({ _id: { $in: recycledLedgerIds } });
+            await Leads.updateMany(
+                { ledgerId: { $in: recycledLedgerIds } },
+                { $unset: { ledgerId: "" } }
+            );
+        }
+    }
+
+    // 2. Sync billable leads without ledgerId
+    const query = {
+        ...billableLeadQuery,
+        ledgerId: { $in: [null, undefined] }
+    };
+    const activeLeads = await Leads.find(query).lean();
     for (const lead of activeLeads.filter(isBillableLead)) {
         await exports.ensureLedgerFolioInternal(tenantModels, {
             ledgerName: getLeadLedgerName(lead),
@@ -65,8 +87,20 @@ const getActiveCashFlowUsers = async (tenantDbName) => {
 
 const syncActiveUserPettyCashBooks = async (tenantModels, tenantDbName) => {
     const staffList = await getActiveCashFlowUsers(tenantDbName);
+    const { Ledgers } = tenantModels;
+    if (!Ledgers) return staffList;
+
+    const staffIds = staffList.map(s => s._id);
+    const existingLedgers = await Ledgers.find({
+        refId: { $in: staffIds },
+        refType: "User"
+    }).lean();
+    const existingUserIds = new Set(existingLedgers.map(l => String(l.refId)));
 
     for (const staff of staffList) {
+        if (existingUserIds.has(String(staff._id))) {
+            continue;
+        }
         const staffPettyCashName = `Petty Cash - ${staff.userDisplayName || "General User"}`;
         await exports.ensureLedgerFolioInternal(tenantModels, {
             name: staffPettyCashName,
@@ -387,7 +421,7 @@ exports.getAccountingMaster = async (req, res) => {
             console.error("Proactive Client Ledger Sync Failed:", lErr.message);
         }
 
-        await recalculateAllLedgerBalances(req.tenantModels);
+        // Bypassed global recalculateAllLedgerBalances on load for performance
 
         const finalLedgers = await Ledgers.find({}).lean();
         res.json({ success: true, data: { groups, ledgers: finalLedgers } });
@@ -533,7 +567,7 @@ exports.manageLedgers = {
                 console.error("Proactive Client Ledger Sync Failed:", lErr.message);
             }
 
-            await recalculateAllLedgerBalances(req.tenantModels);
+            // Bypassed global recalculateAllLedgerBalances on load for performance
 
             const ledgers = await Ledgers.find({}).lean();
             res.json({ success: true, data: ledgers });
