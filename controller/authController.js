@@ -468,6 +468,8 @@ exports.unregisteredLogin = async (req, res) => {
             finalDbName = refUser.accessCorporate[0].dbName;
         }
 
+        const matchedCorp = refUser.accessCorporate.find(c => c.dbName === finalDbName) || refUser.accessCorporate[0];
+
         // Generate a Authorized Token with the resolved role
         const token = jwt.sign({
             userId: String(userData._id),
@@ -489,10 +491,10 @@ exports.unregisteredLogin = async (req, res) => {
                 userId: String(userData._id),
                 userRole: role,
                 dbName: finalDbName,
-                corporateName: refUser.accessCorporate[0].corporateName,
-                corporateTagName: refUser.accessCorporate[0].corporateTagName || "",
+                corporateName: matchedCorp.corporateName || "",
+                corporateTagName: matchedCorp.corporateTagName || "",
                 userDisplayName: userData.name,
-                CorpProfileImage: refUser.accessCorporate[0].CorpProfileImage || "",
+                CorpProfileImage: matchedCorp.CorpProfileImage || "",
                 userProfileImage: userData.photo_url || "",
                 referenceMobile: cleanRef, // 🚀 Added for "Call Supervisor" feature
                 isGuest: true,
