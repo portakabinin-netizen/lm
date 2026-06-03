@@ -295,6 +295,7 @@ exports.register = async (req, res) => {
             } catch (empErr) {
                 console.error("Failed to auto-create employee record:", empErr.message);
             }
+        }
         // 💸 Auto-create Petty Cash Book on registration if allowed cash flow or has Project/Admin/Finance role
         if (newUser.allowCashFlow || ["CorpAdmin", "userAdmin", "Project", "Finance"].includes(newUser.userRole)) {
             try {

@@ -130,6 +130,7 @@ const leadSchema = new mongoose.Schema({
         lat: { type: Number },
         long: { type: Number },
         address: { type: String }
+    }
 }, { timestamps: true });
 
 leadSchema.index({ locationId: 1 });
