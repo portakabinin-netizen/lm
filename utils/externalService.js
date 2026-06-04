@@ -604,13 +604,28 @@ const externalService = {
             const cloudinaryInstance = require("cloudinary").v2;
             cloudinaryInstance.config(configOverrides);
             
-            const result = await cloudinaryInstance.api.resources({
-                type: 'upload',
-                prefix: `hipk/${tenantDbName}/leads/`,
-                max_results: 100
-            });
+            let allResources = [];
+            let nextCursor = null;
+            let pageCount = 0;
             
-            return result;
+            do {
+                const result = await cloudinaryInstance.api.resources({
+                    type: 'upload',
+                    prefix: `hipk/${tenantDbName}/leads/`,
+                    max_results: 500,
+                    next_cursor: nextCursor
+                });
+                
+                if (result.resources && result.resources.length > 0) {
+                    allResources = allResources.concat(result.resources);
+                }
+                nextCursor = result.next_cursor;
+                pageCount++;
+                
+                // Limit to 4 pages (2000 images) to prevent infinite loops or massive memory use
+            } while (nextCursor && pageCount < 4);
+            
+            return { resources: allResources };
         } catch (err) {
             if (err.message.includes('ENOTFOUND') || err.message.includes('getaddrinfo')) {
                 console.log("ℹ️ Cloudinary Fetch: Service unavailable (Offline/DNS issue).");
