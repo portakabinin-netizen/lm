@@ -230,7 +230,7 @@ exports.ensureLedgerFolioInternal = async (tenantModels, options) => {
         ledger = await Ledgers.findOne({
             $or: [
                 { ledgerName: { $regex: new RegExp(`^${finalName}$`, "i") } },
-                ... (refId ? [{ refId }] : [])
+                ... (refId ? [{ refId, ...(refType ? { refType } : {}) }] : [])
             ]
         });
     }
@@ -853,7 +853,11 @@ const resolveAndValidateVoucher = async (req, voucherType, entries, leadId, lega
         }
 
         // Enforce that cash flow ledger must be Bank or the logged-in user's own Petty Cash book
+        // Only enforce on the SOURCE of funds for Payment (Credit) and DESTINATION for Receipt (Debit)
         for (const cfEntry of cashFlowEntries) {
+            if (voucherType === "Payment" && cfEntry.credit <= 0) continue;
+            if (voucherType === "Receipt" && cfEntry.debit <= 0) continue;
+
             const isAllowed = await isAllowedUserCashFlowLedger(req.tenantModels, cfEntry.ledgerId, req.user?._id);
             if (!isAllowed) {
                 return { error: `${voucherType} cash flow must target Bank or your own Petty Cash book.` };
