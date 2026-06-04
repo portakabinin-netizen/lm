@@ -105,15 +105,32 @@ exports.getLeadsForPicker = async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 exports.getStaffPicker = async (req, res) => {
     try {
-        const { Employees, Parties } = req.tenantModels;
+        const { Employees, Parties, Attendance } = req.tenantModels;
         
         const employees = await Employees.find({ active: true }).lean();
         const parties = await Parties.find({ active: true }).lean();
+
+        const employeeIds = employees.map(e => e._id);
+        const latestAttendances = await Attendance.aggregate([
+            { $match: { employeeId: { $in: employeeIds }, dutyStart: { $exists: true, $ne: null } } },
+            { $sort: { dutyStart: -1 } },
+            { $group: {
+                _id: "$employeeId",
+                last_site_name: { $first: "$site_name" },
+                last_date: { $first: "$dutyStart" }
+            }}
+        ]);
+
+        const attendanceMap = {};
+        latestAttendances.forEach(a => {
+            attendanceMap[a._id.toString()] = a;
+        });
 
         // Legacy format split transporters, employees, contacts
         const mappedEmployees = employees.map(e => {
             const hist = e.employmentHistory || [];
             const active = hist.find(h => h.active) || hist[hist.length - 1] || {};
+            const empAtt = attendanceMap[e._id.toString()];
             return {
                 _id: e._id, 
                 name: e.name, 
@@ -121,7 +138,11 @@ exports.getStaffPicker = async (req, res) => {
                 role: e.role,
                 pay_type: active.pay_type || "Daily", 
                 daily_rate: active.daily_rate || 0,
-                monthly_salary: active.monthly_salary || 0
+                monthly_salary: active.monthly_salary || 0,
+                photo: e.photo_url || e.photo,
+                enrollment_no: e.enrollment_no,
+                last_site_name: empAtt ? empAtt.last_site_name : null,
+                last_attendance_date: empAtt ? empAtt.last_date : null
             };
         });
 
