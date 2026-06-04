@@ -36,7 +36,9 @@ const userMasterSchema = new mongoose.Schema({
     dutyShift: {
         startFrom: { type: String, default: "09:00" }, // HH:mm
         durationHrs: { type: Number, default: 8 },
-        endOn: { type: String, default: "17:00" } // HH:mm
+        endOn: { type: String, default: "17:00" }, // HH:mm
+        groupName: { type: String, enum: ["MANG", "DaNi"], default: "MANG" },
+        shiftName: { type: String, default: "General" }
     },
 
     allowCashFlow: { type: Boolean, default: false },

@@ -1248,7 +1248,10 @@ exports.manageEmployees = {
                 }
             }
 
-            const lockHrs = activeShift?.shiftHours || 8;
+            let lockHrs = activeShift?.shiftHours || 8;
+            if (!activeShift && emp && emp.dutyShift && emp.dutyShift.durationHrs) {
+                lockHrs = emp.dutyShift.durationHrs;
+            }
             const currentRate = activeShift?.daily_rate || 0;
 
             if (record) return res.status(400).json({ success: false, message: "Duty already started" });
@@ -1256,8 +1259,19 @@ exports.manageEmployees = {
                 const scheduledEnd = new Date(now.getTime() + lockHrs * 3600000);
                 const fetchedMonthlyRate = emp.monthlyRate || 0;
                 const fetchedDailyRate = parseFloat((fetchedMonthlyRate / 30).toFixed(2));
-                const finalShiftCode = emp.selectedShift || shiftCode || activeShift?.shiftName?.substring(0,1) || 'G';
-                const finalShiftGroupName = emp.shiftGroupName || 'MANG';
+                const userShiftName = emp.dutyShift && emp.dutyShift.shiftName;
+                
+                let defaultShiftCode = 'G';
+                if (userShiftName) {
+                    if (userShiftName === 'Night2') defaultShiftCode = 'N2';
+                    else if (userShiftName === 'Night1' || userShiftName === 'Night') defaultShiftCode = 'N';
+                    else defaultShiftCode = userShiftName.substring(0, 1);
+                } else if (activeShift?.shiftName) {
+                    defaultShiftCode = activeShift.shiftName === 'Night12' ? 'N2' : activeShift.shiftName.substring(0, 1);
+                }
+                
+                const finalShiftCode = emp.selectedShift || shiftCode || defaultShiftCode;
+                const finalShiftGroupName = emp.shiftGroupName || (emp.dutyShift && emp.dutyShift.groupName) || 'MANG';
 
                 let finalLat = lat;
                 let finalLong = long;
@@ -1306,7 +1320,7 @@ exports.manageEmployees = {
                     dutyEndScheduled: scheduledEnd,
                     shiftCode: finalShiftCode,
                     shiftType: shiftType || (lockHrs === 12 ? '12hr' : '8hr'),
-                    shiftPeriod: shiftPeriod || activeShift?.shiftName || 'General',
+                    shiftPeriod: shiftPeriod || userShiftName || activeShift?.shiftName || 'General',
                     shiftGroupName: finalShiftGroupName,
                     shiftHours: lockHrs,
                     shiftLockHours: lockHrs,
