@@ -1060,6 +1060,31 @@ exports.manageVouchers = {
             // 🚀 REAL-TIME: Notify clients
             req.io.to(req.tenantDbName).emit("voucher:created", { data: voucher });
 
+            if (leadId) {
+                const { Leads } = req.tenantModels;
+                let activityAction = null;
+                const totalAmount = voucher.entries.filter(e => e.debit > 0).reduce((sum, e) => sum + e.debit, 0);
+
+                if (voucherType === "Receipt") {
+                    activityAction = `Bill Collection of ₹${totalAmount} recorded. (Ref: ${voucher.voucherNo})`;
+                } else if (voucherType === "Payment") {
+                    const isAdvance = req.body.legacyMetadata?.mode === "advance" || req.body.legacyMetadata?.mode === "salary";
+                    const staffEntry = voucher.entries.find(e => e.accountType === "Staff" || isAdvance);
+                    
+                    if (staffEntry || isAdvance) {
+                        const empName = staffEntry ? (staffEntry.ledgerName || "Employee") : "Employee";
+                        const actionType = req.body.legacyMetadata?.mode === "salary" ? "Salary" : "Salary-Advance";
+                        activityAction = `${actionType} paid to ${empName}: ₹${totalAmount}. (Ref: ${voucher.voucherNo})`;
+                    }
+                }
+                
+                if (activityAction) {
+                    await Leads.findByIdAndUpdate(leadId, {
+                        $push: { activity: { action: activityAction, byUser: req.user?.userDisplayName || "System", date: new Date() } }
+                    });
+                }
+            }
+
             res.status(201).json({ success: true, data: voucher });
         } catch (err) { res.status(500).json({ success: false, message: err.message }); }
     },
@@ -1346,6 +1371,14 @@ exports.postSalaryPayment = async (req, res) => {
         });
         await voucher.save();
         await recalculateLedgerBalances(req.tenantModels, voucher.entries.map(e => e.ledgerId));
+
+        if (leadId) {
+            const { Leads } = req.tenantModels;
+            const activityAction = `Salary Paid to ${employeeName || "Employee"}: ₹${amount}. (Ref: ${voucher.voucherNo})`;
+            await Leads.findByIdAndUpdate(leadId, {
+                $push: { activity: { action: activityAction, byUser: req.user?.userDisplayName || "System", date: new Date() } }
+            });
+        }
 
         res.status(201).json({ success: true, data: voucher });
     } catch (err) { res.status(500).json({ success: false, message: err.message }); }
