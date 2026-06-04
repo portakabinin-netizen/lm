@@ -414,6 +414,7 @@ exports.unregisteredLogin = async (req, res) => {
         let role = "Client";
         let userData = { name: "Guest User", _id: cleanMobile, photo_url: "" };
         let finalDbName = null;
+        let matchedCorp = null;
 
         // 🚀 Loop through all corporates linked to the reference user
         for (const corp of refUser.accessCorporate) {
@@ -432,6 +433,7 @@ exports.unregisteredLogin = async (req, res) => {
                     role = "Staff";
                     userData = { name: staff.name, _id: staff._id, photo_url: staff.photo_url };
                     finalDbName = dbName;
+                    matchedCorp = corp;
                     break;
                 }
             }
@@ -442,6 +444,7 @@ exports.unregisteredLogin = async (req, res) => {
                 role = "Vendor";
                 userData = { name: vendor.name, _id: vendor._id, photo_url: "" };
                 finalDbName = dbName;
+                matchedCorp = corp;
                 break;
             }
 
@@ -451,6 +454,7 @@ exports.unregisteredLogin = async (req, res) => {
                 role = "Client";
                 userData = { name: client.name, _id: client._id, photo_url: "" };
                 finalDbName = dbName;
+                matchedCorp = corp;
                 break;
             }
 
@@ -460,16 +464,16 @@ exports.unregisteredLogin = async (req, res) => {
                 role = "Client";
                 userData = { name: lead.sender_name, _id: lead._id, photo_url: "" };
                 finalDbName = dbName;
+                matchedCorp = corp;
                 break;
             }
         }
 
-        if (!finalDbName) {
+        if (!finalDbName || !matchedCorp) {
             // Default to first corp if not found anywhere (Legacy behavior)
             finalDbName = refUser.accessCorporate[0].dbName;
+            matchedCorp = refUser.accessCorporate[0];
         }
-
-        const matchedCorp = refUser.accessCorporate.find(c => c.dbName === finalDbName) || refUser.accessCorporate[0];
 
         // Generate a Authorized Token with the resolved role
         const token = jwt.sign({
