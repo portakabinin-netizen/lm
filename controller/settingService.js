@@ -316,6 +316,18 @@ const updateAdminUser = {
       }
       if (clean(b.userProfileImage)) $set.userProfileImage = clean(b.userProfileImage);
       if (b.addresses) $set.addresses = b.addresses;
+      if (b.dutyShift) {
+        const ds = { ...b.dutyShift };
+        const durationHrs = Number(ds.durationHrs);
+        if (ds.startFrom && !isNaN(durationHrs)) {
+          const parts = ds.startFrom.split(':').map(Number);
+          if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+            const endHrs = (parts[0] + durationHrs) % 24;
+            ds.endOn = `${String(endHrs).padStart(2, '0')}:${String(parts[1]).padStart(2, '0')}`;
+          }
+        }
+        $set.dutyShift = ds;
+      }
 
       // ── Password change (optional) ─────────────────────────────────────────
       if (clean(b.newPassword)) {
@@ -457,6 +469,18 @@ const otherUser = {
       if (typeof b.userActive === "boolean") $set.userActive = b.userActive;
       if (clean(b.userProfileImage)) $set.userProfileImage = clean(b.userProfileImage);
       if (b.addresses) $set.addresses = b.addresses;
+      if (b.dutyShift) {
+        const ds = { ...b.dutyShift };
+        const durationHrs = Number(ds.durationHrs);
+        if (ds.startFrom && !isNaN(durationHrs)) {
+          const parts = ds.startFrom.split(':').map(Number);
+          if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+            const endHrs = (parts[0] + durationHrs) % 24;
+            ds.endOn = `${String(endHrs).padStart(2, '0')}:${String(parts[1]).padStart(2, '0')}`;
+          }
+        }
+        $set.dutyShift = ds;
+      }
 
       // Access grant/revoke and corporate permissions
       const tDb = req.tenantDbName || req.user.dbName;
