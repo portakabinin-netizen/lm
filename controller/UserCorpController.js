@@ -710,14 +710,7 @@ exports.manageEmployees = {
         try {
             const requesterRole = req.user?.userRole;
             
-            // Project users can only update dutyShift for workers
-            if (requesterRole === 'Project') {
-                const fieldsTryingToUpdate = Object.keys(req.body);
-                const isOnlyUpdatingShift = fieldsTryingToUpdate.every(f => f === 'dutyShift');
-                if (!isOnlyUpdatingShift) {
-                    return res.status(403).json({ success: false, message: "Project users can only update shift timing for workers." });
-                }
-            } else if (!['CorpAdmin', 'userAdmin'].includes(requesterRole)) {
+            if (!['CorpAdmin', 'userAdmin', 'Project'].includes(requesterRole)) {
                 return res.status(403).json({ success: false, message: "Access denied. Insufficient permissions." });
             }
 
