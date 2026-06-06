@@ -179,6 +179,10 @@ const attendanceSchema = new mongoose.Schema({
     previousShiftId: { type: mongoose.Schema.Types.ObjectId, ref: 'Attendance', default: null }, // links to prior shift record
     doubleShiftNotified: { type: Boolean, default: false },     // notification sent to supervisors?
 
+    // ── Device & Marked By ──
+    markedByDevice: { type: Boolean, default: true },           // true if user marked themselves
+    markedByUserName: { type: String, trim: true },             // name of supervisor if markedByDevice is false
+
     // ── Duty Toggle Fields ──
     dutyStart: { type: Date },
     dutyEnd: { type: Date },

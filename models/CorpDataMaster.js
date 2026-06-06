@@ -212,6 +212,8 @@ const attendanceSchema = new mongoose.Schema({
     dutyStart: { type: Date },
     dutyEnd: { type: Date },
     hoursWorked: { type: Number, default: 0 },
+    markedByDevice: { type: Boolean, default: true },
+    markedByUserName: { type: String, trim: true },
     location: {
         lat: Number,
         long: Number,

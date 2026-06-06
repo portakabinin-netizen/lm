@@ -1458,6 +1458,7 @@ exports.manageEmployees = {
           const site = await Leads.findById(targetLeadId).lean();
           if (site && site.location && site.location.lat && site.location.long) {
             const isSelf = String(req.user._id || req.user.userId) === String(queryId);
+            const markedByUserName = isSelf ? '' : (req.user?.userDisplayName || req.user?.name || req.user?.mobile || 'Supervisor');
 
             if (!isSelf) {
               // 🚀 Started by someone else -> use site coordinates
@@ -1523,6 +1524,8 @@ exports.manageEmployees = {
           site_name: finalSiteName,
           siteId: siteId || null,
           leadId: leadId || null,
+          markedByDevice: String(req.user._id || req.user.userId) === String(queryId),
+          markedByUserName: String(req.user._id || req.user.userId) === String(queryId) ? '' : (req.user?.userDisplayName || req.user?.name || req.user?.mobile || 'Supervisor'),
           isLate: shiftStartTime ? diffMins > 15 : false,
           remarks: shiftStartTime && diffMins > 15 ? 'On Duty-Late Coming' : undefined,
         });
