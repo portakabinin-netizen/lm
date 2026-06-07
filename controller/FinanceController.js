@@ -433,44 +433,176 @@ exports.getAccountingMaster = async (req, res) => {
  */
 exports.getAnalytics = async (req, res) => {
     try {
-        const { Quotations, TaxInvoices, PurchaseOrders } = req.tenantModels;
+        const { Quotations, TaxInvoices, PurchaseOrders, Vouchers, Groups, Ledgers } = req.tenantModels;
 
+        // 1. Fetch CRM / Pipeline documents
         const qList = await Quotations.find({}).lean();
-        const iList = await TaxInvoices.find({}).lean();
         const pList = await PurchaseOrders.find({}).lean();
 
         let quotationAmount = 0;
-        qList.forEach(q => quotationAmount += (q.totals?.grandTotal || 0));
-
-        let invoiceAmount = 0;
-        iList.forEach(i => invoiceAmount += (i.totals?.grandTotal || 0));
+        qList.forEach(q => quotationAmount += (q.totals?.grand_total || q.totals?.grandTotal || 0));
 
         let poAmount = 0;
-        pList.forEach(p => poAmount += (p.totals?.grandTotal || 0));
+        pList.forEach(p => poAmount += (p.totals?.grand_total || p.totals?.grandTotal || 0));
 
-        // Month-wise Aggregation (Last 6 Months)
+        // 2. Fetch double entry components
+        const groups = await Groups.find({}).lean();
+        const ledgers = await Ledgers.find({}).lean();
+        const vouchers = await Vouchers.find({}).lean();
+
+        // 3. Build ledger maps to resolve group classifications
+        const groupMap = {};
+        groups.forEach(g => {
+            groupMap[g._id.toString()] = g;
+        });
+
+        const ledgerGroupMap = {};
+        ledgers.forEach(l => {
+            const group = groupMap[l.ledgerGroupId?.toString()];
+            if (group) {
+                ledgerGroupMap[l._id.toString()] = {
+                    groupName: group.groupName,
+                    nature: group.nature
+                };
+            }
+        });
+
+        // 4. Calculate actual Sales Revenue from Sales Vouchers
+        let invoiceAmount = 0;
+        const salesVouchers = vouchers.filter(v => v.voucherType === "Sales");
+        salesVouchers.forEach(v => {
+            // Amount of Sales voucher is total debit/credit
+            const amt = (v.entries || []).reduce((sum, e) => sum + (e.debit || 0), 0);
+            invoiceAmount += amt;
+        });
+
+        // Fallback to TaxInvoices if no Sales vouchers exist
+        if (invoiceAmount === 0) {
+            const iList = await TaxInvoices.find({}).lean();
+            iList.forEach(i => invoiceAmount += (i.totals?.grand_total || i.totals?.grandTotal || 0));
+        }
+
+        // 5. Calculate actual Purchase Invoices Received from Purchase Vouchers
+        let invoiceReceivedAmount = 0;
+        const purchaseVouchers = vouchers.filter(v => v.voucherType === "Purchase");
+        purchaseVouchers.forEach(v => {
+            // Amount of Purchase voucher is total debit/credit
+            const amt = (v.entries || []).reduce((sum, e) => sum + (e.credit || 0), 0);
+            invoiceReceivedAmount += amt;
+        });
+
+        // Fallback to poAmount * 0.8 if no Purchase vouchers exist
+        if (invoiceReceivedAmount === 0) {
+            invoiceReceivedAmount = poAmount * 0.8;
+        }
+
+        // 6. Calculate real receivables (debtors balance) & payables (creditors balance)
+        const debtorLedgers = ledgers.filter(l => {
+            const info = ledgerGroupMap[l._id.toString()];
+            return info && info.groupName === "Sundry Debtors";
+        });
+        const creditorLedgers = ledgers.filter(l => {
+            const info = ledgerGroupMap[l._id.toString()];
+            return info && info.groupName === "Sundry Creditors";
+        });
+
+        let pendingInvoices = 0;
+        debtorLedgers.forEach(l => {
+            if (l.currentBalance > 0) {
+                pendingInvoices += l.currentBalance;
+            }
+        });
+
+        let pendingBills = 0;
+        creditorLedgers.forEach(l => {
+            if (l.currentBalance < 0) {
+                pendingBills += Math.abs(l.currentBalance);
+            }
+        });
+
+        // 7. Month-wise Aggregation (Last 6 Months)
         const sixMonthsAgo = new Date();
         sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
 
-        const monthWiseAgg = await TaxInvoices.aggregate([
-            { $match: { date: { $gte: sixMonthsAgo } } },
-            {
-                $group: {
-                    _id: { $dateToString: { format: "%Y-%m", date: "$date" } },
-                    tax: { $sum: "$totals.total_tax" },
-                    revenue: { $sum: "$totals.grand_total" }
-                }
-            },
-            { $sort: { _id: 1 } },
-            {
-                $project: {
-                    month: "$_id",
-                    tax: 1,
-                    revenue: 1,
-                    _id: 0
-                }
+        let monthWiseAgg = [];
+        const recentSalesVouchers = salesVouchers.filter(v => new Date(v.date) >= sixMonthsAgo);
+
+        if (recentSalesVouchers.length > 0) {
+            const monthMap = {};
+            
+            // Initialize last 6 months in the map
+            for (let i = 5; i >= 0; i--) {
+                const d = new Date();
+                d.setMonth(d.getMonth() - i);
+                const yyyymm = d.toISOString().slice(0, 7); // YYYY-MM
+                monthMap[yyyymm] = { month: yyyymm, tax: 0, revenue: 0 };
             }
-        ]);
+
+            recentSalesVouchers.forEach(v => {
+                const dateObj = new Date(v.date);
+                const yyyymm = dateObj.toISOString().slice(0, 7);
+                if (!monthMap[yyyymm]) return;
+
+                let voucherTax = 0;
+                let voucherRevenue = 0;
+
+                (v.entries || []).forEach(e => {
+                    const ledId = e.ledgerId?.toString();
+                    const info = ledgerGroupMap[ledId];
+                    if (!info) return;
+
+                    if (info.groupName === "Sales Accounts") {
+                        voucherRevenue += (e.credit || 0);
+                    } else if (info.groupName === "Duties & Taxes") {
+                        voucherTax += (e.credit || 0);
+                    }
+                });
+
+                monthMap[yyyymm].revenue += voucherRevenue;
+                monthMap[yyyymm].tax += voucherTax;
+            });
+
+            monthWiseAgg = Object.values(monthMap).sort((a, b) => a.month.localeCompare(b.month));
+        } else {
+            // Fallback to TaxInvoices aggregation
+            const rawMonthAgg = await TaxInvoices.aggregate([
+                { $match: { date: { $gte: sixMonthsAgo } } },
+                {
+                    $group: {
+                        _id: { $dateToString: { format: "%Y-%m", date: "$date" } },
+                        tax: { $sum: "$totals.total_tax" },
+                        revenue: { $sum: "$totals.grand_total" }
+                    }
+                },
+                { $sort: { _id: 1 } },
+                {
+                    $project: {
+                        month: "$_id",
+                        tax: 1,
+                        revenue: 1,
+                        _id: 0
+                    }
+                }
+            ]);
+
+            // Fill missing months
+            const monthMap = {};
+            for (let i = 5; i >= 0; i--) {
+                const d = new Date();
+                d.setMonth(d.getMonth() - i);
+                const yyyymm = d.toISOString().slice(0, 7);
+                monthMap[yyyymm] = { month: yyyymm, tax: 0, revenue: 0 };
+            }
+
+            rawMonthAgg.forEach(item => {
+                if (monthMap[item.month]) {
+                    monthMap[item.month].revenue = item.revenue || 0;
+                    monthMap[item.month].tax = item.tax || 0;
+                }
+            });
+
+            monthWiseAgg = Object.values(monthMap).sort((a, b) => a.month.localeCompare(b.month));
+        }
 
         res.json({
             success: true,
@@ -478,20 +610,20 @@ exports.getAnalytics = async (req, res) => {
                 quotationAmount,
                 invoiceAmount,
                 poAmount,
-                invoiceReceivedAmount: 0,
-                pendingBills: poAmount * 0.1, // mock
-                pendingInvoices: invoiceAmount * 0.2, // mock
+                invoiceReceivedAmount,
+                pendingBills,
+                pendingInvoices,
                 quoteVsInvoice: [
                     { label: "Quotations", value: quotationAmount },
                     { label: "Invoices", value: invoiceAmount }
                 ],
                 poVsInvoiceReceived: [
                     { label: "POs Issued", value: poAmount },
-                    { label: "Invoices Recv", value: poAmount * 0.8 } // mock
+                    { label: "Invoices Recv", value: invoiceReceivedAmount }
                 ],
                 pendingComparison: [
-                    { label: "Pending Bills", value: poAmount * 0.1 },
-                    { label: "Pending Inv", value: invoiceAmount * 0.2 }
+                    { label: "Pending Bills", value: pendingBills },
+                    { label: "Pending Inv", value: pendingInvoices }
                 ],
                 financeTrend: monthWiseAgg
             }

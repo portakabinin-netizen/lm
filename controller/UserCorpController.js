@@ -420,9 +420,12 @@ exports.manageLeads = {
             mediaMap[leadNo].push(a.secure_url);
           }
         });
-        // Map by lead_no instead of _id
+        // Map by both lead_no and _id to capture all images regardless of how they were uploaded
         leads.forEach((l) => {
-          l.folderGallery = mediaMap[String(l.lead_no)] || [];
+          l.folderGallery = [
+            ...(mediaMap[String(l.lead_no)] || []),
+            ...(mediaMap[String(l._id)] || [])
+          ];
         });
       } catch (ce) {
         console.error('Cloudinary Fetch Error:', ce.message);

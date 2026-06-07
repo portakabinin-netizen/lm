@@ -581,7 +581,7 @@ const externalService = {
             
             // Search API execute() accepts config overrides directly in the Node SDK
             const result = await cloudinary.search
-                .expression(`folder:hipk/${tenantDbName}/leads/*`)
+                .expression(`folder:hipk/${tenantDbName}/*`)
                 .sort_by('created_at', 'desc')
                 .execute(configOverrides);
             
@@ -611,7 +611,7 @@ const externalService = {
             do {
                 const result = await cloudinaryInstance.api.resources({
                     type: 'upload',
-                    prefix: `hipk/${tenantDbName}/leads/`,
+                    prefix: `hipk/${tenantDbName}/`,
                     max_results: 500,
                     next_cursor: nextCursor
                 });
