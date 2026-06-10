@@ -901,6 +901,32 @@ exports.manageEmployees = {
         shiftLockHours,
       } = req.body;
 
+      // ─── ONE WORKER · ONE SHIFT · ONE ATTENDANCE ──────────────────────────
+      // Reject if this employee already has an open (active) duty session.
+      // This prevents duplicate attendance records regardless of which site or
+      // which UI surface triggered the create request.
+      if (employeeId && !dutyEnd) {
+        const mongoose = require('mongoose');
+        const qId = mongoose.isValidObjectId(employeeId)
+          ? new mongoose.Types.ObjectId(employeeId)
+          : employeeId;
+        const openSession = await Attendance.findOne({
+          employeeId: qId,
+          $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }],
+        }).select('shiftCode site_name leadId').lean();
+        if (openSession) {
+          const where = openSession.site_name || 'another site';
+          const code  = openSession.shiftCode  || 'active shift';
+          return res.status(409).json({
+            success: false,
+            alreadyOnDuty: true,
+            message: `Worker is already on duty (${code}) at ${where}. End that shift first.`,
+            activeAttendanceId: openSession._id,
+          });
+        }
+      }
+      // ──────────────────────────────────────────────────────────────────────
+
       let role = 'project';
       const employeeDoc = await Employees.findById(employeeId);
       let emp = employeeDoc ? employeeDoc.toObject() : null;
@@ -978,6 +1004,7 @@ exports.manageEmployees = {
 
       const record = new Attendance({
         employeeId,
+        employeeType: employeeDoc ? 'Employees' : 'userMaster',
         role,
         leadId,
         clientId: clientId || null,
@@ -1925,7 +1952,7 @@ exports.manageEmployees = {
       const requesterRole = req.user?.userRole || '';
       let filteredData = data;
       if (requesterRole === 'Project') {
-        filteredData = data.filter((item) => (item.employeeType || 'Employees') === 'Employees');
+        filteredData = data.filter((item) => ['Employees', 'userMaster'].includes(item.employeeType || 'Employees'));
       }
 
       res.json({ success: true, data: filteredData });
