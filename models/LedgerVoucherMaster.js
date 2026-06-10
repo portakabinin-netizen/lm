@@ -74,6 +74,7 @@ const voucherEntrySchema = new mongoose.Schema(
         ledgerName: { type: String, trim: true },
         debit: { type: Number, default: 0, min: 0 },
         credit: { type: Number, default: 0, min: 0 },
+        leadId: { type: mongoose.Schema.Types.ObjectId },
     },
     { _id: false }
 );

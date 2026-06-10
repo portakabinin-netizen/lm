@@ -285,38 +285,35 @@ exports.ensureLedgerFolioInternal = async (tenantModels, options) => {
 
     // 3. Link back ledgerId to leads and sync leadIds in ledger
     if (refType === "Lead" && ledger) {
-        if (currentLead && currentLead.sender_mobile) {
-            const cleanMobile = String(currentLead.sender_mobile).replace(/\D/g, '').slice(-10);
-            if (cleanMobile.length === 10) {
-                const matchingLeads = await Leads.find({
-                    sender_mobile: { $regex: new RegExp(cleanMobile.split('').join('\\D*') + '\\D*$') }
-                });
-                const matchingIds = matchingLeads.map(l => l._id);
+        let finalLeadIds = [];
+        if (Array.isArray(leadIds) && leadIds.length > 0) {
+            finalLeadIds = leadIds
+                .filter(id => id && mongoose.Types.ObjectId.isValid(id))
+                .map(id => new mongoose.Types.ObjectId(id));
+        } else if (refId && mongoose.Types.ObjectId.isValid(refId)) {
+            finalLeadIds = [new mongoose.Types.ObjectId(refId)];
+        }
 
-                // Update ledgerId on all matching leads in the database
-                await Leads.updateMany(
-                    { _id: { $in: matchingIds } },
-                    { $set: { ledgerId: ledger._id } }
-                );
-
-                // Ensure the ledger lists all matching lead IDs
-                if (!ledger.leadIds) ledger.leadIds = [];
-                let ledgerChanged = false;
-                for (const lid of matchingIds) {
-                    if (!ledger.leadIds.some(existingId => String(existingId) === String(lid))) {
-                        ledger.leadIds.push(lid);
-                        ledgerChanged = true;
-                    }
+        if (finalLeadIds.length > 0) {
+            // Update all matching leads to set ledgerId to ledger._id and push ledger._id to ledgerIds
+            await Leads.updateMany(
+                { _id: { $in: finalLeadIds } },
+                { 
+                    $set: { ledgerId: ledger._id },
+                    $addToSet: { ledgerIds: ledger._id }
                 }
-                if (ledgerChanged) {
-                    await ledger.save();
+            );
+
+            // Ensure the ledger lists all these lead IDs
+            if (!ledger.leadIds) ledger.leadIds = [];
+            let ledgerChanged = false;
+            for (const lid of finalLeadIds) {
+                if (!ledger.leadIds.some(existingId => String(existingId) === String(lid))) {
+                    ledger.leadIds.push(lid);
+                    ledgerChanged = true;
                 }
             }
-        } else if (refId) {
-            await Leads.updateOne({ _id: refId }, { $set: { ledgerId: ledger._id } });
-            if (!ledger.leadIds) ledger.leadIds = [];
-            if (!ledger.leadIds.some(existingId => String(existingId) === String(refId))) {
-                ledger.leadIds.push(refId);
+            if (ledgerChanged) {
                 await ledger.save();
             }
         }
@@ -772,16 +769,70 @@ exports.manageLedgers = {
     // Lookups for Linkage
     lookupEntities: async (req, res) => {
         try {
-            const { type, query } = req.query; // Leads, Vendors
+            const { type, query, leadId } = req.query; // Leads, Vendors
             const { Leads, Parties } = req.tenantModels;
             const q = query?.toLowerCase() || "";
             let results = [];
 
             if (type === "Leads") {
-                results = await Leads.find({
-                    ...billableLeadQuery,
-                    sender_name: { $regex: new RegExp(q, "i") }
-                }).limit(10).lean();
+                if (leadId) {
+                    const lead = await Leads.findById(leadId).lean();
+                    if (!lead) {
+                        return res.json({ success: true, data: [] });
+                    }
+                    const orConditions = [];
+                    if (lead.sender_mobile) {
+                        const cleanMobile = String(lead.sender_mobile).replace(/\D/g, '').slice(-10);
+                        if (cleanMobile.length === 10) {
+                            orConditions.push({
+                                sender_mobile: { $regex: new RegExp(cleanMobile.split('').join('\\D*') + '\\D*$') }
+                            });
+                        }
+                    }
+                    if (lead.location && typeof lead.location.lat === "number" && typeof lead.location.long === "number") {
+                        orConditions.push({
+                            "location.lat": { $gte: lead.location.lat - 0.0002, $lte: lead.location.lat + 0.0002 },
+                            "location.long": { $gte: lead.location.long - 0.0002, $lte: lead.location.long + 0.0002 }
+                        });
+                    }
+
+                    if (orConditions.length === 0) {
+                        return res.json({ success: true, data: [] });
+                    }
+
+                    const matchingLeads = await Leads.find({
+                        _id: { $ne: lead._id },
+                        $or: orConditions
+                    }).lean();
+
+                    results = matchingLeads.map(other => {
+                        const reasons = [];
+                        if (lead.sender_mobile && other.sender_mobile) {
+                            const otherClean = String(other.sender_mobile).replace(/\D/g, '').slice(-10);
+                            const leadClean = String(lead.sender_mobile).replace(/\D/g, '').slice(-10);
+                            if (otherClean === leadClean) {
+                                reasons.push("Same mobile number");
+                            }
+                        }
+                        if (lead.location && typeof lead.location.lat === "number" && typeof lead.location.long === "number" &&
+                            other.location && typeof other.location.lat === "number" && typeof other.location.long === "number") {
+                            const latDiff = Math.abs(other.location.lat - lead.location.lat);
+                            const longDiff = Math.abs(other.location.long - lead.location.long);
+                            if (latDiff <= 0.0002 && longDiff <= 0.0002) {
+                                reasons.push("Nearby location (< 20m)");
+                            }
+                        }
+                        return {
+                            ...other,
+                            matchReason: reasons.join(" and ") || "Matched query attributes"
+                        };
+                    });
+                } else {
+                    results = await Leads.find({
+                        ...billableLeadQuery,
+                        sender_name: { $regex: new RegExp(q, "i") }
+                    }).limit(10).lean();
+                }
             } else if (type === "Vendors") {
                 results = await Parties.find({
                     type: "Supplier",
@@ -856,6 +907,7 @@ const resolveAndValidateVoucher = async (req, voucherType, entries, leadId, lega
         let ledgerId = entry.ledgerId;
         let ledgerName = entry.ledgerName || "";
         const accountType = entry.accountType;
+        let entryLeadId = entry.leadId;
 
         // A. Placeholders
         if (ledgerId === "cash_in_hand" || ledgerId === "main_bank" || ledgerId === "office_rent" ||
@@ -917,6 +969,9 @@ const resolveAndValidateVoucher = async (req, voucherType, entries, leadId, lega
                 });
                 ledgerId = resolvedLedger._id;
                 ledgerName = resolvedLedger.ledgerName || resolvedLedger.name;
+                if (!entryLeadId) {
+                    entryLeadId = lead._id;
+                }
             }
         }
         // C. Employee placeholders (Upgraded resolve: target Account Payables / nature Cr)
@@ -951,7 +1006,8 @@ const resolveAndValidateVoucher = async (req, voucherType, entries, leadId, lega
             ledgerName,
             debit: entry.debit || 0,
             credit: entry.credit || 0,
-            accountType: entry.accountType
+            accountType: entry.accountType,
+            leadId: entryLeadId
         });
     }
 
@@ -1052,35 +1108,39 @@ const resolveAndValidateVoucher = async (req, voucherType, entries, leadId, lega
         }
     }
 
-    // 4. Project-wise Analytics (leadId) enforcement
-    let requiresLead = false;
-    if (voucherType === "Sales" || voucherType === "Purchase") {
-        requiresLead = true;
-    }
+    // 4. Project-wise Analytics (leadId) enforcement & populate entry-level leadId
     for (const entry of resolvedEntries) {
-        if (await isEmployeeLedger(entry.ledgerId)) {
-            requiresLead = true;
-            break;
-        }
-        const ledger = await Ledgers.findById(entry.ledgerId).lean();
-        if (ledger) {
-            const group = await Groups.findById(ledger.ledgerGroupId).lean();
-            if (group) {
-                const gName = (group.groupName || "").toLowerCase();
-                const gNature = (group.nature || "").toLowerCase();
-                if (gNature === "expense" || gNature === "revenue" ||
-                    gName.includes("expense") || gName.includes("purchase") ||
-                    gName.includes("sales") || gName.includes("income") ||
-                    gName.includes("revenue")) {
-                    requiresLead = true;
-                    break;
+        let entryRequiresLead = false;
+        if (voucherType === "Sales" || voucherType === "Purchase") {
+            entryRequiresLead = true;
+        } else if (await isEmployeeLedger(entry.ledgerId)) {
+            entryRequiresLead = true;
+        } else {
+            const ledger = await Ledgers.findById(entry.ledgerId).lean();
+            if (ledger) {
+                const group = await Groups.findById(ledger.ledgerGroupId).lean();
+                if (group) {
+                    const gName = (group.groupName || "").toLowerCase();
+                    const gNature = (group.nature || "").toLowerCase();
+                    if (gNature === "expense" || gNature === "revenue" ||
+                        gName.includes("expense") || gName.includes("purchase") ||
+                        gName.includes("sales") || gName.includes("income") ||
+                        gName.includes("revenue")) {
+                        entryRequiresLead = true;
+                    }
                 }
             }
         }
-    }
 
-    if (requiresLead && (!leadId || !mongoose.Types.ObjectId.isValid(leadId))) {
-        return { error: "Project/Enquiry linkage (leadId) is required for Sales, Purchase, Salary, and Expense entries." };
+        const effectiveLeadId = entry.leadId || leadId;
+        if (entryRequiresLead) {
+            if (!effectiveLeadId || !mongoose.Types.ObjectId.isValid(effectiveLeadId)) {
+                return { error: `Project/Enquiry linkage (leadId) is required for Sales, Purchase, Salary, and Expense entry (${entry.ledgerName}).` };
+            }
+        }
+        if (effectiveLeadId && mongoose.Types.ObjectId.isValid(effectiveLeadId)) {
+            entry.leadId = effectiveLeadId;
+        }
     }
 
     return { resolvedEntries };

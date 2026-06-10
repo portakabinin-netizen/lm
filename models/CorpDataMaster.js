@@ -164,6 +164,8 @@ const leadSchema = new mongoose.Schema({
     status: { type: String, default: "Engaged" },
     generated_date: { type: Date, default: Date.now },
     clientId: { type: mongoose.Schema.Types.ObjectId },
+    ledgerId: { type: mongoose.Schema.Types.ObjectId },
+    ledgerIds: [{ type: mongoose.Schema.Types.ObjectId }],
     activity: [new mongoose.Schema({
         action: { type: String },
         byUser: { type: String },
@@ -205,7 +207,12 @@ const voucherSchema = new mongoose.Schema({
 
 // 📅 Attendance Schema
 const attendanceSchema = new mongoose.Schema({
-    employeeId: { type: mongoose.Schema.Types.ObjectId, required: true },
+    employeeId: { type: mongoose.Schema.Types.ObjectId, required: true, refPath: 'employeeType' },
+    employeeType: { type: String, required: true, enum: ['Employees', 'userMaster'], default: 'Employees' },
+    startLat: { type: Number },
+    startLong: { type: Number },
+    siteLat: { type: Number },
+    siteLong: { type: Number },
     role: { type: String, trim: true },
     date: { type: Date, required: true },
     status: { type: String, enum: ["Present", "Absent", "Leave"], default: "Present" },

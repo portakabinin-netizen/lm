@@ -683,10 +683,11 @@ exports.getLeadLedger = async (req, res) => {
             }
         }
 
-                const stringLeadIds = leadIds.map(id => id.toString());
+        const stringLeadIds = leadIds.map(id => id.toString());
         const vouchers = await Vouchers.find({ 
             $or: [
                 { leadId: { $in: leadIds } },
+                { "entries.leadId": { $in: leadIds } },
                 { "legacyMetadata.ref_lead_id": { $in: stringLeadIds } }
             ]
         }).sort({ date: 1 }).lean();
@@ -703,30 +704,50 @@ exports.getLeadLedger = async (req, res) => {
                     voucherNarration: v.narration || v.legacyMetadata.description
                 };
             } else {
-                const isPayment = v.voucherType === "Payment";
+                const matchingEntries = (v.entries || []).filter(e => e.leadId && leadIds.some(lid => String(lid) === String(e.leadId)));
                 let amt = 0;
+                let paymentType = v.voucherType === "Payment" ? "Dr" : "Cr";
                 let paymentFromTo = "";
-                if (isPayment) {
-                    const drEntry = (v.entries || []).find(e => e.debit > 0);
-                    if (drEntry) {
-                        amt = drEntry.debit;
-                        paymentFromTo = drEntry.ledgerName;
+
+                if (matchingEntries.length > 0) {
+                    const totalDr = matchingEntries.reduce((sum, e) => sum + (e.debit || 0), 0);
+                    const totalCr = matchingEntries.reduce((sum, e) => sum + (e.credit || 0), 0);
+                    if (totalDr > totalCr) {
+                        amt = totalDr - totalCr;
+                        paymentType = "Dr";
+                        const nonMatching = (v.entries || []).filter(e => !e.leadId || !leadIds.some(lid => String(lid) === String(e.leadId)));
+                        paymentFromTo = nonMatching.map(e => e.ledgerName).join(", ") || matchingEntries.map(e => e.ledgerName).join(", ");
+                    } else {
+                        amt = totalCr - totalDr;
+                        paymentType = "Cr";
+                        const nonMatching = (v.entries || []).filter(e => !e.leadId || !leadIds.some(lid => String(lid) === String(e.leadId)));
+                        paymentFromTo = nonMatching.map(e => e.ledgerName).join(", ") || matchingEntries.map(e => e.ledgerName).join(", ");
                     }
                 } else {
-                    const crEntry = (v.entries || []).find(e => e.credit > 0);
-                    if (crEntry) {
-                        amt = crEntry.credit;
-                        paymentFromTo = crEntry.ledgerName;
+                    const isPayment = v.voucherType === "Payment";
+                    paymentType = isPayment ? "Dr" : "Cr";
+                    if (isPayment) {
+                        const drEntry = (v.entries || []).find(e => e.debit > 0);
+                        if (drEntry) {
+                            amt = drEntry.debit;
+                            paymentFromTo = drEntry.ledgerName;
+                        }
+                    } else {
+                        const crEntry = (v.entries || []).find(e => e.credit > 0);
+                        if (crEntry) {
+                            amt = crEntry.credit;
+                            paymentFromTo = crEntry.ledgerName;
+                        }
                     }
-                }
-                if (!paymentFromTo) {
-                    paymentFromTo = v.entries?.[0]?.ledgerName || "Voucher Entry";
-                    amt = v.entries?.[0]?.debit || v.entries?.[0]?.credit || 0;
+                    if (!paymentFromTo) {
+                        paymentFromTo = v.entries?.[0]?.ledgerName || "Voucher Entry";
+                        amt = v.entries?.[0]?.debit || v.entries?.[0]?.credit || 0;
+                    }
                 }
                 return {
                     _id: v._id,
                     voucherDate: v.date,
-                    paymentType: isPayment ? "Dr" : "Cr",
+                    paymentType: paymentType,
                     amt: amt,
                     paymentFromTo: paymentFromTo,
                     voucherNarration: v.narration
@@ -741,13 +762,24 @@ exports.getLeadLedger = async (req, res) => {
                 if (v.legacyMetadata.direction === "PAYMENT") totalCost += v.legacyMetadata.amount || 0;
                 if (v.legacyMetadata.direction === "RECEIPT") totalRevenue += v.legacyMetadata.amount || 0;
             } else {
+                const matchingEntries = (v.entries || []).filter(e => e.leadId && leadIds.some(lid => String(lid) === String(e.leadId)));
                 const isPayment = v.voucherType === "Payment";
                 if (isPayment) {
-                    const drEntry = (v.entries || []).find(e => e.debit > 0);
-                    totalCost += drEntry ? (drEntry.debit || 0) : 0;
+                    const drMatching = matchingEntries.filter(e => e.debit > 0);
+                    if (drMatching.length > 0) {
+                        totalCost += drMatching.reduce((sum, e) => sum + (e.debit || 0), 0);
+                    } else {
+                        const drEntry = (v.entries || []).find(e => e.debit > 0);
+                        totalCost += drEntry ? (drEntry.debit || 0) : 0;
+                    }
                 } else {
-                    const crEntry = (v.entries || []).find(e => e.credit > 0);
-                    totalRevenue += crEntry ? (crEntry.credit || 0) : 0;
+                    const crMatching = matchingEntries.filter(e => e.credit > 0);
+                    if (crMatching.length > 0) {
+                        totalRevenue += crMatching.reduce((sum, e) => sum + (e.credit || 0), 0);
+                    } else {
+                        const crEntry = (v.entries || []).find(e => e.credit > 0);
+                        totalRevenue += crEntry ? (crEntry.credit || 0) : 0;
+                    }
                 }
             }
         });

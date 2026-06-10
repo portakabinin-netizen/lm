@@ -119,6 +119,7 @@ const leadSchema = new mongoose.Schema({
     generated_date: { type: Date, default: Date.now },
     clientId: { type: mongoose.Schema.Types.ObjectId },
     ledgerId: { type: mongoose.Schema.Types.ObjectId, ref: "Ledgers" }, // Link to isolated client ledger
+    ledgerIds: [{ type: mongoose.Schema.Types.ObjectId, ref: "Ledgers" }],
     activity: [new mongoose.Schema({
         action: { type: String },
         byUser: { type: String },
@@ -136,6 +137,7 @@ const leadSchema = new mongoose.Schema({
 leadSchema.index({ locationId: 1 });
 leadSchema.index({ status: 1 });
 leadSchema.index({ ledgerId: 1 });
+leadSchema.index({ ledgerIds: 1 });
 
 // 6. Attendance
 // Shift Reference — Group MANG (8hr):
@@ -147,7 +149,12 @@ leadSchema.index({ ledgerId: 1 });
 //   D  = Day   12h  (06:00–18:00)
 //   N2 = Night 12h  (18:00–06:00)
 const attendanceSchema = new mongoose.Schema({
-    employeeId: { type: mongoose.Schema.Types.ObjectId, ref: 'Employees', required: true },
+    employeeId: { type: mongoose.Schema.Types.ObjectId, required: true, refPath: 'employeeType' },
+    employeeType: { type: String, required: true, enum: ['Employees', 'userMaster'], default: 'Employees' },
+    startLat: { type: Number },
+    startLong: { type: Number },
+    siteLat: { type: Number },
+    siteLong: { type: Number },
     role: { type: String, trim: true },
     date: { type: Date, required: true },
     status: { type: String, enum: ["Present", "Absent", "Leave"], default: "Present" },
@@ -255,6 +262,7 @@ const voucherEntrySchema = new mongoose.Schema({
     ledgerName: { type: String },
     debit: { type: Number, default: 0, min: 0 },
     credit: { type: Number, default: 0, min: 0 },
+    leadId: { type: mongoose.Schema.Types.ObjectId, ref: "Leads" },
 }, { _id: false });
 
 const voucherSchema = new mongoose.Schema({

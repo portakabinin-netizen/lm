@@ -1199,12 +1199,14 @@ exports.manageEmployees = {
       // Find open session (not necessarily today — shift C and E can span midnight)
       // 1. Identify all possible IDs for this employee (Self-sync check)
       let emp = await Employees.findById(queryId).lean();
+      let isWorker = true;
       if (!emp) {
         const userMaster = require('../models/userMaster');
         emp = await userMaster.findById(queryId).lean();
+        isWorker = false;
       }
 
-      if (type === 'ON' && emp && !emp.shiftGroupName) {
+      if (type === 'ON' && emp && isWorker && !emp.shiftGroupName) {
         // Find employee document to update
         const employeeDoc = await Employees.findOne({
           $or: [
@@ -1306,6 +1308,7 @@ exports.manageEmployees = {
         }
 
         let diffMins = 0;
+        let standardStart = now;
         if (shiftStartTime && !isSpecialAction) {
           const [h, m] = shiftStartTime.split(':').map(Number);
 
@@ -1328,6 +1331,9 @@ exports.manageEmployees = {
           diffs.sort((a, b) => Math.abs(a.diff) - Math.abs(b.diff));
           const nearestShift = diffs[0];
           diffMins = nearestShift.diff;
+
+          const diffMs = nearestShift.target.getTime() - nowIST.getTime();
+          standardStart = new Date(now.getTime() + diffMs);
 
           const displayName = emp.name || emp.userDisplayName || 'User';
 
@@ -1369,58 +1375,6 @@ exports.manageEmployees = {
               message: `Too early to start duty. Shift starts at ${shiftStartTime}.`,
             });
           }
-
-          if (diffMins > 15) {
-            const isSpecialRole = [
-              'Project',
-              'Sales',
-              'Finance',
-              'CorpAdmin',
-              'userAdmin',
-            ].includes(emp.userRole || emp.role);
-            if (isSpecialRole) {
-              if (req.body.requestPermission) {
-                const { Messages } = req.tenantModels;
-                if (Messages) {
-                  const msg = new Messages({
-                    senderName: displayName,
-                    senderId: queryId,
-                    text: `⚠️ Request to join duty late from ${displayName}. Shift started at ${shiftStartTime}.`,
-                    type: 'text',
-                    isOneToOne: false,
-                    status: 'unseen',
-                  });
-                  await msg.save();
-                  req.io.to(req.tenantDbName).emit('newMessage', msg);
-                }
-
-                req.io.to(req.tenantDbName).emit('admin:broadcast', {
-                  id: new mongoose.Types.ObjectId().toString(),
-                  title: '⚠️ Late Duty Request',
-                  message: `User ${displayName} requested to join duty late. Shift started at ${shiftStartTime}.`,
-                  priority: 'normal',
-                  targetRoles: ['CorpAdmin', 'userAdmin'],
-                  sentBy: displayName,
-                  sentByRole: 'User',
-                  at: now.toISOString(),
-                });
-
-                return res.json({
-                  success: true,
-                  message: `Request to join duty late has been sent to CorpAdmin and userAdmin via chatroom.`,
-                });
-              }
-              return res.status(403).json({
-                success: false,
-                tooLate: true,
-                message: `You are too late to start duty. Shift started at ${shiftStartTime}.`,
-              });
-            }
-            return res.status(403).json({
-              success: false,
-              message: `You are too late to start duty. Shift started at ${shiftStartTime}.`,
-            });
-          }
         }
 
         let lockHrs = activeShift?.shiftHours || 8;
@@ -1432,7 +1386,7 @@ exports.manageEmployees = {
         if (record)
           return res.status(400).json({ success: false, message: 'Duty already started' });
 
-        const scheduledEnd = new Date(now.getTime() + lockHrs * 3600000);
+        const scheduledEnd = new Date(standardStart.getTime() + lockHrs * 3600000);
         const fetchedMonthlyRate = emp.monthlyRate || 0;
         const fetchedDailyRate = parseFloat((fetchedMonthlyRate / 30).toFixed(2));
         const userShiftName = emp.dutyShift && emp.dutyShift.shiftName;
@@ -1454,53 +1408,73 @@ exports.manageEmployees = {
         let finalLat = lat;
         let finalLong = long;
         let finalSiteName = site_name || 'HQ/Remote';
+        let siteLat = null;
+        let siteLong = null;
+        let startLat = lat || null;
+        let startLong = long || null;
 
         const targetLeadId = leadId || siteId;
         const { Leads } = req.tenantModels;
         if (targetLeadId && Leads) {
           const site = await Leads.findById(targetLeadId).lean();
           if (site && site.location && site.location.lat && site.location.long) {
+            siteLat = site.location.lat;
+            siteLong = site.location.long;
             const isSelf = String(req.user._id || req.user.userId) === String(queryId);
-            const markedByUserName = isSelf ? '' : (req.user?.userDisplayName || req.user?.name || req.user?.mobile || 'Supervisor');
 
             if (!isSelf) {
-              // 🚀 Started by someone else -> use site coordinates
-              finalLat = site.location.lat;
-              finalLong = site.location.long;
+              // 🚀 Started by someone else -> use site coordinates as default if supervisor doesn't provide them
+              if (!startLat) startLat = siteLat;
+              if (!startLong) startLong = siteLong;
+              finalLat = siteLat;
+              finalLong = siteLong;
               finalSiteName = site.sender_name || finalSiteName;
             } else {
-              // 🚀 Started by self -> compare coordinates
-              if (finalLat && finalLong) {
-                const getDistance = (lat1, lon1, lat2, lon2) => {
-                  const R = 6371e3;
-                  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-                  const dLon = ((lon2 - lon1) * Math.PI) / 180;
-                  const a =
-                    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-                    Math.cos((lat1 * Math.PI) / 180) *
-                      Math.cos((lat2 * Math.PI) / 180) *
-                      Math.sin(dLon / 2) *
-                      Math.sin(dLon / 2);
-                  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-                };
-                const dist = getDistance(
-                  finalLat,
-                  finalLong,
-                  site.location.lat,
-                  site.location.long
-                );
-                if (dist > 50) {
-                  finalSiteName = 'start duty from unknown place';
-                } else {
-                  finalSiteName = site.sender_name || finalSiteName;
-                }
+              // 🚀 Started by self -> own duty marked device location must be matched with site location
+              if (!lat || !long) {
+                return res.status(400).json({
+                  success: false,
+                  message: "You are not at your working site, please first reach the site location to start your duty."
+                });
               }
+              const getDistance = (lat1, lon1, lat2, lon2) => {
+                const R = 6371e3;
+                const dLat = ((lat2 - lat1) * Math.PI) / 180;
+                const dLon = ((lon2 - lon1) * Math.PI) / 180;
+                const a =
+                  Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                  Math.cos((lat1 * Math.PI) / 180) *
+                    Math.cos((lat2 * Math.PI) / 180) *
+                    Math.sin(dLon / 2) *
+                    Math.sin(dLon / 2);
+                return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+              };
+              const dist = getDistance(
+                lat,
+                long,
+                siteLat,
+                siteLong
+              );
+              if (dist > 100) {
+                return res.status(400).json({
+                  success: false,
+                  message: "You are not at your working site, please first reach the site location to start your duty."
+                });
+              }
+              finalLat = lat;
+              finalLong = long;
+              finalSiteName = site.sender_name || finalSiteName;
             }
           }
         }
 
         record = new Attendance({
           employeeId,
+          employeeType: isWorker ? 'Employees' : 'userMaster',
+          startLat,
+          startLong,
+          siteLat,
+          siteLong,
           role: emp.role || emp.userRole || 'project',
           date: now,
           dutyStart: now,
@@ -1739,6 +1713,11 @@ exports.manageEmployees = {
       // 4. Create new attendance record for next shift (marked as double shift)
       const nextRecord = new Attendance({
         employeeId,
+        employeeType: current.employeeType || 'Employees',
+        startLat: lat || null,
+        startLong: long || null,
+        siteLat: current.siteLat || null,
+        siteLong: current.siteLong || null,
         date: now,
         dutyStart: now,
         dutyEndScheduled: nextScheduledEnd,
@@ -1943,7 +1922,13 @@ exports.manageEmployees = {
         };
       });
 
-      res.json({ success: true, data });
+      const requesterRole = req.user?.userRole || '';
+      let filteredData = data;
+      if (requesterRole === 'Project') {
+        filteredData = data.filter((item) => (item.employeeType || 'Employees') === 'Employees');
+      }
+
+      res.json({ success: true, data: filteredData });
     } catch (err) {
       console.error('🔴 [CRITICAL] listActiveStaff UNEXPECTED CRASH:');
       console.error('   Message:', err.message);
