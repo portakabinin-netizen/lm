@@ -1354,6 +1354,12 @@ exports.manageEmployees = {
           linkedUser = await userMaster.findById(emp.user_id).lean();
         }
 
+        let isSpecialAction = false;
+        const linkedRole = emp.role || emp.userRole || (linkedUser && (linkedUser.role || linkedUser.userRole)) || '';
+        if (['CorpAdmin', 'userAdmin', 'Project'].includes(linkedRole)) {
+          isSpecialAction = true;
+        }
+
         let shiftStartTime = activeShift?.shiftStartTime;
         if (!shiftStartTime) {
           if (emp.dutyShift?.startFrom) {
@@ -1384,8 +1390,10 @@ exports.manageEmployees = {
             { diff: (nowIST.getTime() - tomorrowShift.getTime()) / 60000, target: tomorrowShift },
           ];
 
-          diffs.sort((a, b) => Math.abs(a.diff) - Math.abs(b.diff));
-          const nearestShift = diffs[0];
+          // Filter out future shifts that are more than 120 minutes in the future to prevent wrong assignment on late check-in
+          const validDiffs = diffs.filter((d) => d.diff >= -120);
+          validDiffs.sort((a, b) => Math.abs(a.diff) - Math.abs(b.diff));
+          const nearestShift = validDiffs[0] || diffs[0];
           diffMins = nearestShift.diff;
 
           const diffMs = nearestShift.target.getTime() - nowIST.getTime();
