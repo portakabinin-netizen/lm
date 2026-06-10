@@ -931,6 +931,7 @@ exports.manageEmployees = {
       const employeeDoc = await Employees.findById(employeeId);
       let emp = employeeDoc ? employeeDoc.toObject() : null;
 
+      let userDoc = null;
       if (emp) {
         role = emp.role || 'project';
         // If employee has null/missing shiftGroupName, assign it now
@@ -998,8 +999,25 @@ exports.manageEmployees = {
         }
       } else {
         const userMaster = require('../models/userMaster');
-        const user = await userMaster.findById(employeeId).lean();
-        if (user) role = user.userRole || 'project';
+        userDoc = await userMaster.findById(employeeId).lean();
+        if (userDoc) role = userDoc.userRole || 'project';
+      }
+
+      // Default shift values from userMaster dutyShift if employee doesn't exist
+      let defaultShiftLockHours = 8;
+      let defaultShiftType = '8hr';
+      let defaultShiftPeriod = 'General';
+      let defaultShiftCode = 'G';
+
+      if (!emp && userDoc && userDoc.dutyShift) {
+        const ds = userDoc.dutyShift;
+        defaultShiftLockHours = ds.durationHrs || 8;
+        defaultShiftType = defaultShiftLockHours === 12 ? '12hr' : '8hr';
+        defaultShiftPeriod = ds.shiftName || 'General';
+        
+        if (ds.shiftName === 'Night2') defaultShiftCode = 'N2';
+        else if (ds.shiftName === 'Night1' || ds.shiftName === 'Night') defaultShiftCode = 'N';
+        else if (ds.shiftName) defaultShiftCode = ds.shiftName.substring(0, 1);
       }
 
       const record = new Attendance({
@@ -1020,10 +1038,10 @@ exports.manageEmployees = {
         forcedOffReason: forcedOffReason || '',
         geoHistory: geoHistory || [],
         // Shift
-        shiftCode: shiftCode || null,
-        shiftType: shiftType || '8hr',
-        shiftPeriod: shiftPeriod || 'Morning',
-        shiftLockHours: shiftLockHours || (shiftType === '12hr' ? 12 : 8),
+        shiftCode: shiftCode || defaultShiftCode,
+        shiftType: shiftType || defaultShiftType,
+        shiftPeriod: shiftPeriod || defaultShiftPeriod,
+        shiftLockHours: shiftLockHours || defaultShiftLockHours,
       });
       await record.save();
       res.status(201).json({ success: true, message: 'Attendance recorded', data: record });

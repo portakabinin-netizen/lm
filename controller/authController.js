@@ -372,6 +372,7 @@ exports.login = async (req, res) => {
                 locationId: activeLink.locationId || null,
                 userDisplayName: user.userDisplayName,
                 userProfileImage: user.userProfileImage || "",
+                mobile: user.userMobile,
                 accessCorporate: list, // Return all so UI can switch
                 accessAllow: true
             }
@@ -610,6 +611,7 @@ exports.switchCorporate = async (req, res) => {
                 locationId: activeLink.locationId || null,
                 userDisplayName: user.userDisplayName,
                 userProfileImage: user.userProfileImage || "",
+                mobile: user.userMobile,
                 accessCorporate: list,
                 accessAllow: true
             }
