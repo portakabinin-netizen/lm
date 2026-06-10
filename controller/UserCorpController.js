@@ -1347,9 +1347,20 @@ exports.manageEmployees = {
           (emp.employmentHistory || []).find((h) => h.active) ||
           (emp.employmentHistory || []).slice(-1)[0];
 
+        // Fetch linked userMaster profile if this is an employee record linked to a user
+        let linkedUser = null;
+        if (emp.user_id) {
+          const userMaster = require('../models/userMaster');
+          linkedUser = await userMaster.findById(emp.user_id).lean();
+        }
+
         let shiftStartTime = activeShift?.shiftStartTime;
-        if (!shiftStartTime && emp.dutyShift?.startFrom) {
-          shiftStartTime = emp.dutyShift.startFrom;
+        if (!shiftStartTime) {
+          if (emp.dutyShift?.startFrom) {
+            shiftStartTime = emp.dutyShift.startFrom;
+          } else if (linkedUser?.dutyShift?.startFrom) {
+            shiftStartTime = linkedUser.dutyShift.startFrom;
+          }
         }
 
         let diffMins = 0;
@@ -1423,8 +1434,12 @@ exports.manageEmployees = {
         }
 
         let lockHrs = activeShift?.shiftHours || 8;
-        if (!activeShift && emp && emp.dutyShift && emp.dutyShift.durationHrs) {
-          lockHrs = emp.dutyShift.durationHrs;
+        if (!activeShift && emp) {
+          if (emp.dutyShift?.durationHrs) {
+            lockHrs = emp.dutyShift.durationHrs;
+          } else if (linkedUser?.dutyShift?.durationHrs) {
+            lockHrs = linkedUser.dutyShift.durationHrs;
+          }
         }
         const currentRate = activeShift?.daily_rate || 0;
 
@@ -1434,7 +1449,11 @@ exports.manageEmployees = {
         const scheduledEnd = new Date(standardStart.getTime() + lockHrs * 3600000);
         const fetchedMonthlyRate = emp.monthlyRate || 0;
         const fetchedDailyRate = parseFloat((fetchedMonthlyRate / 30).toFixed(2));
-        const userShiftName = emp.dutyShift && emp.dutyShift.shiftName;
+        
+        let userShiftName = emp.dutyShift && emp.dutyShift.shiftName;
+        if (!userShiftName && linkedUser?.dutyShift?.shiftName) {
+          userShiftName = linkedUser.dutyShift.shiftName;
+        }
 
         let defaultShiftCode = 'G';
         if (userShiftName) {
@@ -1447,8 +1466,12 @@ exports.manageEmployees = {
         }
 
         const finalShiftCode = emp.selectedShift || shiftCode || defaultShiftCode;
-        const finalShiftGroupName =
-          emp.shiftGroupName || (emp.dutyShift && emp.dutyShift.groupName) || 'MANG';
+        
+        let finalShiftGroupName = emp.shiftGroupName || (emp.dutyShift && emp.dutyShift.groupName);
+        if (!finalShiftGroupName && linkedUser?.dutyShift?.groupName) {
+          finalShiftGroupName = linkedUser.dutyShift.groupName;
+        }
+        if (!finalShiftGroupName) finalShiftGroupName = 'MANG';
 
         let finalLat = lat;
         let finalLong = long;
