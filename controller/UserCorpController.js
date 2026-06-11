@@ -1034,6 +1034,7 @@ exports.manageEmployees = {
         remarks,
         dutyStart: dutyStart ? new Date(dutyStart) : new Date(),
         dutyEnd: dutyEnd ? new Date(dutyEnd) : undefined,
+        dutyEndScheduled: req.body.dutyEndScheduled || (dutyStart ? new Date(new Date(dutyStart).getTime() + (shiftLockHours || defaultShiftLockHours) * 3600000) : new Date(Date.now() + (shiftLockHours || defaultShiftLockHours) * 3600000)),
         forcedOff: !!forcedOff,
         forcedOffReason: forcedOffReason || '',
         geoHistory: geoHistory || [],
