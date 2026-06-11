@@ -1,8 +1,10 @@
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '.env') });
 const mongoose = require('mongoose');
 const userMaster = require('./models/userMaster');
 
 async function syncUsers() {
-  const uri = "mongodb://portakabinin:hipk2025@ac-rrvwcud-shard-00-00.kel8j1j.mongodb.net:27017,ac-rrvwcud-shard-00-01.kel8j1j.mongodb.net:27017,ac-rrvwcud-shard-00-02.kel8j1j.mongodb.net:27017/mainDatabase?ssl=true&replicaSet=atlas-uzlky7-shard-0&authSource=admin&retryWrites=true&w=majority";
+  const uri = process.env.MONGO_URI || "mongodb://portakabinin:hipk2025@ac-rrvwcud-shard-00-00.kel8j1j.mongodb.net:27017,ac-rrvwcud-shard-00-01.kel8j1j.mongodb.net:27017,ac-rrvwcud-shard-00-02.kel8j1j.mongodb.net:27017/mainDatabase?ssl=true&replicaSet=atlas-uzlky7-shard-0&authSource=admin&retryWrites=true&w=majority";
   await mongoose.connect(uri, {
     useNewUrlParser: true,
     useUnifiedTopology: true
@@ -29,14 +31,25 @@ async function syncUsers() {
   for (const user of users) {
       if (!user.accessCorporate || user.accessCorporate.length === 0) continue;
       
+      const cleanMobile = String(user.userMobile || "").replace(/\D/g, "").slice(-10);
+      
       for (const access of user.accessCorporate) {
           if (!access.dbName) continue;
           
           const db = mongoose.connection.useDb(access.dbName);
           const Employees = db.model('Employees', empSchema);
           
-          // Check if employee already exists via _id
-          let emp = await Employees.findById(user._id);
+          // Check if employee already exists via _id or user_id
+          let emp = null;
+          if (mongoose.Types.ObjectId.isValid(user._id)) {
+              emp = await Employees.findOne({ $or: [{ _id: user._id }, { user_id: user._id }] });
+          }
+          
+          // Check if employee already exists via mobile number
+          if (!emp && cleanMobile) {
+              const mobileRegex = new RegExp(cleanMobile.split('').join('\\D*') + '\\D*$');
+              emp = await Employees.findOne({ mobile: mobileRegex });
+          }
           
           if (!emp) {
               emp = new Employees({
@@ -60,7 +73,7 @@ async function syncUsers() {
               if (!emp.shiftGroupName) { emp.shiftGroupName = "MANG"; updated = true; }
               if (!emp.selectedShift) { emp.selectedShift = "G"; updated = true; }
               if (emp.monthlyRate === undefined) { emp.monthlyRate = 0; updated = true; }
-              if (!emp.user_id) { emp.user_id = user._id; updated = true; }
+              if (String(emp.user_id) !== String(user._id)) { emp.user_id = user._id; updated = true; }
               
               if (updated) {
                   await emp.save();

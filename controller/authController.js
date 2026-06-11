@@ -276,6 +276,8 @@ exports.register = async (req, res) => {
                             role: data.userRole,
                             active: true,
                             addresses: data.addresses,
+                            user_id: newUser._id,
+                            userRole: data.userRole,
                             employmentHistory: [{
                                 joinDate: new Date(),
                                 daily_rate: data.daily_rate || 0,
@@ -290,10 +292,16 @@ exports.register = async (req, res) => {
                         });
                         await newEmp.save();
                         console.log(`Auto-created employee record for ${data.userDisplayName} in ${targetDbName}`);
+                    } else {
+                        // Employee already exists, link them!
+                        existingEmp.user_id = newUser._id;
+                        existingEmp.userRole = data.userRole;
+                        await existingEmp.save();
+                        console.log(`Linked existing employee record for ${data.userDisplayName} in ${targetDbName} to userMaster`);
                     }
                 }
             } catch (empErr) {
-                console.error("Failed to auto-create employee record:", empErr.message);
+                console.error("Failed to auto-create or link employee record:", empErr.message);
             }
         }
         // 💸 Auto-create Petty Cash Book on registration if allowed cash flow or has Project/Admin/Finance role

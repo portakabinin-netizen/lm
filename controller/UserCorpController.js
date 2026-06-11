@@ -1341,7 +1341,6 @@ exports.manageEmployees = {
         if (!emp)
           return res.status(404).json({ success: false, message: 'Employee details not found' });
 
-        let isSpecialAction = false;
         // ─── SHIFT VALIDATION ───
         const activeShift =
           (emp.employmentHistory || []).find((h) => h.active) ||
@@ -1374,20 +1373,21 @@ exports.manageEmployees = {
         if (shiftStartTime && !isSpecialAction) {
           const [h, m] = shiftStartTime.split(':').map(Number);
 
-          // Get difference in minutes to the nearest shift start in Asia/Kolkata timezone
-          const istString = now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' });
-          const nowIST = new Date(istString);
+          // Asia/Kolkata is always UTC+05:30 (offset of 5.5 hours = 19,800,000 ms)
+          const kolkataOffset = 5.5 * 3600000;
+          const nowKolkata = new Date(now.getTime() + kolkataOffset);
 
-          const todayShift = new Date(nowIST);
-          todayShift.setHours(h, m, 0, 0);
+          // Construct target shift times shifted by the same Kolkata offset
+          const todayShift = new Date(nowKolkata);
+          todayShift.setUTCHours(h, m, 0, 0);
 
           const yesterdayShift = new Date(todayShift.getTime() - 24 * 3600000);
           const tomorrowShift = new Date(todayShift.getTime() + 24 * 3600000);
 
           const diffs = [
-            { diff: (nowIST.getTime() - todayShift.getTime()) / 60000, target: todayShift },
-            { diff: (nowIST.getTime() - yesterdayShift.getTime()) / 60000, target: yesterdayShift },
-            { diff: (nowIST.getTime() - tomorrowShift.getTime()) / 60000, target: tomorrowShift },
+            { diff: (nowKolkata.getTime() - todayShift.getTime()) / 60000, target: todayShift },
+            { diff: (nowKolkata.getTime() - yesterdayShift.getTime()) / 60000, target: yesterdayShift },
+            { diff: (nowKolkata.getTime() - tomorrowShift.getTime()) / 60000, target: tomorrowShift },
           ];
 
           // Filter out future shifts that are more than 120 minutes in the future to prevent wrong assignment on late check-in
@@ -1396,7 +1396,8 @@ exports.manageEmployees = {
           const nearestShift = validDiffs[0] || diffs[0];
           diffMins = nearestShift.diff;
 
-          const diffMs = nearestShift.target.getTime() - nowIST.getTime();
+          // The time difference between the nearest shift start and current time
+          const diffMs = nearestShift.target.getTime() - nowKolkata.getTime();
           standardStart = new Date(now.getTime() + diffMs);
 
           const displayName = emp.name || emp.userDisplayName || 'User';
