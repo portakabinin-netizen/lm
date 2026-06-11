@@ -1355,7 +1355,7 @@ exports.manageEmployees = {
 
         let isSpecialAction = false;
         const linkedRole = emp.role || emp.userRole || (linkedUser && (linkedUser.role || linkedUser.userRole)) || '';
-        if (['CorpAdmin', 'userAdmin', 'Project'].includes(linkedRole)) {
+        if (['CorpAdmin', 'userAdmin'].includes(linkedRole)) {
           isSpecialAction = true;
         }
 
@@ -1438,6 +1438,45 @@ exports.manageEmployees = {
               success: false,
               tooEarly: true,
               message: `Too early to start duty. Shift starts at ${shiftStartTime}.`,
+            });
+          }
+
+          if (diffMins > 60) {
+            if (req.body.requestPermission) {
+              const { Messages } = req.tenantModels;
+              if (Messages) {
+                const msg = new Messages({
+                  senderName: displayName,
+                  senderId: queryId,
+                  text: `⚠️ Request to start late duty from ${displayName}. Shift started at ${shiftStartTime}.`,
+                  type: 'text',
+                  isOneToOne: false,
+                  status: 'unseen',
+                });
+                await msg.save();
+                req.io.to(req.tenantDbName).emit('newMessage', msg);
+              }
+
+              req.io.to(req.tenantDbName).emit('admin:broadcast', {
+                id: new mongoose.Types.ObjectId().toString(),
+                title: '⚠️ Late Start Request',
+                message: `Employee ${displayName} requested to start duty late. Shift started at ${shiftStartTime}.`,
+                priority: 'normal',
+                targetRoles: ['CorpAdmin'],
+                sentBy: displayName,
+                sentByRole: 'Employee',
+                at: now.toISOString(),
+              });
+
+              return res.json({
+                success: true,
+                message: `Request to start duty late has been sent to Admin via chatroom.`,
+              });
+            }
+            return res.status(403).json({
+              success: false,
+              tooLate: true,
+              message: `Too late to start duty. Shift started at ${shiftStartTime}. Please request permission from Admin.`,
             });
           }
         }
