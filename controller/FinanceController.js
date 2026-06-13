@@ -114,6 +114,38 @@ const syncActiveUserPettyCashBooks = async (tenantModels, tenantDbName) => {
     return staffList;
 };
 
+const getLedgerEnrollmentMap = async (tenantModels) => {
+    const { Ledgers, Employees } = tenantModels;
+    if (!Ledgers || !Employees) return new Map();
+
+    const ledgers = await Ledgers.find({ refId: { $ne: null } }, "_id refId refType").lean();
+    const employees = await Employees.find({}, "_id enrollment_no user_id").lean();
+
+    const employeeEnrollmentMap = new Map();
+    const userEnrollmentMap = new Map();
+    employees.forEach(e => {
+        if (e.enrollment_no) {
+            employeeEnrollmentMap.set(String(e._id), e.enrollment_no);
+            if (e.user_id) {
+                userEnrollmentMap.set(String(e.user_id), e.enrollment_no);
+            }
+        }
+    });
+
+    const ledgerMap = new Map();
+    ledgers.forEach(l => {
+        if (l.refType === "Staff") {
+            const en = employeeEnrollmentMap.get(String(l.refId));
+            if (en) ledgerMap.set(String(l._id), en);
+        } else if (l.refType === "User") {
+            const en = userEnrollmentMap.get(String(l.refId));
+            if (en) ledgerMap.set(String(l._id), en);
+        }
+    });
+
+    return ledgerMap;
+};
+
 /**
  * 🛠️ Internal Helper: Ensure Ledger Folio
  * Used for auto-creating ledgers for Leads/Suppliers/Employees.
@@ -421,7 +453,12 @@ exports.getAccountingMaster = async (req, res) => {
         // Bypassed global recalculateAllLedgerBalances on load for performance
 
         const finalLedgers = await Ledgers.find({}).lean();
-        res.json({ success: true, data: { groups, ledgers: finalLedgers } });
+        const ledgerEnrollmentMap = await getLedgerEnrollmentMap(req.tenantModels);
+        const enhancedLedgers = finalLedgers.map(l => ({
+            ...l,
+            enrollmentNo: ledgerEnrollmentMap.get(String(l._id)) || ""
+        }));
+        res.json({ success: true, data: { groups, ledgers: enhancedLedgers } });
     } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
 
@@ -1296,7 +1333,18 @@ exports.manageVouchers = {
             }
 
             const vouchers = await Vouchers.find(q).sort({ date: -1 }).lean();
-            res.json({ success: true, data: vouchers });
+            const ledgerEnrollmentMap = await getLedgerEnrollmentMap(req.tenantModels);
+            const enrichedVouchers = vouchers.map(v => {
+                const enrichedEntries = (v.entries || []).map(e => ({
+                    ...e,
+                    enrollmentNo: ledgerEnrollmentMap.get(String(e.ledgerId)) || ""
+                }));
+                return {
+                    ...v,
+                    entries: enrichedEntries
+                };
+            });
+            res.json({ success: true, data: enrichedVouchers });
         } catch (err) { res.status(500).json({ success: false, message: err.message }); }
     },
     update: async (req, res) => {
@@ -1604,6 +1652,7 @@ exports.getSalaryVoucher = async (req, res) => {
 exports.getPettyCashBalances = async (req, res) => {
     try {
         const { Ledgers, Vouchers } = req.tenantModels;
+        const ledgerEnrollmentMap = await getLedgerEnrollmentMap(req.tenantModels);
 
         // 1. Proactively sync/create user-specific petty cash books for active cash-flow users in this tenant first
         let activeCashFlowUsers = [];
@@ -1662,7 +1711,8 @@ exports.getPettyCashBalances = async (req, res) => {
                 totalDebit,
                 totalCredit,
                 balance: currentBalance,
-                transactionCount: vouchers.length
+                transactionCount: vouchers.length,
+                enrollmentNo: ledgerEnrollmentMap.get(String(ledger._id)) || ""
             });
         }
 
@@ -1689,6 +1739,8 @@ exports.getPettyCashTransactions = async (req, res) => {
         if (!ledger) {
             return res.status(404).json({ success: false, message: "Ledger not found" });
         }
+
+        const ledgerEnrollmentMap = await getLedgerEnrollmentMap(req.tenantModels);
 
         // Build Voucher Query
         const query = { "entries.ledgerId": ledgerId };
@@ -1727,7 +1779,8 @@ exports.getPettyCashTransactions = async (req, res) => {
                 otherLegs: otherEntries.map(oe => ({
                     ledgerId: oe.ledgerId,
                     ledgerName: oe.ledgerName,
-                    amount: oe.debit || oe.credit
+                    amount: oe.debit || oe.credit,
+                    enrollmentNo: ledgerEnrollmentMap.get(String(oe.ledgerId)) || ""
                 }))
             };
         });
@@ -1737,7 +1790,8 @@ exports.getPettyCashTransactions = async (req, res) => {
             ledger: {
                 _id: ledger._id,
                 name: ledger.ledgerName || ledger.name || "",
-                openingBal: ledger.openingBalance || ledger.openingBal || 0
+                openingBal: ledger.openingBalance || ledger.openingBal || 0,
+                enrollmentNo: ledgerEnrollmentMap.get(String(ledger._id)) || ""
             },
             data: transactions
         });
