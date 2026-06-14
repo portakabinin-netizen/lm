@@ -8,6 +8,7 @@
  */
 
 const mongoose = require("mongoose");
+const ExcelJS = require("exceljs");
 
 const BILLABLE_LEAD_STATES = ["accepted"];
 
@@ -2022,6 +2023,546 @@ exports.getLedgerTransactions = async (req, res) => {
         });
 
         res.json({ success: true, data: formatted });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+};
+
+/**
+ * 📄 GET: Download Excel Voucher Upload Template
+ * Generates an Excel sheet with 'Sales Vouchers' and 'Salary Payable Vouchers' tabs.
+ */
+exports.generateVoucherTemplate = async (req, res) => {
+    try {
+        const workbook = new ExcelJS.Workbook();
+        
+        // 1. Sales Vouchers Worksheet
+        const salesSheet = workbook.addWorksheet('Sales Vouchers');
+        salesSheet.columns = [
+            { header: 'Date (YYYY-MM-DD)', key: 'date', width: 18 },
+            { header: 'Voucher No / Ref', key: 'voucherNo', width: 18 },
+            { header: 'Client Ledger Name', key: 'clientLedger', width: 25 },
+            { header: 'Sales Ledger Name', key: 'salesLedger', width: 20 },
+            { header: 'Amount', key: 'amount', width: 12 },
+            { header: 'Narration', key: 'narration', width: 30 },
+            { header: 'Project / Lead (No, Name or ID)', key: 'projectLead', width: 30 }
+        ];
+        
+        // Style headers for Sales sheet (Blue styling)
+        salesSheet.getRow(1).eachCell((cell) => {
+            cell.font = { name: 'Arial', family: 4, size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
+            cell.fill = {
+                type: 'pattern',
+                pattern: 'solid',
+                fgColor: { argb: 'FF1F497D' } // dark blue
+            };
+            cell.alignment = { vertical: 'middle', horizontal: 'left' };
+        });
+        
+        // Sample rows
+        salesSheet.addRow({
+            date: '2026-06-01',
+            voucherNo: 'SAL-2026-06-01',
+            clientLedger: 'Acme Corporation',
+            salesLedger: 'Sales',
+            amount: 150000,
+            narration: 'Sales invoice billing for June',
+            projectLead: '1001'
+        });
+        salesSheet.addRow({
+            date: '2026-06-02',
+            voucherNo: 'SAL-2026-06-02',
+            clientLedger: 'Beta Technologies',
+            salesLedger: 'Sales',
+            amount: 75000,
+            narration: 'Consulting services for project Beta',
+            projectLead: 'Beta Project'
+        });
+
+        // 2. Salary Payable Vouchers Worksheet
+        const salarySheet = workbook.addWorksheet('Salary Payable Vouchers');
+        salarySheet.columns = [
+            { header: 'Date (YYYY-MM-DD)', key: 'date', width: 18 },
+            { header: 'Voucher No / Ref', key: 'voucherNo', width: 18 },
+            { header: 'Salary Expense Ledger Name', key: 'expenseLedger', width: 28 },
+            { header: 'Employee Ledger Name', key: 'employeeLedger', width: 25 },
+            { header: 'Amount', key: 'amount', width: 12 },
+            { header: 'Narration', key: 'narration', width: 30 },
+            { header: 'Project / Lead (No, Name or ID)', key: 'projectLead', width: 30 }
+        ];
+
+        // Style headers for Salary sheet (Green styling)
+        salarySheet.getRow(1).eachCell((cell) => {
+            cell.font = { name: 'Arial', family: 4, size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
+            cell.fill = {
+                type: 'pattern',
+                pattern: 'solid',
+                fgColor: { argb: 'FF375623' } // dark green
+            };
+            cell.alignment = { vertical: 'middle', horizontal: 'left' };
+        });
+
+        // Sample rows
+        salarySheet.addRow({
+            date: '2026-06-14',
+            voucherNo: 'SALARY-2026-06',
+            expenseLedger: 'Salary Expenses',
+            employeeLedger: 'John Doe',
+            amount: 25000,
+            narration: 'Salary payable for June 2026',
+            projectLead: '1001'
+        });
+        salarySheet.addRow({
+            date: '2026-06-14',
+            voucherNo: 'SALARY-2026-06',
+            expenseLedger: 'Salary Expenses',
+            employeeLedger: 'Jane Smith',
+            amount: 28000,
+            narration: 'Salary payable for June 2026',
+            projectLead: '1002'
+        });
+
+        // Write to local workspace path as a convenience
+        try {
+            await workbook.xlsx.writeFile("c:/hipk/Voucher_Upload_Template.xlsx");
+        } catch (fErr) {
+            console.error("Failed to write offline template copy:", fErr.message);
+        }
+
+        res.setHeader(
+            'Content-Type',
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        );
+        res.setHeader('Content-Disposition', 'attachment; filename=Voucher_Upload_Template.xlsx');
+        await workbook.xlsx.write(res);
+        res.end();
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+};
+
+/**
+ * 📥 POST: Parse Excel and Bulk Import Vouchers
+ */
+exports.bulkImportVouchers = async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ success: false, message: "No file uploaded" });
+        }
+
+        const { Leads, Employees, Ledgers, Groups, Vouchers, Counters, Parties } = req.tenantModels;
+        const workbook = new ExcelJS.Workbook();
+        await workbook.xlsx.load(req.file.buffer);
+
+        const salesSheet = workbook.getWorksheet('Sales Vouchers') || workbook.getWorksheet(1);
+        const salarySheet = workbook.getWorksheet('Salary Payable Vouchers') || workbook.getWorksheet(2);
+
+        const errors = [];
+        const parseDateVal = (val) => {
+            if (val instanceof Date) return val;
+            if (!val) return null;
+            const d = new Date(val);
+            return isNaN(d.getTime()) ? null : d;
+        };
+
+        const getCellValue = (cell) => {
+            if (!cell) return null;
+            if (cell.value && typeof cell.value === 'object') {
+                if (cell.value.result !== undefined) return cell.value.result;
+                if (cell.value.text !== undefined) return cell.value.text;
+            }
+            return cell.value;
+        };
+
+        // 1. Parse Sales Rows
+        const salesRows = [];
+        if (salesSheet) {
+            salesSheet.eachRow((row, rowNumber) => {
+                if (rowNumber > 1) {
+                    const dateVal = getCellValue(row.getCell(1));
+                    const voucherNo = String(getCellValue(row.getCell(2)) || "").trim();
+                    const clientLedger = String(getCellValue(row.getCell(3)) || "").trim();
+                    const salesLedger = String(getCellValue(row.getCell(4)) || "").trim();
+                    const amountVal = getCellValue(row.getCell(5));
+                    const narration = String(getCellValue(row.getCell(6)) || "").trim();
+                    const projectLead = String(getCellValue(row.getCell(7)) || "").trim();
+
+                    // Skip empty rows
+                    if (!dateVal && !clientLedger && !salesLedger && !amountVal) return;
+
+                    salesRows.push({
+                        rowNumber,
+                        dateVal,
+                        voucherNo,
+                        clientLedger,
+                        salesLedger,
+                        amountVal,
+                        narration,
+                        projectLead
+                    });
+                }
+            });
+        }
+
+        // 2. Parse Salary Rows
+        const salaryRows = [];
+        if (salarySheet) {
+            salarySheet.eachRow((row, rowNumber) => {
+                if (rowNumber > 1) {
+                    const dateVal = getCellValue(row.getCell(1));
+                    const voucherNo = String(getCellValue(row.getCell(2)) || "").trim();
+                    const expenseLedger = String(getCellValue(row.getCell(3)) || "").trim();
+                    const employeeLedger = String(getCellValue(row.getCell(4)) || "").trim();
+                    const amountVal = getCellValue(row.getCell(5));
+                    const narration = String(getCellValue(row.getCell(6)) || "").trim();
+                    const projectLead = String(getCellValue(row.getCell(7)) || "").trim();
+
+                    // Skip empty rows
+                    if (!dateVal && !expenseLedger && !employeeLedger && !amountVal) return;
+
+                    salaryRows.push({
+                        rowNumber,
+                        dateVal,
+                        voucherNo,
+                        expenseLedger,
+                        employeeLedger,
+                        amountVal,
+                        narration,
+                        projectLead
+                    });
+                }
+            });
+        }
+
+        if (salesRows.length === 0 && salaryRows.length === 0) {
+            return res.status(400).json({ success: false, message: "Excel sheet is empty or contains no records." });
+        }
+
+        // Resolve default location ID for vouchers
+        let resolvedLocId;
+        const profile = await req.tenantModels.ProfileMaster.findOne({}).lean();
+        resolvedLocId = profile?.locations?.[0]?._id || req.user?.accessibleLocationIds?.[0];
+        if (!resolvedLocId) {
+            resolvedLocId = new mongoose.Types.ObjectId();
+        }
+
+        // Cache all existing ledgers to speed up lookups and track planned creations
+        const ledgerCache = {};
+        const allLedgers = await Ledgers.find({}).lean();
+        allLedgers.forEach(l => {
+            ledgerCache[l.ledgerName.trim().toLowerCase()] = l;
+        });
+
+        // Group rows into Vouchers to support compound entries
+        const salesVoucherGroups = {};
+        let tempSalesIndex = 1;
+        salesRows.forEach(row => {
+            const key = row.voucherNo ? `SAL_${row.voucherNo}` : `TEMP_SAL_${tempSalesIndex++}`;
+            if (!salesVoucherGroups[key]) {
+                salesVoucherGroups[key] = [];
+            }
+            salesVoucherGroups[key].push(row);
+        });
+
+        const salaryVoucherGroups = {};
+        let tempSalaryIndex = 1;
+        salaryRows.forEach(row => {
+            const key = row.voucherNo ? `JRN_${row.voucherNo}` : `TEMP_JRN_${tempSalaryIndex++}`;
+            if (!salaryVoucherGroups[key]) {
+                salaryVoucherGroups[key] = [];
+            }
+            salaryVoucherGroups[key].push(row);
+        });
+
+        const voucherPlans = [];
+
+        // 3. Process Sales Groups (Dry Run Validation)
+        for (const [key, rows] of Object.entries(salesVoucherGroups)) {
+            const firstRow = rows[0];
+            const date = parseDateVal(firstRow.dateVal);
+            if (!date) {
+                errors.push(`[Sales Vouchers Group ${key}] Date is invalid or empty.`);
+                continue;
+            }
+
+            const entriesPlan = [];
+            const originalRef = firstRow.voucherNo || "";
+
+            for (const row of rows) {
+                const rowAmt = parseFloat(row.amountVal);
+                if (isNaN(rowAmt) || rowAmt <= 0) {
+                    errors.push(`[Sales Row ${row.rowNumber}] Amount is invalid (must be greater than 0).`);
+                    continue;
+                }
+
+                // Resolve Lead
+                let leadId = null;
+                if (!row.projectLead) {
+                    errors.push(`[Sales Row ${row.rowNumber}] Project / Lead identifier is required.`);
+                } else {
+                    let lead = null;
+                    if (mongoose.Types.ObjectId.isValid(row.projectLead)) {
+                        lead = await Leads.findById(row.projectLead).lean();
+                    }
+                    if (!lead && !isNaN(Number(row.projectLead))) {
+                        lead = await Leads.findOne({ lead_no: Number(row.projectLead) }).lean();
+                    }
+                    if (!lead) {
+                        lead = await Leads.findOne({ sender_name: { $regex: new RegExp("^" + row.projectLead.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&') + "$", "i") } }).lean();
+                    }
+                    if (lead) {
+                        leadId = lead._id;
+                    } else {
+                        errors.push(`[Sales Row ${row.rowNumber}] Project / Lead "${row.projectLead}" could not be resolved.`);
+                    }
+                }
+
+                // Prepare Client Ledger (Sundry Debtors)
+                const clientName = row.clientLedger;
+                if (!clientName) {
+                    errors.push(`[Sales Row ${row.rowNumber}] Client Ledger Name is required.`);
+                    continue;
+                }
+                const clientCacheKey = clientName.toLowerCase();
+                let clientLedgerPlan = ledgerCache[clientCacheKey];
+                if (!clientLedgerPlan) {
+                    const party = await Parties.findOne({ name: { $regex: new RegExp("^" + clientName.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&') + "$", "i") }, type: "Client" }).lean();
+                    clientLedgerPlan = {
+                        isNew: true,
+                        ledgerName: clientName,
+                        groupName: "Sundry Debtors",
+                        nature: "Dr",
+                        refId: leadId || party?._id || null,
+                        refType: leadId ? "Lead" : (party ? "Client" : "Manual")
+                    };
+                    ledgerCache[clientCacheKey] = clientLedgerPlan;
+                }
+
+                // Prepare Sales Ledger (Sales Accounts)
+                const salesName = row.salesLedger || "Sales";
+                const salesCacheKey = salesName.toLowerCase();
+                let salesLedgerPlan = ledgerCache[salesCacheKey];
+                if (!salesLedgerPlan) {
+                    salesLedgerPlan = {
+                        isNew: true,
+                        ledgerName: salesName,
+                        groupName: "Sales Accounts",
+                        nature: "Cr"
+                    };
+                    ledgerCache[salesCacheKey] = salesLedgerPlan;
+                }
+
+                entriesPlan.push({
+                    ledgerPlan: clientLedgerPlan,
+                    debit: rowAmt,
+                    credit: 0,
+                    leadId
+                });
+                entriesPlan.push({
+                    ledgerPlan: salesLedgerPlan,
+                    debit: 0,
+                    credit: rowAmt,
+                    leadId
+                });
+            }
+
+            const narrationParts = rows.map(r => r.narration).filter(Boolean);
+            const narration = narrationParts.join("; ") || `Sales Voucher uploaded via Excel`;
+
+            voucherPlans.push({
+                voucherType: "Sales",
+                date,
+                narration,
+                entriesPlan,
+                originalRef,
+                leadId: entriesPlan[0]?.leadId || null
+            });
+        }
+
+        // 4. Process Salary Groups (Dry Run Validation)
+        for (const [key, rows] of Object.entries(salaryVoucherGroups)) {
+            const firstRow = rows[0];
+            const date = parseDateVal(firstRow.dateVal);
+            if (!date) {
+                errors.push(`[Salary Vouchers Group ${key}] Date is invalid or empty.`);
+                continue;
+            }
+
+            const entriesPlan = [];
+            const originalRef = firstRow.voucherNo || "";
+
+            for (const row of rows) {
+                const rowAmt = parseFloat(row.amountVal);
+                if (isNaN(rowAmt) || rowAmt <= 0) {
+                    errors.push(`[Salary Row ${row.rowNumber}] Amount is invalid (must be greater than 0).`);
+                    continue;
+                }
+
+                // Resolve Lead
+                let leadId = null;
+                if (!row.projectLead) {
+                    errors.push(`[Salary Row ${row.rowNumber}] Project / Lead identifier is required.`);
+                } else {
+                    let lead = null;
+                    if (mongoose.Types.ObjectId.isValid(row.projectLead)) {
+                        lead = await Leads.findById(row.projectLead).lean();
+                    }
+                    if (!lead && !isNaN(Number(row.projectLead))) {
+                        lead = await Leads.findOne({ lead_no: Number(row.projectLead) }).lean();
+                    }
+                    if (!lead) {
+                        lead = await Leads.findOne({ sender_name: { $regex: new RegExp("^" + row.projectLead.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&') + "$", "i") } }).lean();
+                    }
+                    if (lead) {
+                        leadId = lead._id;
+                    } else {
+                        errors.push(`[Salary Row ${row.rowNumber}] Project / Lead "${row.projectLead}" could not be resolved.`);
+                    }
+                }
+
+                // Prepare Expense Ledger (Direct Expenses)
+                const expenseName = row.expenseLedger || "Salary Expenses";
+                const expenseCacheKey = expenseName.toLowerCase();
+                let expenseLedgerPlan = ledgerCache[expenseCacheKey];
+                if (!expenseLedgerPlan) {
+                    expenseLedgerPlan = {
+                        isNew: true,
+                        ledgerName: expenseName,
+                        groupName: "Direct Expenses",
+                        nature: "Dr"
+                    };
+                    ledgerCache[expenseCacheKey] = expenseLedgerPlan;
+                }
+
+                // Prepare Employee Ledger (Account Payables)
+                const employeeName = row.employeeLedger;
+                if (!employeeName) {
+                    errors.push(`[Salary Row ${row.rowNumber}] Employee Ledger Name is required.`);
+                    continue;
+                }
+                const employeeCacheKey = employeeName.toLowerCase();
+                let employeeLedgerPlan = ledgerCache[employeeCacheKey];
+                if (!employeeLedgerPlan) {
+                    const employee = await Employees.findOne({ name: { $regex: new RegExp("^" + employeeName.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&') + "$", "i") } }).lean();
+                    employeeLedgerPlan = {
+                        isNew: true,
+                        ledgerName: employeeName,
+                        groupName: "Account Payables",
+                        parentGroup: "Current Liabilities",
+                        refId: employee?._id || null,
+                        refType: employee ? "Staff" : "Manual",
+                        nature: "Cr"
+                    };
+                    ledgerCache[employeeCacheKey] = employeeLedgerPlan;
+                }
+
+                entriesPlan.push({
+                    ledgerPlan: expenseLedgerPlan,
+                    debit: rowAmt,
+                    credit: 0,
+                    leadId
+                });
+                entriesPlan.push({
+                    ledgerPlan: employeeLedgerPlan,
+                    debit: 0,
+                    credit: rowAmt,
+                    leadId
+                });
+            }
+
+            const narrationParts = rows.map(r => r.narration).filter(Boolean);
+            const narration = narrationParts.join("; ") || `Salary Payable Voucher uploaded via Excel`;
+
+            voucherPlans.push({
+                voucherType: "Journal",
+                date,
+                narration,
+                entriesPlan,
+                originalRef,
+                leadId: entriesPlan[0]?.leadId || null
+            });
+        }
+
+        // Return error reports if any validation fails
+        if (errors.length > 0) {
+            return res.status(400).json({ success: false, message: "Excel sheet failed validation checks", errors });
+        }
+
+        // 5. Execution Phase (Save Vouchers and ensure ledgers exist)
+        const savedVouchers = [];
+        const affectedLedgerIds = new Set();
+
+        for (const plan of voucherPlans) {
+            const resolvedEntries = [];
+
+            for (const entry of plan.entriesPlan) {
+                let ledgerId;
+                const lp = entry.ledgerPlan;
+
+                if (lp.isNew) {
+                    const createdLedger = await exports.ensureLedgerFolioInternal(req.tenantModels, {
+                        name: lp.ledgerName,
+                        group: lp.groupName,
+                        parentGroup: lp.parentGroup,
+                        refId: lp.refId,
+                        refType: lp.refType,
+                        nature: lp.nature
+                    });
+                    ledgerId = createdLedger._id;
+                    lp.isNew = false;
+                    lp._id = createdLedger._id;
+                } else {
+                    ledgerId = lp._id;
+                }
+
+                resolvedEntries.push({
+                    ledgerId,
+                    ledgerName: lp.ledgerName,
+                    debit: entry.debit,
+                    credit: entry.credit,
+                    leadId: entry.leadId
+                });
+
+                affectedLedgerIds.add(ledgerId.toString());
+            }
+
+            const voucherType = plan.voucherType;
+            const counterId = `voucher_${voucherType}_${resolvedLocId}`;
+            const counter = await Counters.findByIdAndUpdate(counterId, { $inc: { seq: 1 } }, { upsert: true, new: true });
+            const prefix = voucherType.substring(0, 3).toUpperCase();
+            const voucherNo = `${prefix}-${resolvedLocId.toString().slice(-4)}-${counter.seq}`;
+
+            const fullNarration = plan.narration + (plan.originalRef ? ` (Ref: ${plan.originalRef})` : "");
+
+            const newVoucher = new Vouchers({
+                locationId: resolvedLocId,
+                voucherType,
+                voucherNo,
+                date: plan.date,
+                narration: fullNarration,
+                entries: resolvedEntries,
+                leadId: plan.leadId,
+                legacyMetadata: {
+                    uploadRef: plan.originalRef || undefined,
+                    source: "ExcelUpload"
+                }
+            });
+
+            await newVoucher.save();
+            savedVouchers.push(newVoucher);
+        }
+
+        // 6. Balance recalculation
+        if (affectedLedgerIds.size > 0) {
+            await recalculateLedgerBalances(req.tenantModels, Array.from(affectedLedgerIds));
+        }
+
+        res.json({
+            success: true,
+            message: `Successfully uploaded ${savedVouchers.length} vouchers containing ${savedVouchers.reduce((sum, v) => sum + v.entries.length, 0)} entries.`,
+            count: savedVouchers.length
+        });
+
     } catch (err) {
         res.status(500).json({ success: false, message: err.message });
     }

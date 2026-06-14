@@ -625,6 +625,27 @@ exports.getPaymentSummary = async (req, res) => {
 
         const recentTransactions = [...txns].sort((a, b) => new Date(b.txn_date) - new Date(a.txn_date)).slice(0, 10);
 
+        // Calculate pending salary and bills collections
+        let pendingSalary = 0;
+        let pendingBillsCollections = 0;
+
+        ledgers.forEach(l => {
+            const groupInfo = ledgerGroupMap[l._id.toString()];
+            const gName = (groupInfo?.groupName || "").toLowerCase();
+
+            if (l.refType === "Staff" || gName === "account payables") {
+                if (l.currentBalance < 0) {
+                    pendingSalary += Math.abs(l.currentBalance);
+                }
+            }
+
+            if (gName === "sundry debtors") {
+                if (l.currentBalance > 0) {
+                    pendingBillsCollections += l.currentBalance;
+                }
+            }
+        });
+
         res.json({
             success: true,
             data: {
@@ -632,6 +653,7 @@ exports.getPaymentSummary = async (req, res) => {
                 leadLinkedPayments, leadLinkedReceipts,
                 purchases, sales, directExpenses, directIncome, indirectExpenses, indirectIncome, grossMargin, netProfit,
                 byType, paymentBreakdown, receiptBreakdown, recentTransactions,
+                pendingSalary, pendingBillsCollections
             },
         });
     } catch (err) {

@@ -8,9 +8,13 @@
 
 const express = require("express");
 const router = express.Router();
+const multer = require("multer");
 const auth = require("../middleware/authMiddleware");
 const tenant = require("../middleware/tenantMiddleware");
 const ctrl = require("../controller/FinanceController");
+
+const storage = multer.memoryStorage();
+const upload = multer({ storage });
 
 /**
  * 🔒 PROTECTED ALL FINANCE ROUTES
@@ -39,6 +43,8 @@ router.get("/petty-cash/transactions", ctrl.getPettyCashTransactions);
 router.post("/contra/approve",         ctrl.approveContraVoucher);
 
 // --- 🎫 VOUCHERS ---
+router.get("/vouchers/bulk-template", ctrl.generateVoucherTemplate);
+router.post("/vouchers/bulk-upload", upload.single("file"), ctrl.bulkImportVouchers);
 router.get("/vouchers",          ctrl.manageVouchers.list);
 router.get("/vouchers/ledger/:ledgerId", ctrl.manageVouchers.getByLedger);
 router.post("/vouchers",         ctrl.manageVouchers.create);
