@@ -813,11 +813,178 @@ exports.manageProducts = {
  * 👷 EMPLOYEES & STAFF (Identity Reverted to Standalone Users)
  */
 exports.manageEmployees = {
-  list: (req, res) => manageSpoke.list(req, res, 'Employees'),
-  get: (req, res) => manageSpoke.getById(req, res, 'Employees'),
-  create: async (req, res) => {
+  list: async (req, res) => {
     try {
       const { Employees } = req.tenantModels;
+      const accessibleIds = req.user?.accessibleLocationIds;
+      const q = {};
+      if (req.user?.userRole !== 'CorpAdmin' && accessibleIds?.length > 0) {
+        q.locationId = { $in: accessibleIds };
+      }
+      const employeesList = await Employees.find(q).lean();
+
+      const userMaster = require('../models/userMaster');
+      const tenantDbName = req.tenantDbName || req.user?.dbName;
+      const uQuery = { userActive: true };
+      if (tenantDbName) {
+        uQuery.accessCorporate = { $elemMatch: { dbName: tenantDbName, isActive: { $ne: false } } };
+      }
+      const userMasterList = await userMaster.find(uQuery).lean();
+
+      const userMapById = new Map();
+      const userMapByMobile = new Map();
+      const userMapByEmail = new Map();
+
+      userMasterList.forEach(u => {
+        const name = u.userDisplayName || u.name || `${u.firstName || ''} ${u.lastName || ''}`.trim() || u.email;
+        const mappedUser = {
+          _id: u._id,
+          name,
+          mobile: u.userMobile || u.mobile,
+          email: u.email,
+          role: u.userRole || u.role || 'project',
+          employeeType: 'userMaster',
+          user_id: u._id,
+          userActive: u.userActive,
+          photo_url: u.userProfileImage || u.photo_url,
+          daily_rate: 0,
+          monthly_rate: 0,
+          employmentHistory: [],
+          selectedShift: 'G',
+          shiftGroupName: 'MANG',
+        };
+        userMapById.set(String(u._id), mappedUser);
+        if (mappedUser.mobile) {
+          const cleanMobile = String(mappedUser.mobile).replace(/\D/g, '').slice(-10);
+          if (cleanMobile.length === 10) {
+            userMapByMobile.set(cleanMobile, mappedUser);
+          }
+        }
+        if (mappedUser.email) {
+          userMapByEmail.set(mappedUser.email.toLowerCase().trim(), mappedUser);
+        }
+      });
+
+      const mergedList = [];
+      const processedUserIds = new Set();
+
+      employeesList.forEach(emp => {
+        let matchedUser = null;
+
+        if (emp.user_id && userMapById.has(String(emp.user_id))) {
+          matchedUser = userMapById.get(String(emp.user_id));
+        }
+        if (!matchedUser && emp.mobile) {
+          const cleanMobile = String(emp.mobile).replace(/\D/g, '').slice(-10);
+          if (cleanMobile.length === 10 && userMapByMobile.has(cleanMobile)) {
+            matchedUser = userMapByMobile.get(cleanMobile);
+          }
+        }
+        if (!matchedUser && emp.email) {
+          const cleanEmail = emp.email.toLowerCase().trim();
+          if (userMapByEmail.has(cleanEmail)) {
+            matchedUser = userMapByEmail.get(cleanEmail);
+          }
+        }
+
+        if (matchedUser) {
+          console.log(`[hr/employees/list] Matched duplicate Employee (${emp.name}) with userMaster (${matchedUser.name}). Merging...`);
+          matchedUser.aadhar_no = emp.aadhar_no || matchedUser.aadhar_no;
+          matchedUser.enrollment_no = emp.enrollment_no || matchedUser.enrollment_no;
+          matchedUser.dob = emp.dob || matchedUser.dob;
+          if (emp.photo_url) matchedUser.photo_url = emp.photo_url;
+          matchedUser.employmentHistory = emp.employmentHistory || matchedUser.employmentHistory;
+          matchedUser.selectedShift = emp.selectedShift || matchedUser.selectedShift;
+          matchedUser.shiftGroupName = emp.shiftGroupName || matchedUser.shiftGroupName;
+          matchedUser.addresses = emp.addresses || matchedUser.addresses;
+          matchedUser.daily_rate = emp.daily_rate || matchedUser.daily_rate;
+          matchedUser.monthly_rate = emp.monthly_rate || matchedUser.monthly_rate;
+          matchedUser.ledgerId = emp.ledgerId || matchedUser.ledgerId;
+          processedUserIds.add(String(matchedUser._id));
+        } else {
+          mergedList.push(emp);
+        }
+      });
+
+      userMapById.forEach((mappedUser) => {
+        mergedList.push(mappedUser);
+      });
+
+      res.json({ success: true, data: mergedList });
+    } catch (err) {
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+  get: async (req, res) => {
+    try {
+      const { id } = req.params;
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({ success: false, message: 'Invalid ID format' });
+      }
+
+      const userMaster = require('../models/userMaster');
+      let userDoc = await userMaster.findById(id).lean();
+      
+      const { Employees } = req.tenantModels;
+      let employeeDoc = await Employees.findOne({
+        $or: [
+          { _id: id },
+          { user_id: id }
+        ]
+      }).lean();
+
+      if (userDoc) {
+        console.log(`[hr/employees/get] Matched registered user in userMaster: ${userDoc.name || userDoc.email} (ID: ${id}).`);
+        const mappedUser = {
+          _id: userDoc._id,
+          name: userDoc.userDisplayName || userDoc.name || `${userDoc.firstName || ''} ${userDoc.lastName || ''}`.trim() || userDoc.email,
+          mobile: userDoc.userMobile || userDoc.mobile,
+          email: userDoc.email,
+          role: userDoc.userRole || userDoc.role || 'project',
+          employeeType: 'userMaster',
+          user_id: userDoc._id,
+          userActive: userDoc.userActive,
+          photo_url: userDoc.userProfileImage || userDoc.photo_url,
+          daily_rate: employeeDoc?.daily_rate || 0,
+          monthly_rate: employeeDoc?.monthly_rate || 0,
+          employmentHistory: employeeDoc?.employmentHistory || [],
+          selectedShift: employeeDoc?.selectedShift || 'G',
+          shiftGroupName: employeeDoc?.shiftGroupName || 'MANG',
+          addresses: employeeDoc?.addresses,
+          aadhar_no: employeeDoc?.aadhar_no,
+          enrollment_no: employeeDoc?.enrollment_no,
+          dob: employeeDoc?.dob,
+          ledgerId: employeeDoc?.ledgerId,
+        };
+        return res.json({ success: true, data: mappedUser });
+      }
+
+      if (!employeeDoc) {
+        return res.status(404).json({ success: false, message: 'Employee not found' });
+      }
+
+      res.json({ success: true, data: employeeDoc });
+    } catch (err) {
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+  create: async (req, res) => {
+    try {
+      const { Employees, ProfileMaster } = req.tenantModels;
+
+      // By default all employees are linked with corporate head office address (HO)
+      if (!req.body.locationId && ProfileMaster) {
+        try {
+          const profile = await ProfileMaster.findOne({}).lean();
+          const hoLoc = (profile?.locations || []).find(l => l.locationType === 'HO') || (profile?.locations || [])[0];
+          if (hoLoc) {
+            req.body.locationId = hoLoc._id;
+          }
+        } catch (perr) {
+          console.error('Failed to resolve HO locationId default in manageEmployees.create:', perr.message);
+        }
+      }
+
       const emp = new Employees(req.body);
       await emp.save();
 
@@ -854,11 +1021,82 @@ exports.manageEmployees = {
           .json({ success: false, message: 'Access denied. Insufficient permissions.' });
       }
 
+      const { id } = req.params;
       const { Employees } = req.tenantModels;
-      const emp = await Employees.findByIdAndUpdate(req.params.id, req.body, { new: true });
+      const userMaster = require('../models/userMaster');
+      
+      let userDoc = await userMaster.findById(id);
+      if (userDoc) {
+        console.log(`[hr/employees/update] Updating registered user: ${userDoc.name || userDoc.email} (ID: ${id}).`);
+        
+        if (req.body.name) userDoc.userDisplayName = req.body.name;
+        if (req.body.mobile) userDoc.userMobile = req.body.mobile;
+        if (req.body.role) userDoc.userRole = req.body.role;
+        if (req.body.photo_url) userDoc.userProfileImage = req.body.photo_url;
+        await userDoc.save();
+
+        let employeeDoc = await Employees.findOne({
+          $or: [
+            { _id: id },
+            { user_id: id }
+          ]
+        });
+
+        if (employeeDoc) {
+          Object.assign(employeeDoc, req.body);
+          await employeeDoc.save();
+        } else {
+          employeeDoc = new Employees({
+            ...req.body,
+            user_id: id,
+          });
+          await employeeDoc.save();
+        }
+
+        try {
+          const FinanceController = require('./FinanceController');
+          const ledger = await FinanceController.ensureLedgerFolioInternal(req.tenantModels, {
+            name: req.body.name || userDoc.userDisplayName,
+            group: 'Account Payables',
+            refId: id,
+            refType: 'User',
+            nature: 'Cr',
+          });
+          if (ledger && !employeeDoc.ledgerId) {
+            employeeDoc.ledgerId = ledger._id;
+            await employeeDoc.save();
+          }
+        } catch (err) {
+          console.error('Employee-Ledger Auto Sync Failed:', err.message);
+        }
+
+        const mappedUser = {
+          _id: userDoc._id,
+          name: userDoc.userDisplayName || userDoc.name || `${userDoc.firstName || ''} ${userDoc.lastName || ''}`.trim() || userDoc.email,
+          mobile: userDoc.userMobile || userDoc.mobile,
+          email: userDoc.email,
+          role: userDoc.userRole || userDoc.role || 'project',
+          employeeType: 'userMaster',
+          user_id: userDoc._id,
+          userActive: userDoc.userActive,
+          photo_url: userDoc.userProfileImage || userDoc.photo_url,
+          daily_rate: employeeDoc.daily_rate || 0,
+          monthly_rate: employeeDoc.monthly_rate || 0,
+          employmentHistory: employeeDoc.employmentHistory || [],
+          selectedShift: employeeDoc.selectedShift || 'G',
+          shiftGroupName: employeeDoc.shiftGroupName || 'MANG',
+          addresses: employeeDoc.addresses,
+          aadhar_no: employeeDoc.aadhar_no,
+          enrollment_no: employeeDoc.enrollment_no,
+          dob: employeeDoc.dob,
+          ledgerId: employeeDoc.ledgerId,
+        };
+        return res.json({ success: true, data: mappedUser });
+      }
+
+      const emp = await Employees.findByIdAndUpdate(id, req.body, { new: true });
       if (!emp) return res.status(404).json({ success: false, message: 'Employee not found' });
 
-      // 🚀 Auto-create/Update Ledger Name
       try {
         const FinanceController = require('./FinanceController');
         const ledger = await FinanceController.ensureLedgerFolioInternal(req.tenantModels, {
@@ -985,6 +1223,7 @@ exports.manageEmployees = {
       let emp = null;
 
       if (userDoc) {
+        console.log(`[toggleAttendance] Matched registered user in userMaster: ${userDoc.name || userDoc.email} (ID: ${employeeId}). Skipping Employees database check.`);
         role = userDoc.userRole || userDoc.role || 'project';
       } else {
         employeeDoc = await Employees.findById(employeeId);
@@ -1285,7 +1524,9 @@ exports.manageEmployees = {
 
       const userMaster = require('../models/userMaster');
       let emp = await userMaster.findById(queryId).lean();
-      if (!emp) {
+      if (emp) {
+        console.log(`[getActiveAttendance] Matched registered user in userMaster: ${emp.name || emp.email} (ID: ${queryId}).`);
+      } else {
         emp = await Employees.findById(queryId).lean();
       }
 
@@ -1342,7 +1583,9 @@ exports.manageEmployees = {
       const userMaster = require('../models/userMaster');
       let emp = await userMaster.findById(queryId).lean();
       let isWorker = false;
-      if (!emp) {
+      if (emp) {
+        console.log(`[markAttendance] Matched registered user in userMaster: ${emp.name || emp.email} (ID: ${queryId}). Skipping Employees database check.`);
+      } else {
         emp = await Employees.findById(queryId).lean();
         isWorker = true;
       }
@@ -1943,7 +2186,9 @@ exports.manageEmployees = {
       const userMaster = require('../models/userMaster');
       let emp = await userMaster.findById(queryId).lean();
       let isWorker = false;
-      if (!emp) {
+      if (emp) {
+        console.log(`[continueShift] Matched registered user in userMaster: ${emp.name || emp.email} (ID: ${queryId}). Skipping Employees database check.`);
+      } else {
         emp = await Employees.findById(queryId).lean();
         isWorker = true;
       }

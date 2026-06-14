@@ -143,11 +143,13 @@ const employeeSchema = new mongoose.Schema({
         active: { type: Boolean, default: true },
         endDate: { type: Date },
         notes: { type: String, trim: true },
+        locationId: { type: mongoose.Schema.Types.ObjectId },
     }],
     bank: bankAccountSchema,
     addresses: employeeAddressSchema,
     joinDate: { type: Date },
-    active: { type: Boolean, default: true }
+    active: { type: Boolean, default: true },
+    locationId: { type: mongoose.Schema.Types.ObjectId }
 }, { _id: true, timestamps: true });
 
 // 🎯 Lead Schema (CRM Spoke)

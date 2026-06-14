@@ -76,6 +76,7 @@ const employmentEntrySchema = new mongoose.Schema({
     active:         { type: Boolean, default: true },     // true = currently active employment period
     endDate:        { type: Date },                       // Populated when this period ends
     notes:          { type: String, trim: true },         // Optional reason / remark for change
+    locationId:     { type: mongoose.Schema.Types.ObjectId }
 }, { _id: true, timestamps: true });
 
 const employeeSchema = new mongoose.Schema({
@@ -101,7 +102,8 @@ const employeeSchema = new mongoose.Schema({
     userRole: { type: String, trim: true },
     shiftGroupName: { type: String, enum: ['MANG', 'DaNi', null], default: null },
     selectedShift: { type: String, trim: true },
-    monthlyRate: { type: Number, default: 0 }
+    monthlyRate: { type: Number, default: 0 },
+    locationId: { type: mongoose.Schema.Types.ObjectId }
 }, { timestamps: true });
 
 // 5. Leads (CRM)
