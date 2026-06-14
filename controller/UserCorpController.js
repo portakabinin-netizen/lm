@@ -12,6 +12,55 @@ const ExcelJS = require('exceljs');
 const externalService = require('../utils/externalService');
 const { resolveDatePreset } = require('../utils/dateUtils');
 
+const getDistanceMetres = (lat1, lon1, lat2, lon2) => {
+  if (!lat1 || !lon1 || !lat2 || !lon2) return Infinity;
+  const R = 6371e3; // Earth radius in metres
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+};
+
+const resolveSiteNameForCoordinates = async (lat, long, LeadsModel) => {
+  if (!lat || !long || !LeadsModel) return null;
+  const leads = await LeadsModel.find({
+    'location.lat': { $exists: true },
+    'location.long': { $exists: true }
+  }).lean();
+
+  let minDist = 10; // strictly 10 meters
+  let matchedName = null;
+
+  for (const lead of leads) {
+    const lLat = Number(lead.location.lat);
+    const lLng = Number(lead.location.long);
+    if (isNaN(lLat) || isNaN(lLng)) continue;
+
+    const d = getDistanceMetres(lat, long, lLat, lLng);
+    if (d < minDist) {
+      minDist = d;
+      matchedName = lead.sender_name || lead.name || 'Client';
+    }
+  }
+
+  return matchedName;
+};
+
+const formatAddressWithSite = (address, siteName) => {
+  if (!siteName) return address || '';
+  const prefix = `At ${siteName}`;
+  const currentAddress = address || '';
+  if (currentAddress.startsWith(prefix) || currentAddress.includes(`At ${siteName}`)) {
+    return currentAddress;
+  }
+  return currentAddress ? `${prefix}, ${currentAddress}` : prefix;
+};
+
 // Constants
 const SENDERS = require('../models/senders.json');
 const CITY_STATE_MAP = require('../models/cityStateMap.json');
@@ -928,79 +977,84 @@ exports.manageEmployees = {
       // ──────────────────────────────────────────────────────────────────────
 
       let role = 'project';
-      const employeeDoc = await Employees.findById(employeeId);
-      let emp = employeeDoc ? employeeDoc.toObject() : null;
-
       let userDoc = null;
-      if (emp) {
-        role = emp.role || 'project';
-        // If employee has null/missing shiftGroupName, assign it now
-        if (!emp.shiftGroupName) {
-          const targetGroupName =
-            shiftType === '12hr' || ['Day', 'Night12'].includes(shiftPeriod) ? 'DaNi' : 'MANG';
-          const targetSelectedShift = shiftCode || (targetGroupName === 'DaNi' ? 'D' : 'G');
+      const userMaster = require('../models/userMaster');
+      userDoc = await userMaster.findById(employeeId).lean();
 
-          let targetShiftName = shiftPeriod || 'General';
-          if (targetShiftName === 'Night12') {
-            targetShiftName = 'Night';
-          }
-          let targetShiftStartTime = '08:00';
-          if (targetGroupName === 'DaNi') {
-            if (targetSelectedShift === 'N2' || targetShiftName === 'Night') {
-              targetShiftStartTime = '18:00';
-            } else {
-              targetShiftStartTime = '06:00';
-            }
-          } else {
-            if (targetSelectedShift === 'M' || targetShiftName === 'Morning') {
-              targetShiftStartTime = '06:00';
-            } else if (targetSelectedShift === 'A' || targetShiftName === 'Afternoon') {
-              targetShiftStartTime = '14:00';
-            } else if (targetSelectedShift === 'N' || targetShiftName === 'Night') {
-              targetShiftStartTime = '22:00';
-            } else {
-              targetShiftStartTime = '08:00';
-            }
-          }
-          const targetShiftHours = shiftLockHours || (targetGroupName === 'DaNi' ? 12 : 8);
+      let employeeDoc = null;
+      let emp = null;
 
-          employeeDoc.shiftGroupName = targetGroupName;
-          employeeDoc.selectedShift = targetSelectedShift;
-
-          let activeHistoryEntry = employeeDoc.employmentHistory.find((h) => h.active);
-          if (activeHistoryEntry) {
-            activeHistoryEntry.groupName = targetGroupName;
-            activeHistoryEntry.shiftName = targetShiftName;
-            activeHistoryEntry.shiftStartTime = targetShiftStartTime;
-            activeHistoryEntry.shiftHours = targetShiftHours;
-            if (rate && !activeHistoryEntry.daily_rate) {
-              activeHistoryEntry.daily_rate = rate;
-            }
-          } else {
-            employeeDoc.employmentHistory.push({
-              joinDate: new Date(),
-              daily_rate:
-                rate ||
-                (employeeDoc.monthlyRate
-                  ? parseFloat((employeeDoc.monthlyRate / 30).toFixed(2))
-                  : 0),
-              monthly_rate: employeeDoc.monthlyRate || 0,
-              shiftStartTime: targetShiftStartTime,
-              shiftHours: targetShiftHours,
-              groupName: targetGroupName,
-              shiftName: targetShiftName,
-              active: true,
-              notes: 'Auto-assigned on first attendance marking',
-            });
-          }
-
-          await employeeDoc.save();
-          emp = employeeDoc.toObject();
-        }
+      if (userDoc) {
+        role = userDoc.userRole || userDoc.role || 'project';
       } else {
-        const userMaster = require('../models/userMaster');
-        userDoc = await userMaster.findById(employeeId).lean();
-        if (userDoc) role = userDoc.userRole || 'project';
+        employeeDoc = await Employees.findById(employeeId);
+        emp = employeeDoc ? employeeDoc.toObject() : null;
+        if (emp) {
+          role = emp.role || 'project';
+          // If employee has null/missing shiftGroupName, assign it now
+          if (!emp.shiftGroupName) {
+            const targetGroupName =
+              shiftType === '12hr' || ['Day', 'Night12'].includes(shiftPeriod) ? 'DaNi' : 'MANG';
+            const targetSelectedShift = shiftCode || (targetGroupName === 'DaNi' ? 'D' : 'G');
+
+            let targetShiftName = shiftPeriod || 'General';
+            if (targetShiftName === 'Night12') {
+              targetShiftName = 'Night';
+            }
+            let targetShiftStartTime = '08:00';
+            if (targetGroupName === 'DaNi') {
+              if (targetSelectedShift === 'N2' || targetShiftName === 'Night') {
+                targetShiftStartTime = '18:00';
+              } else {
+                targetShiftStartTime = '06:00';
+              }
+            } else {
+              if (targetSelectedShift === 'M' || targetShiftName === 'Morning') {
+                targetShiftStartTime = '06:00';
+              } else if (targetSelectedShift === 'A' || targetShiftName === 'Afternoon') {
+                targetShiftStartTime = '14:00';
+              } else if (targetSelectedShift === 'N' || targetShiftName === 'Night') {
+                targetShiftStartTime = '22:00';
+              } else {
+                targetShiftStartTime = '08:00';
+              }
+            }
+            const targetShiftHours = shiftLockHours || (targetGroupName === 'DaNi' ? 12 : 8);
+
+            employeeDoc.shiftGroupName = targetGroupName;
+            employeeDoc.selectedShift = targetSelectedShift;
+
+            let activeHistoryEntry = employeeDoc.employmentHistory.find((h) => h.active);
+            if (activeHistoryEntry) {
+              activeHistoryEntry.groupName = targetGroupName;
+              activeHistoryEntry.shiftName = targetShiftName;
+              activeHistoryEntry.shiftStartTime = targetShiftStartTime;
+              activeHistoryEntry.shiftHours = targetShiftHours;
+              if (rate && !activeHistoryEntry.daily_rate) {
+                activeHistoryEntry.daily_rate = rate;
+              }
+            } else {
+              employeeDoc.employmentHistory.push({
+                joinDate: new Date(),
+                daily_rate:
+                  rate ||
+                  (employeeDoc.monthlyRate
+                    ? parseFloat((employeeDoc.monthlyRate / 30).toFixed(2))
+                    : 0),
+                monthly_rate: employeeDoc.monthlyRate || 0,
+                shiftStartTime: targetShiftStartTime,
+                shiftHours: targetShiftHours,
+                groupName: targetGroupName,
+                shiftName: targetShiftName,
+                active: true,
+                notes: 'Auto-assigned on first attendance marking',
+              });
+            }
+
+            await employeeDoc.save();
+            emp = employeeDoc.toObject();
+          }
+        }
       }
 
       // Default shift values from userMaster dutyShift if employee doesn't exist
@@ -1020,6 +1074,12 @@ exports.manageEmployees = {
         else if (ds.shiftName) defaultShiftCode = ds.shiftName.substring(0, 1);
       }
 
+      // Exemption check for geoHistory: admins and workers are exempt.
+      const isAdminRole = ['corpadmin', 'useradmin', 'admin'].includes(role.toLowerCase());
+      const isEmployeeCollection = !!employeeDoc;
+      const isExemptUser = isAdminRole || isEmployeeCollection;
+      const finalGeoHistory = isExemptUser ? [] : (geoHistory || []);
+
       const record = new Attendance({
         employeeId,
         employeeType: employeeDoc ? 'Employees' : 'userMaster',
@@ -1027,6 +1087,7 @@ exports.manageEmployees = {
         leadId,
         clientId: clientId || null,
         status: status || 'Present',
+        customCreated: true, // Tag it so we know it was manually marked/handled
         dutyLevel: dutyLevel ?? 1,
         rate: rate || 0,
         date: date || new Date(),
@@ -1037,7 +1098,7 @@ exports.manageEmployees = {
         dutyEndScheduled: req.body.dutyEndScheduled || (dutyStart ? new Date(new Date(dutyStart).getTime() + (shiftLockHours || defaultShiftLockHours) * 3600000) : new Date(Date.now() + (shiftLockHours || defaultShiftLockHours) * 3600000)),
         forcedOff: !!forcedOff,
         forcedOffReason: forcedOffReason || '',
-        geoHistory: geoHistory || [],
+        geoHistory: finalGeoHistory,
         // Shift
         shiftCode: shiftCode || defaultShiftCode,
         shiftType: shiftType || defaultShiftType,
@@ -1054,6 +1115,18 @@ exports.manageEmployees = {
   updateAttendance: async (req, res) => {
     try {
       const { Attendance } = req.tenantModels;
+      const record = await Attendance.findById(req.params.id);
+      if (!record) {
+        console.log('🔴 [updateAttendance] Record not found:', req.params.id);
+        return res.status(404).json({ success: false, message: 'Attendance record not found' });
+      }
+
+      // Exemption check: Admins and workers are exempt.
+      const recordRole = (record.role || '').toLowerCase();
+      const isAdminRole = ['corpadmin', 'useradmin', 'admin'].includes(recordRole);
+      const isWorker = record.employeeType === 'Employees';
+      const isExemptUser = isAdminRole || isWorker;
+
       const allowed = [
         'forcedOff',
         'forcedOffReason',
@@ -1075,34 +1148,56 @@ exports.manageEmployees = {
         if (req.body[k] !== undefined) update[k] = req.body[k];
       });
 
-      // Allow $push for geoHistory ticks from background task
-      const mongoUpdate = Object.keys(update).length ? { $set: update } : {};
-      if (req.body.$push) mongoUpdate.$push = req.body.$push;
+      // Filter geoHistory out of update and push if exempt
+      if (isExemptUser) {
+        if (update.geoHistory) delete update.geoHistory;
+        if (req.body.$push && req.body.$push.geoHistory) {
+          delete req.body.$push.geoHistory;
+        }
+      }
+
+      // Proximity resolver for ticks in push
+      if (!isExemptUser && req.body.$push && req.body.$push.geoHistory) {
+        const { Leads } = req.tenantModels;
+        const tickOrTicks = req.body.$push.geoHistory;
+        
+        const processTick = async (tick) => {
+          if (tick && tick.lat && tick.long) {
+            const siteName = await resolveSiteNameForCoordinates(tick.lat, tick.long, Leads);
+            if (siteName) {
+              tick.address = formatAddressWithSite(tick.address, siteName);
+            }
+          }
+        };
+
+        if (tickOrTicks.$each && Array.isArray(tickOrTicks.$each)) {
+          for (const t of tickOrTicks.$each) {
+            await processTick(t);
+          }
+        } else if (Array.isArray(tickOrTicks)) {
+          for (const t of tickOrTicks) {
+            await processTick(t);
+          }
+        } else {
+          await processTick(tickOrTicks);
+        }
+      }
 
       // Auto-calculate hours worked and daily earn on duty end
       let newlyEnded = false;
       if (update.dutyEnd) {
-        const existing = await Attendance.findById(req.params.id)
-          .select('dutyStart shiftHours shiftLockHours dailyRate rate dutyEnd')
-          .lean();
-        if (existing && !existing.dutyEnd) newlyEnded = true;
+        if (!record.dutyEnd) newlyEnded = true;
 
-        if (existing?.dutyStart) {
-          const hrs = (new Date(update.dutyEnd) - new Date(existing.dutyStart)) / 3600000;
+        if (record.dutyStart) {
+          const hrs = (new Date(update.dutyEnd) - new Date(record.dutyStart)) / 3600000;
           update.hoursWorked = parseFloat(Math.max(0, hrs).toFixed(2));
 
-          const standardHours = existing.shiftHours || existing.shiftLockHours || 8;
-          const usedRate = update.dailyRate || existing.dailyRate || existing.rate || 0;
+          const standardHours = record.shiftHours || record.shiftLockHours || 8;
+          const usedRate = update.dailyRate || record.dailyRate || record.rate || 0;
           update.dailyEarn = parseFloat(
             ((update.hoursWorked / standardHours) * usedRate).toFixed(2)
           );
         }
-      }
-
-      const record = await Attendance.findById(req.params.id);
-      if (!record) {
-        console.log('🔴 [updateAttendance] Record not found:', req.params.id);
-        return res.status(404).json({ success: false, message: 'Attendance record not found' });
       }
 
       // 🔐 Permission Check: If salary is posted, only Admin/CorpAdmin can change rate
@@ -1188,10 +1283,10 @@ exports.manageEmployees = {
         ? new mongoose.Types.ObjectId(employeeId)
         : employeeId;
 
-      let emp = await Employees.findById(queryId).lean();
+      const userMaster = require('../models/userMaster');
+      let emp = await userMaster.findById(queryId).lean();
       if (!emp) {
-        const userMaster = require('../models/userMaster');
-        emp = await userMaster.findById(queryId).lean();
+        emp = await Employees.findById(queryId).lean();
       }
 
       const linkedIds = [queryId];
@@ -1244,13 +1339,22 @@ exports.manageEmployees = {
 
       // Find open session (not necessarily today — shift C and E can span midnight)
       // 1. Identify all possible IDs for this employee (Self-sync check)
-      let emp = await Employees.findById(queryId).lean();
-      let isWorker = true;
+      const userMaster = require('../models/userMaster');
+      let emp = await userMaster.findById(queryId).lean();
+      let isWorker = false;
       if (!emp) {
-        const userMaster = require('../models/userMaster');
-        emp = await userMaster.findById(queryId).lean();
-        isWorker = false;
+        emp = await Employees.findById(queryId).lean();
+        isWorker = true;
       }
+
+      let linkedUser = isWorker ? null : emp;
+      if (isWorker && emp?.user_id) {
+        linkedUser = await userMaster.findById(emp.user_id).lean();
+      }
+
+      const checkRole = (emp?.role || emp?.userRole || (linkedUser && (linkedUser.role || linkedUser.userRole)) || '').toLowerCase();
+      const isAdminRole = ['corpadmin', 'useradmin', 'admin'].includes(checkRole);
+      const isExemptUser = isAdminRole || isWorker;
 
       if (type === 'ON' && emp && isWorker && !emp.shiftGroupName) {
         // Find employee document to update
@@ -1585,6 +1689,23 @@ exports.manageEmployees = {
           }
         }
 
+        let finalAddress = address || '';
+        if (!isExemptUser) {
+          const siteName = await resolveSiteNameForCoordinates(finalLat, finalLong, Leads);
+          if (siteName) {
+            finalAddress = formatAddressWithSite(finalAddress, siteName);
+          }
+        }
+        const finalGeoHistory = isExemptUser ? [] : [
+          {
+            lat: finalLat,
+            long: finalLong,
+            address: finalAddress,
+            type: 'start',
+            timestamp: now,
+          },
+        ];
+
         record = new Attendance({
           employeeId,
           employeeType: isWorker ? 'Employees' : 'userMaster',
@@ -1605,15 +1726,7 @@ exports.manageEmployees = {
           monthlyRate: fetchedMonthlyRate,
           dailyRate: fetchedDailyRate,
           rate: fetchedDailyRate || currentRate,
-          geoHistory: [
-            {
-              lat: finalLat,
-              long: finalLong,
-              address: address || '',
-              type: 'start',
-              timestamp: now,
-            },
-          ],
+          geoHistory: finalGeoHistory,
           status: 'Present',
           site_name: finalSiteName,
           siteId: siteId || null,
@@ -1635,17 +1748,17 @@ exports.manageEmployees = {
         // OFF
         if (!record)
           return res.status(404).json({ success: false, message: 'No active duty session found' });
-
+ 
         const now = new Date();
         const lockHrs = record.shiftLockHours || 8;
         const elapsedHrs = (now - record.dutyStart) / 3600000;
-
+ 
         let minRequiredHrs = lockHrs;
         if (lockHrs === 8) minRequiredHrs = 7;
         if (lockHrs === 12) minRequiredHrs = 11;
-
+ 
         const isLocked = elapsedHrs < minRequiredHrs;
-
+ 
         // Shift lock enforcement
         // Normalize role strings for case‑insensitive checks
         const requesterRole = (req.user?.userRole || '').toLowerCase();
@@ -1653,7 +1766,7 @@ exports.manageEmployees = {
         const canOverride =
           ['corpadmin', 'project', 'useradmin'].includes(requesterRole) ||
           ['corpadmin', 'project', 'sales', 'finance', 'useradmin'].includes(employeeRole);
-
+ 
         if (isLocked && !forcedOff && !emergencyOff && !canOverride) {
           return res.status(403).json({
             success: false,
@@ -1662,9 +1775,17 @@ exports.manageEmployees = {
             remainingHrs: parseFloat((minRequiredHrs - elapsedHrs).toFixed(2)),
           });
         }
-
+ 
         record.dutyEnd = now;
-        record.geoHistory.push({ lat, long, address: address || '', type: 'end', timestamp: now });
+        if (!isExemptUser) {
+          let finalAddress = address || '';
+          const { Leads } = req.tenantModels;
+          const siteName = await resolveSiteNameForCoordinates(lat, long, Leads);
+          if (siteName) {
+            finalAddress = formatAddressWithSite(finalAddress, siteName);
+          }
+          record.geoHistory.push({ lat, long, address: finalAddress, type: 'end', timestamp: now });
+        }
         record.hoursWorked = parseFloat(Math.max(0, elapsedHrs).toFixed(2));
         const standardHours = record.shiftHours || record.shiftLockHours || 8;
         record.dailyEarn = parseFloat(
@@ -1817,10 +1938,34 @@ exports.manageEmployees = {
         });
       }
 
+      // Resolve exemption
+      const { Employees, Leads } = req.tenantModels;
+      const userMaster = require('../models/userMaster');
+      let emp = await userMaster.findById(queryId).lean();
+      let isWorker = false;
+      if (!emp) {
+        emp = await Employees.findById(queryId).lean();
+        isWorker = true;
+      }
+      let linkedUser = isWorker ? null : emp;
+      if (isWorker && emp?.user_id) {
+        linkedUser = await userMaster.findById(emp.user_id).lean();
+      }
+      const checkRole = (emp?.role || emp?.userRole || (linkedUser && (linkedUser.role || linkedUser.userRole)) || '').toLowerCase();
+      const isAdminRole = ['corpadmin', 'useradmin', 'admin'].includes(checkRole);
+      const isExemptUser = isAdminRole || isWorker;
+
       // 2. Close current shift
       current.dutyEnd = now;
       current.hoursWorked = parseFloat(elapsedHrs.toFixed(2));
-      current.geoHistory.push({ lat, long, address: address || '', type: 'end', timestamp: now });
+      if (!isExemptUser) {
+        let finalAddress = address || '';
+        const siteName = await resolveSiteNameForCoordinates(lat, long, Leads);
+        if (siteName) {
+          finalAddress = formatAddressWithSite(finalAddress, siteName);
+        }
+        current.geoHistory.push({ lat, long, address: finalAddress, type: 'end', timestamp: now });
+      }
       await current.save();
 
       // 3. Determine next shift lock hours
@@ -1828,9 +1973,16 @@ exports.manageEmployees = {
       const nextScheduledEnd = new Date(now.getTime() + nextLockHrs * 3600000);
 
       // 4. Create new attendance record for next shift (marked as double shift)
+      let finalStartAddress = address || '';
+      if (!isExemptUser) {
+        const siteName = await resolveSiteNameForCoordinates(lat, long, Leads);
+        if (siteName) {
+          finalStartAddress = formatAddressWithSite(finalStartAddress, siteName);
+        }
+      }
       const nextRecord = new Attendance({
         employeeId,
-        employeeType: current.employeeType || 'Employees',
+        employeeType: isWorker ? 'Employees' : 'userMaster',
         startLat: lat || null,
         startLong: long || null,
         siteLat: current.siteLat || null,
@@ -1845,7 +1997,7 @@ exports.manageEmployees = {
         isDoubleShift: true,
         previousShiftId: current._id,
         doubleShiftNotified: true,
-        geoHistory: [{ lat, long, address: address || '', type: 'start', timestamp: now }],
+        geoHistory: isExemptUser ? [] : [{ lat, long, address: finalStartAddress, type: 'start', timestamp: now }],
         status: 'Present',
         site_name: site_name || current.site_name || 'HQ/Remote',
         siteId: siteId || current.siteId || null,
