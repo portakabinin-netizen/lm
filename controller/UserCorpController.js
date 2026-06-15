@@ -1350,9 +1350,37 @@ exports.manageEmployees = {
       let defaultShiftPeriod = 'General';
       let defaultShiftCode = 'G';
 
-      if (!emp && userDoc && userDoc.dutyShift) {
+      if (emp) {
+        const activeHistEntry = emp.employmentHistory?.find((e) => e.active) || 
+                               (emp.employmentHistory?.length ? emp.employmentHistory[emp.employmentHistory.length - 1] : null);
+        if (activeHistEntry) {
+          const groupName = activeHistEntry.groupName || (activeHistEntry.shiftName === 'Day' || activeHistEntry.shiftName === 'Night' || activeHistEntry.shiftName === 'Night12' ? 'DaNi' : 'MANG');
+          defaultShiftLockHours = activeHistEntry.shiftHours || (groupName === 'DaNi' ? 12 : 8);
+          defaultShiftType = groupName === 'DaNi' ? '12hr' : '8hr';
+          defaultShiftPeriod = activeHistEntry.shiftName || 'General';
+          if (defaultShiftPeriod === 'Night') {
+            defaultShiftPeriod = groupName === 'DaNi' ? 'Night12' : 'Night';
+          }
+          defaultShiftCode = emp.selectedShift || (groupName === 'DaNi' ? 'D' : 'G');
+        } else if (emp.dutyShift) {
+          const ds = emp.dutyShift;
+          const groupName = ds.groupName || (ds.shiftName === 'Day' || ds.shiftName === 'Night2' || ds.shiftName === 'Night12' ? 'DaNi' : 'MANG');
+          defaultShiftLockHours = ds.durationHrs || ds.shiftHours || (groupName === 'DaNi' ? 12 : 8);
+          defaultShiftType = defaultShiftLockHours === 12 ? '12hr' : '8hr';
+          defaultShiftPeriod = ds.shiftName || 'General';
+          if (ds.shiftName === 'Night2') defaultShiftCode = 'N2';
+          else if (ds.shiftName === 'Night1' || ds.shiftName === 'Night') defaultShiftCode = 'N';
+          else if (ds.shiftName) defaultShiftCode = ds.shiftName.substring(0, 1);
+        } else if (emp.shiftGroupName) {
+          const groupName = emp.shiftGroupName;
+          defaultShiftLockHours = groupName === 'DaNi' ? 12 : 8;
+          defaultShiftType = groupName === 'DaNi' ? '12hr' : '8hr';
+          defaultShiftCode = emp.selectedShift || (groupName === 'DaNi' ? 'D' : 'G');
+        }
+      } else if (userDoc && userDoc.dutyShift) {
         const ds = userDoc.dutyShift;
-        defaultShiftLockHours = ds.durationHrs || 8;
+        const groupName = ds.groupName || (ds.shiftName === 'Day' || ds.shiftName === 'Night2' || ds.shiftName === 'Night12' ? 'DaNi' : 'MANG');
+        defaultShiftLockHours = ds.durationHrs || ds.shiftHours || (groupName === 'DaNi' ? 12 : 8);
         defaultShiftType = defaultShiftLockHours === 12 ? '12hr' : '8hr';
         defaultShiftPeriod = ds.shiftName || 'General';
         
@@ -1380,6 +1408,7 @@ exports.manageEmployees = {
         date: date || new Date(),
         site_name,
         remarks,
+        dutyStartScheduled: req.body.dutyStartScheduled || (dutyStart ? new Date(dutyStart) : new Date()),
         dutyStart: dutyStart ? new Date(dutyStart) : new Date(),
         dutyEnd: dutyEnd ? new Date(dutyEnd) : undefined,
         dutyEndScheduled: req.body.dutyEndScheduled || (dutyStart ? new Date(new Date(dutyStart).getTime() + (shiftLockHours || defaultShiftLockHours) * 3600000) : new Date(Date.now() + (shiftLockHours || defaultShiftLockHours) * 3600000)),
@@ -1839,41 +1868,10 @@ exports.manageEmployees = {
           const displayName = emp.name || emp.userDisplayName || 'User';
 
           if (diffMins < -15) {
-            if (req.body.requestPermission) {
-              const { Messages } = req.tenantModels;
-              if (Messages) {
-                const msg = new Messages({
-                  senderName: displayName,
-                  senderId: queryId,
-                  text: `⚠️ Request to join duty early from ${displayName}. Shift starts at ${shiftStartTime}.`,
-                  type: 'text',
-                  isOneToOne: false,
-                  status: 'unseen',
-                });
-                await msg.save();
-                req.io.to(req.tenantDbName).emit('newMessage', msg);
-              }
-
-              req.io.to(req.tenantDbName).emit('admin:broadcast', {
-                id: new mongoose.Types.ObjectId().toString(),
-                title: '⚠️ Early Duty Request',
-                message: `Employee ${displayName} requested to join duty early. Shift starts at ${shiftStartTime}.`,
-                priority: 'normal',
-                targetRoles: ['Project', 'CorpAdmin'],
-                sentBy: displayName,
-                sentByRole: 'Employee',
-                at: now.toISOString(),
-              });
-
-              return res.json({
-                success: true,
-                message: `Request to join duty early has been sent to Project supervisors via chatroom.`,
-              });
-            }
             return res.status(403).json({
               success: false,
               tooEarly: true,
-              message: `Too early to start duty. Shift starts at ${shiftStartTime}.`,
+              message: `Too early to start duty. Shift starts at ${shiftStartTime}. Attendance can only be marked starting 15 minutes before shift start.`,
             });
           }
 
@@ -1917,12 +1915,13 @@ exports.manageEmployees = {
           }
         }
 
-        let lockHrs = activeShift?.shiftHours || 8;
+        let lockHrs = activeShift?.shiftHours || (activeShift?.groupName === 'DaNi' ? 12 : 8);
         if (!activeShift && emp) {
-          if (emp.dutyShift?.durationHrs) {
-            lockHrs = emp.dutyShift.durationHrs;
-          } else if (linkedUser?.dutyShift?.durationHrs) {
-            lockHrs = linkedUser.dutyShift.durationHrs;
+          const ds = emp.dutyShift || linkedUser?.dutyShift;
+          if (ds?.durationHrs || ds?.shiftHours) {
+            lockHrs = ds.durationHrs || ds.shiftHours;
+          } else {
+            lockHrs = ds?.groupName === 'DaNi' ? 12 : 8;
           }
         }
         const currentRate = activeShift?.daily_rate || 0;
@@ -2047,6 +2046,7 @@ exports.manageEmployees = {
           siteLong,
           role: emp.role || emp.userRole || 'project',
           date: now,
+          dutyStartScheduled: standardStart,
           dutyStart: now,
           dutyEndScheduled: scheduledEnd,
           shiftCode: normalizedShiftCode,
@@ -2347,6 +2347,7 @@ exports.manageEmployees = {
         siteLat: current.siteLat || null,
         siteLong: current.siteLong || null,
         date: now,
+        dutyStartScheduled: now,
         dutyStart: now,
         dutyEndScheduled: nextScheduledEnd,
         shiftCode: SHIFT_CODE_MAP[nextShiftCode] || nextShiftCode || 'G',

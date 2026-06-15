@@ -193,6 +193,7 @@ const attendanceSchema = new mongoose.Schema({
     markedByUserName: { type: String, trim: true },             // name of supervisor if markedByDevice is false
 
     // ── Duty Toggle Fields ──
+    dutyStartScheduled: { type: Date },
     dutyStart: { type: Date },
     dutyEnd: { type: Date },
     dutyEndScheduled: { type: Date },
