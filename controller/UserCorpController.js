@@ -1436,26 +1436,56 @@ exports.manageEmployees = {
       const userMaster = require('../models/userMaster');
       const { Employees } = req.tenantModels;
 
-      for (let item of data) {
+      const userMasterIds = [];
+      const employeeIds = [];
+      for (const item of data) {
+        if (!item.employeeId) continue;
         if (item.employeeType === 'userMaster') {
-          const u = await userMaster.findById(item.employeeId).lean();
-          if (u) {
-            item.employeeId = {
-              _id: u._id,
-              name: u.userDisplayName || u.name || `${u.firstName || ''} ${u.lastName || ''}`.trim() || u.email,
-              mobile: u.userMobile || u.mobile,
-              email: u.email,
-              role: u.userRole || u.role || 'project',
-              photo_url: u.userProfileImage || u.photo_url,
-              employeeType: 'userMaster',
-              user_id: u._id,
-              userActive: u.userActive,
-            };
+          userMasterIds.push(item.employeeId);
+        } else {
+          employeeIds.push(item.employeeId);
+        }
+      }
+
+      const uniqueUserMasterIds = [...new Set(userMasterIds.map(id => id.toString()))];
+      const uniqueEmployeeIds = [...new Set(employeeIds.map(id => id.toString()))];
+
+      const [usersList, empsList] = await Promise.all([
+        uniqueUserMasterIds.length > 0 ? userMaster.find({ _id: { $in: uniqueUserMasterIds } }).lean() : Promise.resolve([]),
+        uniqueEmployeeIds.length > 0 ? Employees.find({ _id: { $in: uniqueEmployeeIds } }).lean() : Promise.resolve([])
+      ]);
+
+      const usersMap = {};
+      for (const u of usersList) {
+        usersMap[u._id.toString()] = {
+          _id: u._id,
+          name: u.userDisplayName || u.name || `${u.firstName || ''} ${u.lastName || ''}`.trim() || u.email,
+          mobile: u.userMobile || u.mobile,
+          email: u.email,
+          role: u.userRole || u.role || 'project',
+          photo_url: u.userProfileImage || u.photo_url,
+          employeeType: 'userMaster',
+          user_id: u._id,
+          userActive: u.userActive,
+        };
+      }
+
+      const empsMap = {};
+      for (const emp of empsList) {
+        empsMap[emp._id.toString()] = emp;
+      }
+
+      for (let item of data) {
+        const idStr = item.employeeId?.toString();
+        if (!idStr) continue;
+        
+        if (item.employeeType === 'userMaster') {
+          if (usersMap[idStr]) {
+            item.employeeId = usersMap[idStr];
           }
         } else {
-          const emp = await Employees.findById(item.employeeId).lean();
-          if (emp) {
-            item.employeeId = emp;
+          if (empsMap[idStr]) {
+            item.employeeId = empsMap[idStr];
           }
         }
       }
