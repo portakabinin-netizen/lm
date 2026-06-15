@@ -2122,6 +2122,46 @@ exports.generateVoucherTemplate = async (req, res) => {
             projectLead: '1002'
         });
 
+        // 3. Uniform & Equipment Issues Worksheet
+        const uniformSheet = workbook.addWorksheet('Uniform & Equipment Issues');
+        uniformSheet.columns = [
+            { header: 'Date (YYYY-MM-DD)', key: 'date', width: 18 },
+            { header: 'Voucher No / Ref', key: 'voucherNo', width: 18 },
+            { header: 'Employee Ledger Name', key: 'employeeLedger', width: 25 },
+            { header: 'Amount', key: 'amount', width: 12 },
+            { header: 'Narration', key: 'narration', width: 30 },
+            { header: 'Project / Lead (No, Name or ID)', key: 'projectLead', width: 30 }
+        ];
+
+        // Style headers for Uniform sheet (Purple styling)
+        uniformSheet.getRow(1).eachCell((cell) => {
+            cell.font = { name: 'Arial', family: 4, size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
+            cell.fill = {
+                type: 'pattern',
+                pattern: 'solid',
+                fgColor: { argb: 'FF7030A0' } // purple
+            };
+            cell.alignment = { vertical: 'middle', horizontal: 'left' };
+        });
+
+        // Sample rows
+        uniformSheet.addRow({
+            date: '2026-06-15',
+            voucherNo: 'UNI-2026-06-01',
+            employeeLedger: 'John Doe',
+            amount: 1200,
+            narration: 'Safety boots and safety vest issued',
+            projectLead: '1001'
+        });
+        uniformSheet.addRow({
+            date: '2026-06-15',
+            voucherNo: 'UNI-2026-06-02',
+            employeeLedger: 'Jane Smith',
+            amount: 800,
+            narration: 'Uniform shirt issued (2 pairs)',
+            projectLead: '1002'
+        });
+
         // Write to local workspace path as a convenience
         try {
             await workbook.xlsx.writeFile("c:/hipk/Voucher_Upload_Template.xlsx");
@@ -2156,6 +2196,7 @@ exports.bulkImportVouchers = async (req, res) => {
 
         const salesSheet = workbook.getWorksheet('Sales Vouchers') || workbook.getWorksheet(1);
         const salarySheet = workbook.getWorksheet('Salary Payable Vouchers') || workbook.getWorksheet(2);
+        const uniformSheet = workbook.getWorksheet('Uniform & Equipment Issues') || workbook.getWorksheet(3);
 
         const errors = [];
         const parseDateVal = (val) => {
@@ -2234,7 +2275,35 @@ exports.bulkImportVouchers = async (req, res) => {
             });
         }
 
-        if (salesRows.length === 0 && salaryRows.length === 0) {
+        // 3. Parse Uniform Rows
+        const uniformRows = [];
+        if (uniformSheet) {
+            uniformSheet.eachRow((row, rowNumber) => {
+                if (rowNumber > 1) {
+                    const dateVal = getCellValue(row.getCell(1));
+                    const voucherNo = String(getCellValue(row.getCell(2)) || "").trim();
+                    const employeeLedger = String(getCellValue(row.getCell(3)) || "").trim();
+                    const amountVal = getCellValue(row.getCell(4));
+                    const narration = String(getCellValue(row.getCell(5)) || "").trim();
+                    const projectLead = String(getCellValue(row.getCell(6)) || "").trim();
+
+                    // Skip empty rows
+                    if (!dateVal && !employeeLedger && !amountVal) return;
+
+                    uniformRows.push({
+                        rowNumber,
+                        dateVal,
+                        voucherNo,
+                        employeeLedger,
+                        amountVal,
+                        narration,
+                        projectLead
+                    });
+                }
+            });
+        }
+
+        if (salesRows.length === 0 && salaryRows.length === 0 && uniformRows.length === 0) {
             return res.status(400).json({ success: false, message: "Excel sheet is empty or contains no records." });
         }
 
@@ -2272,6 +2341,16 @@ exports.bulkImportVouchers = async (req, res) => {
                 salaryVoucherGroups[key] = [];
             }
             salaryVoucherGroups[key].push(row);
+        });
+
+        const uniformVoucherGroups = {};
+        let tempUniformIndex = 1;
+        uniformRows.forEach(row => {
+            const key = row.voucherNo ? `UNI_${row.voucherNo}` : `TEMP_UNI_${tempUniformIndex++}`;
+            if (!uniformVoucherGroups[key]) {
+                uniformVoucherGroups[key] = [];
+            }
+            uniformVoucherGroups[key].push(row);
         });
 
         const voucherPlans = [];
@@ -2472,6 +2551,110 @@ exports.bulkImportVouchers = async (req, res) => {
 
             const narrationParts = rows.map(r => r.narration).filter(Boolean);
             const narration = narrationParts.join("; ") || `Salary Payable Voucher uploaded via Excel`;
+
+            voucherPlans.push({
+                voucherType: "Journal",
+                date,
+                narration,
+                entriesPlan,
+                originalRef,
+                leadId: entriesPlan[0]?.leadId || null
+            });
+        }
+
+        // 4b. Process Uniform Groups (Dry Run Validation)
+        for (const [key, rows] of Object.entries(uniformVoucherGroups)) {
+            const firstRow = rows[0];
+            const date = parseDateVal(firstRow.dateVal);
+            if (!date) {
+                errors.push(`[Uniform Vouchers Group ${key}] Date is invalid or empty.`);
+                continue;
+            }
+
+            const entriesPlan = [];
+            const originalRef = firstRow.voucherNo || "";
+
+            for (const row of rows) {
+                const rowAmt = parseFloat(row.amountVal);
+                if (isNaN(rowAmt) || rowAmt <= 0) {
+                    errors.push(`[Uniform Row ${row.rowNumber}] Amount is invalid (must be greater than 0).`);
+                    continue;
+                }
+
+                // Resolve Lead
+                let leadId = null;
+                if (row.projectLead) {
+                    let lead = null;
+                    if (mongoose.Types.ObjectId.isValid(row.projectLead)) {
+                        lead = await Leads.findById(row.projectLead).lean();
+                    }
+                    if (!lead && !isNaN(Number(row.projectLead))) {
+                        lead = await Leads.findOne({ lead_no: Number(row.projectLead) }).lean();
+                    }
+                    if (!lead) {
+                        lead = await Leads.findOne({ sender_name: { $regex: new RegExp("^" + row.projectLead.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&') + "$", "i") } }).lean();
+                    }
+                    if (lead) {
+                        leadId = lead._id;
+                    } else {
+                        errors.push(`[Uniform Row ${row.rowNumber}] Project / Lead "${row.projectLead}" could not be resolved.`);
+                    }
+                }
+
+                // Prepare Employee Ledger (Account Payables) - Debiting Employee
+                const employeeName = row.employeeLedger;
+                if (!employeeName) {
+                    errors.push(`[Uniform Row ${row.rowNumber}] Employee Ledger Name is required.`);
+                    continue;
+                }
+                const employeeCacheKey = employeeName.toLowerCase();
+                let employeeLedgerPlan = ledgerCache[employeeCacheKey];
+                if (!employeeLedgerPlan) {
+                    const employee = await Employees.findOne({ name: { $regex: new RegExp("^" + employeeName.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&') + "$", "i") } }).lean();
+                    employeeLedgerPlan = {
+                        isNew: true,
+                        ledgerName: employeeName,
+                        groupName: "Account Payables",
+                        parentGroup: "Current Liabilities",
+                        refId: employee?._id || null,
+                        refType: employee ? "Staff" : "Manual",
+                        nature: "Cr"
+                    };
+                    ledgerCache[employeeCacheKey] = employeeLedgerPlan;
+                }
+
+                // Prepare Uniform & Equipment Ledger (Direct Expenses) - Crediting Uniform & Equipment
+                const uniformSystemName = "Uniform & Equipment";
+                const uniformCacheKey = uniformSystemName.toLowerCase();
+                let uniformLedgerPlan = ledgerCache[uniformCacheKey];
+                if (!uniformLedgerPlan) {
+                    uniformLedgerPlan = {
+                        isNew: true,
+                        ledgerName: uniformSystemName,
+                        groupName: "Direct Expenses",
+                        nature: "Dr"
+                    };
+                    ledgerCache[uniformCacheKey] = uniformLedgerPlan;
+                }
+
+                // Debiting Employee Ledger
+                entriesPlan.push({
+                    ledgerPlan: employeeLedgerPlan,
+                    debit: rowAmt,
+                    credit: 0,
+                    leadId
+                });
+                // Crediting Uniform & Equipment
+                entriesPlan.push({
+                    ledgerPlan: uniformLedgerPlan,
+                    debit: 0,
+                    credit: rowAmt,
+                    leadId
+                });
+            }
+
+            const narrationParts = rows.map(r => r.narration).filter(Boolean);
+            const narration = narrationParts.join("; ") || `Uniform & Equipment Bulk Issued uploaded via Excel`;
 
             voucherPlans.push({
                 voucherType: "Journal",
