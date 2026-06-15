@@ -1693,6 +1693,8 @@ exports.manageEmployees = {
         shiftType: shiftType || defaultShiftType,
         shiftPeriod: SHIFT_PERIOD_MAP[shiftPeriod || defaultShiftPeriod] || 'General',
         shiftLockHours: shiftLockHours || defaultShiftLockHours,
+        markedByDevice: false,
+        markedByUserName: req.user?.userDisplayName || req.user?.name || req.user?.mobile || 'Supervisor',
       });
       await record.save();
       res.status(201).json({ success: true, message: 'Attendance recorded', data: record });
