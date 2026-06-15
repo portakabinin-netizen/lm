@@ -1151,6 +1151,251 @@ exports.manageEmployees = {
     }
   },
   delete: (req, res) => manageSpoke.delete(req, res, 'Employees'),
+  generateAttendanceTemplate: async (req, res) => {
+    try {
+      const workbook = new ExcelJS.Workbook();
+      const sheet = workbook.addWorksheet('Attendance');
+      sheet.columns = [
+        { header: 'Date (YYYY-MM-DD)', key: 'date', width: 18 },
+        { header: 'Employee Name or Mobile', key: 'employeeIdentifier', width: 25 },
+        { header: 'Site Name', key: 'siteName', width: 25 },
+        { header: 'Shift Code (M/A/N/G/D/N2)', key: 'shiftCode', width: 20 },
+        { header: 'Hours Worked', key: 'hoursWorked', width: 15 },
+        { header: 'Daily Earn (₹)', key: 'dailyEarn', width: 15 },
+        { header: 'Remarks', key: 'remarks', width: 30 }
+      ];
+
+      sheet.getRow(1).eachCell((cell) => {
+        cell.font = { name: 'Arial', family: 4, size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
+        cell.fill = {
+          type: 'pattern',
+          pattern: 'solid',
+          fgColor: { argb: 'FF1F497D' }
+        };
+        cell.alignment = { vertical: 'middle', horizontal: 'left' };
+      });
+
+      sheet.addRow({
+        date: '2026-06-15',
+        employeeIdentifier: 'Suresh Chauhan',
+        siteName: 'Pratham Services',
+        shiftCode: 'G',
+        hoursWorked: 8,
+        dailyEarn: 500,
+        remarks: 'Regular general shift'
+      });
+
+      sheet.addRow({
+        date: '2026-06-15',
+        employeeIdentifier: '9876543210',
+        siteName: 'Pratham Services',
+        shiftCode: 'D',
+        hoursWorked: 12,
+        dailyEarn: 750,
+        remarks: 'Day shift 12hr'
+      });
+
+      res.setHeader(
+        'Content-Type',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      );
+      res.setHeader('Content-Disposition', 'attachment; filename=Attendance_Upload_Template.xlsx');
+      await workbook.xlsx.write(res);
+      res.end();
+    } catch (err) {
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+  bulkImportAttendance: async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ success: false, message: 'No file uploaded' });
+      }
+
+      const { Attendance, Employees } = req.tenantModels;
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(req.file.buffer);
+
+      const sheet = workbook.getWorksheet('Attendance') || workbook.getWorksheet(1);
+      if (!sheet) {
+        return res.status(400).json({ success: false, message: 'Could not find Attendance worksheet' });
+      }
+
+      const rows = [];
+      const getCellValue = (cell) => {
+        if (!cell) return null;
+        if (cell.value && typeof cell.value === 'object') {
+          if (cell.value.result !== undefined) return cell.value.result;
+          if (cell.value.text !== undefined) return cell.value.text;
+        }
+        return cell.value;
+      };
+
+      const parseDateVal = (val) => {
+        if (val instanceof Date) return val;
+        if (!val) return null;
+        const d = new Date(val);
+        return isNaN(d.getTime()) ? null : d;
+      };
+
+      sheet.eachRow((row, rowNumber) => {
+        if (rowNumber > 1) {
+          const dateVal = getCellValue(row.getCell(1));
+          const employeeIdentifier = String(getCellValue(row.getCell(2)) || '').trim();
+          const siteName = String(getCellValue(row.getCell(3)) || '').trim();
+          const shiftCode = String(getCellValue(row.getCell(4)) || '').trim().toUpperCase();
+          const hoursWorkedVal = getCellValue(row.getCell(5));
+          const dailyEarnVal = getCellValue(row.getCell(6));
+          const remarks = String(getCellValue(row.getCell(7)) || '').trim();
+
+          if (!dateVal && !employeeIdentifier && !shiftCode) return;
+
+          rows.push({
+            rowNumber,
+            dateVal,
+            employeeIdentifier,
+            siteName,
+            shiftCode,
+            hoursWorkedVal,
+            dailyEarnVal,
+            remarks
+          });
+        }
+      });
+
+      if (rows.length === 0) {
+        return res.status(400).json({ success: false, message: 'Excel sheet has no valid rows' });
+      }
+
+      const errors = [];
+      const attendanceToInsert = [];
+
+      for (const row of rows) {
+        const date = parseDateVal(row.dateVal);
+        if (!date) {
+          errors.push(`[Row ${row.rowNumber}] Date is invalid or empty.`);
+          continue;
+        }
+
+        if (!row.employeeIdentifier) {
+          errors.push(`[Row ${row.rowNumber}] Employee Name or Mobile is required.`);
+          continue;
+        }
+
+        // Find Employee
+        let employee = null;
+        const cleanMobile = row.employeeIdentifier.replace(/\D/g, '').slice(-10);
+        if (cleanMobile.length === 10) {
+          employee = await Employees.findOne({
+            mobile: { $regex: new RegExp(cleanMobile.split('').join('\\D*') + '\\D*$') }
+          });
+        }
+        if (!employee) {
+          employee = await Employees.findOne({
+            name: { $regex: new RegExp('^' + row.employeeIdentifier.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&') + '$', 'i') }
+          });
+        }
+
+        if (!employee) {
+          errors.push(`[Row ${row.rowNumber}] Employee "${row.employeeIdentifier}" could not be resolved.`);
+          continue;
+        }
+
+        // Resolve Shift start times and durations dynamically from Employee active arrangement
+        const activeHistory = employee.employmentHistory?.find(h => h.active === true);
+        let shiftStartTime = activeHistory?.shiftStartTime || '';
+        let shiftHours = activeHistory?.shiftHours || 8;
+        let shiftGroupName = activeHistory?.groupName || employee.shiftGroupName;
+        let shiftPeriod = activeHistory?.shiftName;
+
+        const sc = row.shiftCode || 'G';
+        const isDaNi = ['D', 'N2'].includes(sc);
+        if (!shiftGroupName) {
+          shiftGroupName = isDaNi ? 'DaNi' : 'MANG';
+        }
+
+        // Fallback standard presets if not dynamically resolved
+        if (!shiftStartTime) {
+          if (sc === 'D' || sc === 'M') {
+            shiftStartTime = '06:00';
+          } else if (sc === 'G') {
+            shiftStartTime = '08:00';
+          } else if (sc === 'A') {
+            shiftStartTime = '14:00';
+          } else if (sc === 'N2') {
+            shiftStartTime = '18:00';
+          } else if (sc === 'N') {
+            shiftStartTime = '22:00';
+          } else {
+            shiftStartTime = '08:00';
+          }
+        }
+
+        if (activeHistory?.shiftHours === undefined) {
+          shiftHours = isDaNi ? 12 : 8;
+        }
+
+        if (!shiftPeriod) {
+          if (sc === 'M') shiftPeriod = 'Morning';
+          else if (sc === 'A') shiftPeriod = 'Afternoon';
+          else if (sc === 'N') shiftPeriod = 'Night';
+          else if (sc === 'G') shiftPeriod = 'General';
+          else if (sc === 'D') shiftPeriod = 'Day';
+          else if (sc === 'N2') shiftPeriod = 'Night12';
+          else shiftPeriod = 'General';
+        }
+
+        const hoursWorked = parseFloat(row.hoursWorkedVal) || shiftHours;
+        const dailyEarn = parseFloat(row.dailyEarnVal) || 0;
+
+        // Construct dutyStart Date object
+        const [hh, mm] = shiftStartTime.split(':').map(Number);
+        const dutyStart = new Date(date);
+        dutyStart.setHours(hh || 8, mm || 0, 0, 0);
+
+        // Construct dutyEnd Date object
+        const dutyEnd = new Date(dutyStart.getTime() + hoursWorked * 60 * 60 * 1000);
+
+        attendanceToInsert.push({
+          employeeId: employee._id,
+          employeeType: 'Employees',
+          date,
+          status: 'Present',
+          site_name: row.siteName || 'General',
+          shiftGroupName,
+          shiftCode: sc,
+          shiftType: isDaNi ? '12hr' : '8hr',
+          shiftPeriod,
+          shiftHours,
+          shiftLockHours: shiftHours,
+          defaultShiftStart: shiftStartTime,
+          hoursWorked,
+          dailyEarn,
+          dutyCount: 1,
+          isPosted: false,
+          dutyStartScheduled: dutyStart,
+          dutyStart,
+          dutyEnd,
+          dutyEndScheduled: dutyEnd,
+          remarks: row.remarks || 'Bulk Excel Import'
+        });
+      }
+
+      if (errors.length > 0) {
+        return res.status(400).json({ success: false, message: 'Validation checks failed', errors });
+      }
+
+      const inserted = await Attendance.insertMany(attendanceToInsert);
+      res.json({
+        success: true,
+        message: `Successfully imported ${inserted.length} attendance records.`,
+        count: inserted.length
+      });
+
+    } catch (err) {
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
   listAttendance: async (req, res) => {
     try {
       const { Attendance } = req.tenantModels;
