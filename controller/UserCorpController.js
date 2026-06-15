@@ -2112,52 +2112,7 @@ exports.manageEmployees = {
 
           const displayName = emp.name || emp.userDisplayName || 'User';
 
-          if (diffMins < -15) {
-            return res.status(403).json({
-              success: false,
-              tooEarly: true,
-              message: `Too early to start duty. Shift starts at ${shiftStartTime}. Attendance can only be marked starting 15 minutes before shift start.`,
-            });
-          }
-
-          if (diffMins > 60) {
-            if (req.body.requestPermission) {
-              const { Messages } = req.tenantModels;
-              if (Messages) {
-                const msg = new Messages({
-                  senderName: displayName,
-                  senderId: queryId,
-                  text: `⚠️ Request to start late duty from ${displayName}. Shift started at ${shiftStartTime}.`,
-                  type: 'text',
-                  isOneToOne: false,
-                  status: 'unseen',
-                });
-                await msg.save();
-                req.io.to(req.tenantDbName).emit('newMessage', msg);
-              }
-
-              req.io.to(req.tenantDbName).emit('admin:broadcast', {
-                id: new mongoose.Types.ObjectId().toString(),
-                title: '⚠️ Late Start Request',
-                message: `Employee ${displayName} requested to start duty late. Shift started at ${shiftStartTime}.`,
-                priority: 'normal',
-                targetRoles: ['CorpAdmin'],
-                sentBy: displayName,
-                sentByRole: 'Employee',
-                at: now.toISOString(),
-              });
-
-              return res.json({
-                success: true,
-                message: `Request to start duty late has been sent to Admin via chatroom.`,
-              });
-            }
-            return res.status(403).json({
-              success: false,
-              tooLate: true,
-              message: `Too late to start duty. Shift started at ${shiftStartTime}. Please request permission from Admin.`,
-            });
-          }
+          // Timing validation checks bypassed (early/late checks disabled)
         }
 
         let lockHrs = activeShift?.shiftHours || (activeShift?.groupName === 'DaNi' ? 12 : 8);
@@ -2227,39 +2182,9 @@ exports.manageEmployees = {
               finalLong = siteLong;
               finalSiteName = site.sender_name || finalSiteName;
             } else {
-              // 🚀 Started by self -> own duty marked device location must be matched with site location
-              if (!lat || !long) {
-                return res.status(400).json({
-                  success: false,
-                  message: "You are not at your working site, please first reach the site location to start your duty."
-                });
-              }
-              const getDistance = (lat1, lon1, lat2, lon2) => {
-                const R = 6371e3;
-                const dLat = ((lat2 - lat1) * Math.PI) / 180;
-                const dLon = ((lon2 - lon1) * Math.PI) / 180;
-                const a =
-                  Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-                  Math.cos((lat1 * Math.PI) / 180) *
-                    Math.cos((lat2 * Math.PI) / 180) *
-                    Math.sin(dLon / 2) *
-                    Math.sin(dLon / 2);
-                return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-              };
-              const dist = getDistance(
-                lat,
-                long,
-                siteLat,
-                siteLong
-              );
-              if (dist > 100) {
-                return res.status(400).json({
-                  success: false,
-                  message: "You are not at your working site, please first reach the site location to start your duty."
-                });
-              }
-              finalLat = lat;
-              finalLong = long;
+              // 🚀 Started by self -> bypass distance/site coordinate checks
+              finalLat = lat || siteLat;
+              finalLong = long || siteLong;
               finalSiteName = site.sender_name || finalSiteName;
             }
           }
