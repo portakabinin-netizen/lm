@@ -81,6 +81,37 @@ const isBillableLeadStatus = (status = '') => {
   return s === 'accepted' || s === 'tax invoice' || s === 'fully paid';
 };
 
+// Shift normalization maps
+const SHIFT_CODE_MAP = {
+  'Morning': 'M',
+  'Afternoon': 'A',
+  'Night': 'N',
+  'General': 'G',
+  'Day': 'D',
+  'Night12': 'N2',
+  'M': 'M',
+  'A': 'A',
+  'N': 'N',
+  'G': 'G',
+  'D': 'D',
+  'N2': 'N2'
+};
+
+const SHIFT_PERIOD_MAP = {
+  'M': 'Morning',
+  'A': 'Afternoon',
+  'N': 'Night',
+  'G': 'General',
+  'D': 'Day',
+  'N2': 'Night12',
+  'Morning': 'Morning',
+  'Afternoon': 'Afternoon',
+  'Night': 'Night',
+  'General': 'General',
+  'Day': 'Day',
+  'Night12': 'Night12'
+};
+
 /**
  * 🛠️ Internal Helper: Dynamic Spoke Resolver (for Hub Data)
  */
@@ -1214,86 +1245,103 @@ exports.manageEmployees = {
       }
       // ──────────────────────────────────────────────────────────────────────
 
-      let role = 'project';
-      let userDoc = null;
       const userMaster = require('../models/userMaster');
-      userDoc = await userMaster.findById(employeeId).lean();
+      let userDoc = await userMaster.findById(employeeId).lean();
+      let employeeDoc = await Employees.findById(employeeId);
 
-      let employeeDoc = null;
+      if (userDoc && !employeeDoc) {
+        employeeDoc = await Employees.findOne({
+          $or: [
+            { user_id: userDoc._id },
+            { mobile: userDoc.mobile || userDoc.userMobile || userDoc.username },
+            { email: userDoc.email }
+          ].filter(q => q.user_id || q.mobile || q.email)
+        });
+      } else if (employeeDoc && !userDoc) {
+        userDoc = await userMaster.findOne({
+          $or: [
+            { _id: employeeDoc.user_id },
+            { mobile: employeeDoc.mobile },
+            { email: employeeDoc.email }
+          ].filter(q => q._id || q.mobile || q.email)
+        }).lean();
+      }
+
       let emp = null;
-
+      if (employeeDoc) {
+        emp = employeeDoc.toObject();
+      }
       if (userDoc) {
-        console.log(`[toggleAttendance] Matched registered user in userMaster: ${userDoc.name || userDoc.email} (ID: ${employeeId}). Skipping Employees database check.`);
+        emp = { ...emp, ...userDoc };
+      }
+
+      let role = 'project';
+      if (userDoc) {
         role = userDoc.userRole || userDoc.role || 'project';
-      } else {
-        employeeDoc = await Employees.findById(employeeId);
-        emp = employeeDoc ? employeeDoc.toObject() : null;
-        if (emp) {
-          role = emp.role || 'project';
-          // If employee has null/missing shiftGroupName, assign it now
-          if (!emp.shiftGroupName) {
-            const targetGroupName =
-              shiftType === '12hr' || ['Day', 'Night12'].includes(shiftPeriod) ? 'DaNi' : 'MANG';
-            const targetSelectedShift = shiftCode || (targetGroupName === 'DaNi' ? 'D' : 'G');
+      } else if (emp) {
+        role = emp.role || 'project';
+      }
+      if (employeeDoc && emp && !emp.shiftGroupName) {
+        const targetGroupName =
+          shiftType === '12hr' || ['Day', 'Night12'].includes(shiftPeriod) ? 'DaNi' : 'MANG';
+        const targetSelectedShift = shiftCode || (targetGroupName === 'DaNi' ? 'D' : 'G');
 
-            let targetShiftName = shiftPeriod || 'General';
-            if (targetShiftName === 'Night12') {
-              targetShiftName = 'Night';
-            }
-            let targetShiftStartTime = '08:00';
-            if (targetGroupName === 'DaNi') {
-              if (targetSelectedShift === 'N2' || targetShiftName === 'Night') {
-                targetShiftStartTime = '18:00';
-              } else {
-                targetShiftStartTime = '06:00';
-              }
-            } else {
-              if (targetSelectedShift === 'M' || targetShiftName === 'Morning') {
-                targetShiftStartTime = '06:00';
-              } else if (targetSelectedShift === 'A' || targetShiftName === 'Afternoon') {
-                targetShiftStartTime = '14:00';
-              } else if (targetSelectedShift === 'N' || targetShiftName === 'Night') {
-                targetShiftStartTime = '22:00';
-              } else {
-                targetShiftStartTime = '08:00';
-              }
-            }
-            const targetShiftHours = shiftLockHours || (targetGroupName === 'DaNi' ? 12 : 8);
-
-            employeeDoc.shiftGroupName = targetGroupName;
-            employeeDoc.selectedShift = targetSelectedShift;
-
-            let activeHistoryEntry = employeeDoc.employmentHistory.find((h) => h.active);
-            if (activeHistoryEntry) {
-              activeHistoryEntry.groupName = targetGroupName;
-              activeHistoryEntry.shiftName = targetShiftName;
-              activeHistoryEntry.shiftStartTime = targetShiftStartTime;
-              activeHistoryEntry.shiftHours = targetShiftHours;
-              if (rate && !activeHistoryEntry.daily_rate) {
-                activeHistoryEntry.daily_rate = rate;
-              }
-            } else {
-              employeeDoc.employmentHistory.push({
-                joinDate: new Date(),
-                daily_rate:
-                  rate ||
-                  (employeeDoc.monthlyRate
-                    ? parseFloat((employeeDoc.monthlyRate / 30).toFixed(2))
-                    : 0),
-                monthly_rate: employeeDoc.monthlyRate || 0,
-                shiftStartTime: targetShiftStartTime,
-                shiftHours: targetShiftHours,
-                groupName: targetGroupName,
-                shiftName: targetShiftName,
-                active: true,
-                notes: 'Auto-assigned on first attendance marking',
-              });
-            }
-
-            await employeeDoc.save();
-            emp = employeeDoc.toObject();
+        let targetShiftName = shiftPeriod || 'General';
+        if (targetShiftName === 'Night12') {
+          targetShiftName = 'Night';
+        }
+        let targetShiftStartTime = '08:00';
+        if (targetGroupName === 'DaNi') {
+          if (targetSelectedShift === 'N2' || targetShiftName === 'Night') {
+            targetShiftStartTime = '18:00';
+          } else {
+            targetShiftStartTime = '06:00';
+          }
+        } else {
+          if (targetSelectedShift === 'M' || targetShiftName === 'Morning') {
+            targetShiftStartTime = '06:00';
+          } else if (targetSelectedShift === 'A' || targetShiftName === 'Afternoon') {
+            targetShiftStartTime = '14:00';
+          } else if (targetSelectedShift === 'N' || targetShiftName === 'Night') {
+            targetShiftStartTime = '22:00';
+          } else {
+            targetShiftStartTime = '08:00';
           }
         }
+        const targetShiftHours = shiftLockHours || (targetGroupName === 'DaNi' ? 12 : 8);
+
+        employeeDoc.shiftGroupName = targetGroupName;
+        employeeDoc.selectedShift = targetSelectedShift;
+
+        let activeHistoryEntry = employeeDoc.employmentHistory.find((h) => h.active);
+        if (activeHistoryEntry) {
+          activeHistoryEntry.groupName = targetGroupName;
+          activeHistoryEntry.shiftName = targetShiftName;
+          activeHistoryEntry.shiftStartTime = targetShiftStartTime;
+          activeHistoryEntry.shiftHours = targetShiftHours;
+          if (rate && !activeHistoryEntry.daily_rate) {
+            activeHistoryEntry.daily_rate = rate;
+          }
+        } else {
+          employeeDoc.employmentHistory.push({
+            joinDate: new Date(),
+            daily_rate:
+              rate ||
+              (employeeDoc.monthlyRate
+                ? parseFloat((employeeDoc.monthlyRate / 30).toFixed(2))
+                : 0),
+            monthly_rate: employeeDoc.monthlyRate || 0,
+            shiftStartTime: targetShiftStartTime,
+            shiftHours: targetShiftHours,
+            groupName: targetGroupName,
+            shiftName: targetShiftName,
+            active: true,
+            notes: 'Auto-assigned on first attendance marking',
+          });
+        }
+
+        await employeeDoc.save();
+        emp = { ...emp, ...employeeDoc.toObject() };
       }
 
       // Default shift values from userMaster dutyShift if employee doesn't exist
@@ -1339,9 +1387,9 @@ exports.manageEmployees = {
         forcedOffReason: forcedOffReason || '',
         geoHistory: finalGeoHistory,
         // Shift
-        shiftCode: shiftCode || defaultShiftCode,
+        shiftCode: SHIFT_CODE_MAP[shiftCode || defaultShiftCode] || 'G',
         shiftType: shiftType || defaultShiftType,
-        shiftPeriod: shiftPeriod || defaultShiftPeriod,
+        shiftPeriod: SHIFT_PERIOD_MAP[shiftPeriod || defaultShiftPeriod] || 'General',
         shiftLockHours: shiftLockHours || defaultShiftLockHours,
       });
       await record.save();
@@ -1523,12 +1571,30 @@ exports.manageEmployees = {
         : employeeId;
 
       const userMaster = require('../models/userMaster');
-      let emp = await userMaster.findById(queryId).lean();
-      if (emp) {
-        console.log(`[getActiveAttendance] Matched registered user in userMaster: ${emp.name || emp.email} (ID: ${queryId}).`);
-      } else {
-        emp = await Employees.findById(queryId).lean();
+      let userDoc = await userMaster.findById(queryId).lean();
+      let employeeDoc = await Employees.findById(queryId).lean();
+
+      if (userDoc && !employeeDoc) {
+        employeeDoc = await Employees.findOne({
+          $or: [
+            { user_id: userDoc._id },
+            { mobile: userDoc.mobile || userDoc.userMobile || userDoc.username },
+            { email: userDoc.email }
+          ].filter(q => q.user_id || q.mobile || q.email)
+        }).lean();
+      } else if (employeeDoc && !userDoc) {
+        userDoc = await userMaster.findOne({
+          $or: [
+            { _id: employeeDoc.user_id },
+            { mobile: employeeDoc.mobile },
+            { email: employeeDoc.email }
+          ].filter(q => q._id || q.mobile || q.email)
+        }).lean();
       }
+
+      let emp = null;
+      if (employeeDoc) emp = { ...employeeDoc };
+      if (userDoc) emp = { ...emp, ...userDoc };
 
       const linkedIds = [queryId];
       if (emp?.user_id) linkedIds.push(new mongoose.Types.ObjectId(emp.user_id));
@@ -1581,19 +1647,41 @@ exports.manageEmployees = {
       // Find open session (not necessarily today — shift C and E can span midnight)
       // 1. Identify all possible IDs for this employee (Self-sync check)
       const userMaster = require('../models/userMaster');
-      let emp = await userMaster.findById(queryId).lean();
-      let isWorker = false;
-      if (emp) {
-        console.log(`[markAttendance] Matched registered user in userMaster: ${emp.name || emp.email} (ID: ${queryId}). Skipping Employees database check.`);
-      } else {
-        emp = await Employees.findById(queryId).lean();
-        isWorker = true;
+      let userDoc = await userMaster.findById(queryId).lean();
+      let employeeDoc = await Employees.findById(queryId).lean();
+
+      if (userDoc && !employeeDoc) {
+        employeeDoc = await Employees.findOne({
+          $or: [
+            { user_id: userDoc._id },
+            { mobile: userDoc.mobile || userDoc.userMobile || userDoc.username },
+            { email: userDoc.email }
+          ].filter(q => q.user_id || q.mobile || q.email)
+        }).lean();
+      } else if (employeeDoc && !userDoc) {
+        userDoc = await userMaster.findOne({
+          $or: [
+            { _id: employeeDoc.user_id },
+            { mobile: employeeDoc.mobile },
+            { email: employeeDoc.email }
+          ].filter(q => q._id || q.mobile || q.email)
+        }).lean();
       }
 
-      let linkedUser = isWorker ? null : emp;
-      if (isWorker && emp?.user_id) {
-        linkedUser = await userMaster.findById(emp.user_id).lean();
+      let emp = null;
+      let isWorker = false;
+      if (employeeDoc) {
+        emp = { ...employeeDoc };
+        isWorker = true;
       }
+      if (userDoc) {
+        emp = { ...emp, ...userDoc };
+        if (String(queryId) === String(userDoc._id)) {
+          isWorker = false;
+        }
+      }
+
+      let linkedUser = userDoc || null;
 
       const checkRole = (emp?.role || emp?.userRole || (linkedUser && (linkedUser.role || linkedUser.userRole)) || '').toLowerCase();
       const isAdminRole = ['corpadmin', 'useradmin', 'admin'].includes(checkRole);
@@ -1862,6 +1950,7 @@ exports.manageEmployees = {
         }
 
         const finalShiftCode = emp.selectedShift || shiftCode || defaultShiftCode;
+        const normalizedShiftCode = SHIFT_CODE_MAP[finalShiftCode] || finalShiftCode || 'G';
         
         let finalShiftGroupName = emp.shiftGroupName || (emp.dutyShift && emp.dutyShift.groupName);
         if (!finalShiftGroupName && linkedUser?.dutyShift?.groupName) {
@@ -1960,9 +2049,9 @@ exports.manageEmployees = {
           date: now,
           dutyStart: now,
           dutyEndScheduled: scheduledEnd,
-          shiftCode: finalShiftCode,
+          shiftCode: normalizedShiftCode,
           shiftType: shiftType || (lockHrs === 12 ? '12hr' : '8hr'),
-          shiftPeriod: shiftPeriod || userShiftName || activeShift?.shiftName || 'General',
+          shiftPeriod: SHIFT_PERIOD_MAP[shiftPeriod || userShiftName || activeShift?.shiftName || 'General'] || 'General',
           shiftGroupName: finalShiftGroupName,
           shiftHours: lockHrs,
           shiftLockHours: lockHrs,
@@ -1983,8 +2072,8 @@ exports.manageEmployees = {
         req.io.to(req.tenantDbName).emit('attendance:duty_on', {
           employeeId,
           attendanceId: record._id,
-          shiftCode,
-          shiftPeriod,
+          shiftCode: normalizedShiftCode,
+          shiftPeriod: SHIFT_PERIOD_MAP[shiftPeriod || userShiftName || activeShift?.shiftName || 'General'] || 'General',
         });
         return res.json({ success: true, data: record, message: 'Duty started' });
       } else {
@@ -2184,13 +2273,38 @@ exports.manageEmployees = {
       // Resolve exemption
       const { Employees, Leads } = req.tenantModels;
       const userMaster = require('../models/userMaster');
-      let emp = await userMaster.findById(queryId).lean();
+      let userDoc = await userMaster.findById(queryId).lean();
+      let employeeDoc = await Employees.findById(queryId).lean();
+
+      if (userDoc && !employeeDoc) {
+        employeeDoc = await Employees.findOne({
+          $or: [
+            { user_id: userDoc._id },
+            { mobile: userDoc.mobile || userDoc.userMobile || userDoc.username },
+            { email: userDoc.email }
+          ].filter(q => q.user_id || q.mobile || q.email)
+        }).lean();
+      } else if (employeeDoc && !userDoc) {
+        userDoc = await userMaster.findOne({
+          $or: [
+            { _id: employeeDoc.user_id },
+            { mobile: employeeDoc.mobile },
+            { email: employeeDoc.email }
+          ].filter(q => q._id || q.mobile || q.email)
+        }).lean();
+      }
+
+      let emp = null;
       let isWorker = false;
-      if (emp) {
-        console.log(`[continueShift] Matched registered user in userMaster: ${emp.name || emp.email} (ID: ${queryId}). Skipping Employees database check.`);
-      } else {
-        emp = await Employees.findById(queryId).lean();
+      if (employeeDoc) {
+        emp = { ...employeeDoc };
         isWorker = true;
+      }
+      if (userDoc) {
+        emp = { ...emp, ...userDoc };
+        if (String(queryId) === String(userDoc._id)) {
+          isWorker = false;
+        }
       }
       let linkedUser = isWorker ? null : emp;
       if (isWorker && emp?.user_id) {
@@ -2235,9 +2349,9 @@ exports.manageEmployees = {
         date: now,
         dutyStart: now,
         dutyEndScheduled: nextScheduledEnd,
-        shiftCode: nextShiftCode,
+        shiftCode: SHIFT_CODE_MAP[nextShiftCode] || nextShiftCode || 'G',
         shiftType: nextShiftType || '8hr',
-        shiftPeriod: nextShiftPeriod || 'Morning',
+        shiftPeriod: SHIFT_PERIOD_MAP[nextShiftPeriod] || nextShiftPeriod || 'Morning',
         shiftLockHours: nextLockHrs,
         isDoubleShift: true,
         previousShiftId: current._id,
@@ -2256,7 +2370,7 @@ exports.manageEmployees = {
         type: 'double_shift',
         employeeId: String(employeeId),
         previousShiftCode: current.shiftCode,
-        nextShiftCode,
+        nextShiftCode: SHIFT_CODE_MAP[nextShiftCode] || nextShiftCode || 'G',
         attendanceId: nextRecord._id,
         at: now.toISOString(),
         message: `⚠️ Double Shift Alert: Employee continued into Shift ${nextShiftCode} after completing Shift ${current.shiftCode}.`,
