@@ -30,7 +30,7 @@ const resolveSiteNameForCoordinates = async (lat, long, LeadsModel) => {
   if (!lat || !long || !LeadsModel) return null;
   const leads = await LeadsModel.find({
     'location.lat': { $exists: true },
-    'location.long': { $exists: true }
+    'location.long': { $exists: true },
   }).lean();
 
   let minDist = 10; // strictly 10 meters
@@ -83,33 +83,33 @@ const isBillableLeadStatus = (status = '') => {
 
 // Shift normalization maps
 const SHIFT_CODE_MAP = {
-  'Morning': 'M',
-  'Afternoon': 'A',
-  'Night': 'N',
-  'General': 'G',
-  'Day': 'D',
-  'Night12': 'N2',
-  'M': 'M',
-  'A': 'A',
-  'N': 'N',
-  'G': 'G',
-  'D': 'D',
-  'N2': 'N2'
+  Morning: 'M',
+  Afternoon: 'A',
+  Night: 'N',
+  General: 'G',
+  Day: 'D',
+  Night12: 'N2',
+  M: 'M',
+  A: 'A',
+  N: 'N',
+  G: 'G',
+  D: 'D',
+  N2: 'N2',
 };
 
 const SHIFT_PERIOD_MAP = {
-  'M': 'Morning',
-  'A': 'Afternoon',
-  'N': 'Night',
-  'G': 'General',
-  'D': 'Day',
-  'N2': 'Night12',
-  'Morning': 'Morning',
-  'Afternoon': 'Afternoon',
-  'Night': 'Night',
-  'General': 'General',
-  'Day': 'Day',
-  'Night12': 'Night12'
+  M: 'Morning',
+  A: 'Afternoon',
+  N: 'Night',
+  G: 'General',
+  D: 'Day',
+  N2: 'Night12',
+  Morning: 'Morning',
+  Afternoon: 'Afternoon',
+  Night: 'Night',
+  General: 'General',
+  Day: 'Day',
+  Night12: 'Night12',
 };
 
 /**
@@ -504,7 +504,7 @@ exports.manageLeads = {
         leads.forEach((l) => {
           l.folderGallery = [
             ...(mediaMap[String(l.lead_no)] || []),
-            ...(mediaMap[String(l._id)] || [])
+            ...(mediaMap[String(l._id)] || []),
           ];
         });
       } catch (ce) {
@@ -756,7 +756,9 @@ exports.manageLeads = {
         { $group: { _id: '$shiftCode', count: { $sum: 1 } } },
       ]);
       const monthlyCountByShift = {};
-      monthlyAgg.forEach((r) => { monthlyCountByShift[r._id] = r.count; });
+      monthlyAgg.forEach((r) => {
+        monthlyCountByShift[r._id] = r.count;
+      });
 
       // Count currently active (open session) workers per shift at this site
       const activeAgg = await Attendance.aggregate([
@@ -769,7 +771,9 @@ exports.manageLeads = {
         { $group: { _id: '$shiftCode', count: { $sum: 1 } } },
       ]);
       const activeCountByShift = {};
-      activeAgg.forEach((r) => { activeCountByShift[r._id] = r.count; });
+      activeAgg.forEach((r) => {
+        activeCountByShift[r._id] = r.count;
+      });
 
       const shiftsWithStats = (lead.siteShifts || []).map((s) => {
         const permittedThisMonth = (s.workerSlots || 1) * daysInMonth;
@@ -960,8 +964,12 @@ exports.manageEmployees = {
       const userMapByMobile = new Map();
       const userMapByEmail = new Map();
 
-      userMasterList.forEach(u => {
-        const name = u.userDisplayName || u.name || `${u.firstName || ''} ${u.lastName || ''}`.trim() || u.email;
+      userMasterList.forEach((u) => {
+        const name =
+          u.userDisplayName ||
+          u.name ||
+          `${u.firstName || ''} ${u.lastName || ''}`.trim() ||
+          u.email;
         const mappedUser = {
           _id: u._id,
           name,
@@ -993,7 +1001,7 @@ exports.manageEmployees = {
       const mergedList = [];
       const processedUserIds = new Set();
 
-      employeesList.forEach(emp => {
+      employeesList.forEach((emp) => {
         let matchedUser = null;
 
         if (emp.user_id && userMapById.has(String(emp.user_id))) {
@@ -1013,7 +1021,9 @@ exports.manageEmployees = {
         }
 
         if (matchedUser) {
-          console.log(`[hr/employees/list] Matched duplicate Employee (${emp.name}) with userMaster (${matchedUser.name}). Merging...`);
+          console.log(
+            `[hr/employees/list] Matched duplicate Employee (${emp.name}) with userMaster (${matchedUser.name}). Merging...`
+          );
           matchedUser.aadhar_no = emp.aadhar_no || matchedUser.aadhar_no;
           matchedUser.enrollment_no = emp.enrollment_no || matchedUser.enrollment_no;
           matchedUser.dob = emp.dob || matchedUser.dob;
@@ -1049,20 +1059,23 @@ exports.manageEmployees = {
 
       const userMaster = require('../models/userMaster');
       let userDoc = await userMaster.findById(id).lean();
-      
+
       const { Employees } = req.tenantModels;
       let employeeDoc = await Employees.findOne({
-        $or: [
-          { _id: id },
-          { user_id: id }
-        ]
+        $or: [{ _id: id }, { user_id: id }],
       }).lean();
 
       if (userDoc) {
-        console.log(`[hr/employees/get] Matched registered user in userMaster: ${userDoc.name || userDoc.email} (ID: ${id}).`);
+        console.log(
+          `[hr/employees/get] Matched registered user in userMaster: ${userDoc.name || userDoc.email} (ID: ${id}).`
+        );
         const mappedUser = {
           _id: userDoc._id,
-          name: userDoc.userDisplayName || userDoc.name || `${userDoc.firstName || ''} ${userDoc.lastName || ''}`.trim() || userDoc.email,
+          name:
+            userDoc.userDisplayName ||
+            userDoc.name ||
+            `${userDoc.firstName || ''} ${userDoc.lastName || ''}`.trim() ||
+            userDoc.email,
           mobile: userDoc.userMobile || userDoc.mobile,
           email: userDoc.email,
           role: userDoc.userRole || userDoc.role || 'project',
@@ -1101,12 +1114,17 @@ exports.manageEmployees = {
       if (!req.body.locationId && ProfileMaster) {
         try {
           const profile = await ProfileMaster.findOne({}).lean();
-          const hoLoc = (profile?.locations || []).find(l => l.locationType === 'HO') || (profile?.locations || [])[0];
+          const hoLoc =
+            (profile?.locations || []).find((l) => l.locationType === 'HO') ||
+            (profile?.locations || [])[0];
           if (hoLoc) {
             req.body.locationId = hoLoc._id;
           }
         } catch (perr) {
-          console.error('Failed to resolve HO locationId default in manageEmployees.create:', perr.message);
+          console.error(
+            'Failed to resolve HO locationId default in manageEmployees.create:',
+            perr.message
+          );
         }
       }
 
@@ -1149,11 +1167,13 @@ exports.manageEmployees = {
       const { id } = req.params;
       const { Employees } = req.tenantModels;
       const userMaster = require('../models/userMaster');
-      
+
       let userDoc = await userMaster.findById(id);
       if (userDoc) {
-        console.log(`[hr/employees/update] Updating registered user: ${userDoc.name || userDoc.email} (ID: ${id}).`);
-        
+        console.log(
+          `[hr/employees/update] Updating registered user: ${userDoc.name || userDoc.email} (ID: ${id}).`
+        );
+
         if (req.body.name) userDoc.userDisplayName = req.body.name;
         if (req.body.mobile) userDoc.userMobile = req.body.mobile;
         if (req.body.role) userDoc.userRole = req.body.role;
@@ -1161,10 +1181,7 @@ exports.manageEmployees = {
         await userDoc.save();
 
         let employeeDoc = await Employees.findOne({
-          $or: [
-            { _id: id },
-            { user_id: id }
-          ]
+          $or: [{ _id: id }, { user_id: id }],
         });
 
         if (employeeDoc) {
@@ -1197,7 +1214,11 @@ exports.manageEmployees = {
 
         const mappedUser = {
           _id: userDoc._id,
-          name: userDoc.userDisplayName || userDoc.name || `${userDoc.firstName || ''} ${userDoc.lastName || ''}`.trim() || userDoc.email,
+          name:
+            userDoc.userDisplayName ||
+            userDoc.name ||
+            `${userDoc.firstName || ''} ${userDoc.lastName || ''}`.trim() ||
+            userDoc.email,
           mobile: userDoc.userMobile || userDoc.mobile,
           email: userDoc.email,
           role: userDoc.userRole || userDoc.role || 'project',
@@ -1256,7 +1277,7 @@ exports.manageEmployees = {
         { header: 'Shift Code (M/A/N/G/D/N2)', key: 'shiftCode', width: 20 },
         { header: 'Hours Worked', key: 'hoursWorked', width: 15 },
         { header: 'Daily Earn (₹)', key: 'dailyEarn', width: 15 },
-        { header: 'Remarks', key: 'remarks', width: 30 }
+        { header: 'Remarks', key: 'remarks', width: 30 },
       ];
 
       sheet.getRow(1).eachCell((cell) => {
@@ -1264,7 +1285,7 @@ exports.manageEmployees = {
         cell.fill = {
           type: 'pattern',
           pattern: 'solid',
-          fgColor: { argb: 'FF1F497D' }
+          fgColor: { argb: 'FF1F497D' },
         };
         cell.alignment = { vertical: 'middle', horizontal: 'left' };
       });
@@ -1276,7 +1297,7 @@ exports.manageEmployees = {
         shiftCode: 'G',
         hoursWorked: 8,
         dailyEarn: 500,
-        remarks: 'Regular general shift'
+        remarks: 'Regular general shift',
       });
 
       sheet.addRow({
@@ -1286,7 +1307,7 @@ exports.manageEmployees = {
         shiftCode: 'D',
         hoursWorked: 12,
         dailyEarn: 750,
-        remarks: 'Day shift 12hr'
+        remarks: 'Day shift 12hr',
       });
 
       res.setHeader(
@@ -1312,7 +1333,9 @@ exports.manageEmployees = {
 
       const sheet = workbook.getWorksheet('Attendance') || workbook.getWorksheet(1);
       if (!sheet) {
-        return res.status(400).json({ success: false, message: 'Could not find Attendance worksheet' });
+        return res
+          .status(400)
+          .json({ success: false, message: 'Could not find Attendance worksheet' });
       }
 
       const rows = [];
@@ -1337,7 +1360,9 @@ exports.manageEmployees = {
           const dateVal = getCellValue(row.getCell(1));
           const employeeIdentifier = String(getCellValue(row.getCell(2)) || '').trim();
           const siteName = String(getCellValue(row.getCell(3)) || '').trim();
-          const shiftCode = String(getCellValue(row.getCell(4)) || '').trim().toUpperCase();
+          const shiftCode = String(getCellValue(row.getCell(4)) || '')
+            .trim()
+            .toUpperCase();
           const hoursWorkedVal = getCellValue(row.getCell(5));
           const dailyEarnVal = getCellValue(row.getCell(6));
           const remarks = String(getCellValue(row.getCell(7)) || '').trim();
@@ -1352,7 +1377,7 @@ exports.manageEmployees = {
             shiftCode,
             hoursWorkedVal,
             dailyEarnVal,
-            remarks
+            remarks,
           });
         }
       });
@@ -1381,22 +1406,29 @@ exports.manageEmployees = {
         const cleanMobile = row.employeeIdentifier.replace(/\D/g, '').slice(-10);
         if (cleanMobile.length === 10) {
           employee = await Employees.findOne({
-            mobile: { $regex: new RegExp(cleanMobile.split('').join('\\D*') + '\\D*$') }
+            mobile: { $regex: new RegExp(cleanMobile.split('').join('\\D*') + '\\D*$') },
           });
         }
         if (!employee) {
           employee = await Employees.findOne({
-            name: { $regex: new RegExp('^' + row.employeeIdentifier.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&') + '$', 'i') }
+            name: {
+              $regex: new RegExp(
+                '^' + row.employeeIdentifier.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&') + '$',
+                'i'
+              ),
+            },
           });
         }
 
         if (!employee) {
-          errors.push(`[Row ${row.rowNumber}] Employee "${row.employeeIdentifier}" could not be resolved.`);
+          errors.push(
+            `[Row ${row.rowNumber}] Employee "${row.employeeIdentifier}" could not be resolved.`
+          );
           continue;
         }
 
         // Resolve Shift start times and durations dynamically from Employee active arrangement
-        const activeHistory = employee.employmentHistory?.find(h => h.active === true);
+        const activeHistory = employee.employmentHistory?.find((h) => h.active === true);
         let shiftStartTime = activeHistory?.shiftStartTime || '';
         let shiftHours = activeHistory?.shiftHours || 8;
         let shiftGroupName = activeHistory?.groupName || employee.shiftGroupName;
@@ -1471,21 +1503,22 @@ exports.manageEmployees = {
           dutyStart,
           dutyEnd,
           dutyEndScheduled: dutyEnd,
-          remarks: row.remarks || 'Bulk Excel Import'
+          remarks: row.remarks || 'Bulk Excel Import',
         });
       }
 
       if (errors.length > 0) {
-        return res.status(400).json({ success: false, message: 'Validation checks failed', errors });
+        return res
+          .status(400)
+          .json({ success: false, message: 'Validation checks failed', errors });
       }
 
       const inserted = await Attendance.insertMany(attendanceToInsert);
       res.json({
         success: true,
         message: `Successfully imported ${inserted.length} attendance records.`,
-        count: inserted.length
+        count: inserted.length,
       });
-
     } catch (err) {
       res.status(500).json({ success: false, message: err.message });
     }
@@ -1526,7 +1559,7 @@ exports.manageEmployees = {
         }
       }
       const data = await Attendance.find(q).lean();
-      
+
       const userMaster = require('../models/userMaster');
       const { Employees } = req.tenantModels;
 
@@ -1541,19 +1574,27 @@ exports.manageEmployees = {
         }
       }
 
-      const uniqueUserMasterIds = [...new Set(userMasterIds.map(id => id.toString()))];
-      const uniqueEmployeeIds = [...new Set(employeeIds.map(id => id.toString()))];
+      const uniqueUserMasterIds = [...new Set(userMasterIds.map((id) => id.toString()))];
+      const uniqueEmployeeIds = [...new Set(employeeIds.map((id) => id.toString()))];
 
       const [usersList, empsList] = await Promise.all([
-        uniqueUserMasterIds.length > 0 ? userMaster.find({ _id: { $in: uniqueUserMasterIds } }).lean() : Promise.resolve([]),
-        uniqueEmployeeIds.length > 0 ? Employees.find({ _id: { $in: uniqueEmployeeIds } }).lean() : Promise.resolve([])
+        uniqueUserMasterIds.length > 0
+          ? userMaster.find({ _id: { $in: uniqueUserMasterIds } }).lean()
+          : Promise.resolve([]),
+        uniqueEmployeeIds.length > 0
+          ? Employees.find({ _id: { $in: uniqueEmployeeIds } }).lean()
+          : Promise.resolve([]),
       ]);
 
       const usersMap = {};
       for (const u of usersList) {
         usersMap[u._id.toString()] = {
           _id: u._id,
-          name: u.userDisplayName || u.name || `${u.firstName || ''} ${u.lastName || ''}`.trim() || u.email,
+          name:
+            u.userDisplayName ||
+            u.name ||
+            `${u.firstName || ''} ${u.lastName || ''}`.trim() ||
+            u.email,
           mobile: u.userMobile || u.mobile,
           email: u.email,
           role: u.userRole || u.role || 'project',
@@ -1572,7 +1613,7 @@ exports.manageEmployees = {
       for (let item of data) {
         const idStr = item.employeeId?.toString();
         if (!idStr) continue;
-        
+
         if (item.employeeType === 'userMaster') {
           if (usersMap[idStr]) {
             item.employeeId = usersMap[idStr];
@@ -1628,14 +1669,15 @@ exports.manageEmployees = {
         const openSession = await Attendance.findOne({
           employeeId: qId,
           $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }],
-        }).select('shiftCode site_name leadId').lean();
+        })
+          .select('shiftCode site_name leadId')
+          .lean();
         if (openSession) {
           const where = openSession.site_name || 'another site';
-          const code  = openSession.shiftCode  || 'active shift';
+          const code = openSession.shiftCode || 'active shift';
           return res.status(409).json({
             success: false,
             alreadyOnDuty: true,
-            restrictReason: 'Attd06',
             message: `Worker is already on duty (${code}) at ${where}. End that shift first.`,
             activeAttendanceId: openSession._id,
           });
@@ -1647,51 +1689,36 @@ exports.manageEmployees = {
       // If a leadId is provided, resolve shift timing from the site's siteShifts.
       // Duty start is BLOCKED if the site has no active shifts configured.
       let siteShiftOverride = null;
-      let siteShiftExcess   = null;
+      let siteShiftExcess = null;
       const targetLeadIdForShift = leadId;
       if (targetLeadIdForShift && !dutyEnd) {
         const { Leads } = req.tenantModels;
-        const siteDoc = await Leads.findById(targetLeadIdForShift).select('siteShifts sender_name').lean();
+        const siteDoc = await Leads.findById(targetLeadIdForShift)
+          .select('siteShifts sender_name')
+          .lean();
         const activeShifts = (siteDoc?.siteShifts || []).filter((s) => s.active);
 
         if (siteDoc && activeShifts.length === 0) {
           return res.status(422).json({
             success: false,
             noSiteShifts: true,
-            restrictReason: 'Attd04',
             message: `Site "${siteDoc.sender_name || 'this site'}" has no shift configuration. Please set up site shifts before starting duty.`,
             leadId: targetLeadIdForShift,
           });
         }
 
         if (siteDoc && activeShifts.length > 0 && shiftCode) {
-          const matchedShift = activeShifts.find((s) => s.shiftCode === shiftCode) || activeShifts[0];
-
-          // Check Exempt Days (Weekly Off)
-          const daysOfWeek = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-          const dutyDate = date ? new Date(date) : (dutyStart ? new Date(dutyStart) : new Date());
-          const kolkataOffset = 5.5 * 3600000;
-          const kolkataDate = new Date(dutyDate.getTime() + kolkataOffset);
-          const currentDayStr = daysOfWeek[kolkataDate.getUTCDay()];
-
-          if (matchedShift.exemptDays && matchedShift.exemptDays.includes(currentDayStr)) {
-            return res.status(403).json({
-              success: false,
-              exemptDay: true,
-              restrictReason: 'Attd01',
-              message: `The selected date (${currentDayStr}) is an exempt day (Weekly Off) for shift ${matchedShift.shiftName}. Cannot assign duty on this day.`,
-            });
-          }
-
+          const matchedShift =
+            activeShifts.find((s) => s.shiftCode === shiftCode) || activeShifts[0];
           siteShiftOverride = {
-            shiftCode:      matchedShift.shiftCode,
-            shiftPeriod:    SHIFT_PERIOD_MAP[matchedShift.shiftName] || 'General',
-            shiftType:      matchedShift.durationHrs === 12 ? '12hr' : '8hr',
+            shiftCode: matchedShift.shiftCode,
+            shiftPeriod: SHIFT_PERIOD_MAP[matchedShift.shiftName] || 'General',
+            shiftType: matchedShift.durationHrs === 12 ? '12hr' : '8hr',
             shiftLockHours: matchedShift.durationHrs || 8,
-            startTime:      matchedShift.startTime,
-            groupName:      matchedShift.groupName || 'MANG',
-            billRate:       matchedShift.billRate || 0,
-            salaryRate:     matchedShift.salaryRate || 0,
+            startTime: matchedShift.startTime,
+            groupName: matchedShift.groupName || 'MANG',
+            billRate: matchedShift.billRate || 0,
+            salaryRate: matchedShift.salaryRate || 0,
           };
 
           // Per-slot capacity check
@@ -1699,18 +1726,19 @@ exports.manageEmployees = {
           const mongoose = require('mongoose');
           const activeInSlot = await Attendance.countDocuments({
             leadId: mongoose.isValidObjectId(targetLeadIdForShift)
-              ? new mongoose.Types.ObjectId(targetLeadIdForShift) : targetLeadIdForShift,
+              ? new mongoose.Types.ObjectId(targetLeadIdForShift)
+              : targetLeadIdForShift,
             shiftCode: matchedShift.shiftCode,
             $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }],
           });
 
           if (activeInSlot >= (matchedShift.workerSlots || 1)) {
             siteShiftExcess = {
-              shiftCode:   matchedShift.shiftCode,
-              shiftName:   matchedShift.shiftName,
+              shiftCode: matchedShift.shiftCode,
+              shiftName: matchedShift.shiftName,
               workerSlots: matchedShift.workerSlots || 1,
-              activeNow:   activeInSlot,
-              message:     `Shift ${matchedShift.shiftName} (${matchedShift.shiftCode}) at "${siteDoc.sender_name}" already has ${activeInSlot}/${matchedShift.workerSlots || 1} worker(s). This is an excess duty.`,
+              activeNow: activeInSlot,
+              message: `Shift ${matchedShift.shiftName} (${matchedShift.shiftCode}) at "${siteDoc.sender_name}" already has ${activeInSlot}/${matchedShift.workerSlots || 1} worker(s). This is an excess duty.`,
             };
             // We don't block — supervisor can override. Returned in response for frontend to display warning.
           }
@@ -1727,17 +1755,19 @@ exports.manageEmployees = {
           $or: [
             { user_id: userDoc._id },
             { mobile: userDoc.mobile || userDoc.userMobile || userDoc.username },
-            { email: userDoc.email }
-          ].filter(q => q.user_id || q.mobile || q.email)
+            { email: userDoc.email },
+          ].filter((q) => q.user_id || q.mobile || q.email),
         });
       } else if (employeeDoc && !userDoc) {
-        userDoc = await userMaster.findOne({
-          $or: [
-            { _id: employeeDoc.user_id },
-            { mobile: employeeDoc.mobile },
-            { email: employeeDoc.email }
-          ].filter(q => q._id || q.mobile || q.email)
-        }).lean();
+        userDoc = await userMaster
+          .findOne({
+            $or: [
+              { _id: employeeDoc.user_id },
+              { mobile: employeeDoc.mobile },
+              { email: employeeDoc.email },
+            ].filter((q) => q._id || q.mobile || q.email),
+          })
+          .lean();
       }
 
       let emp = null;
@@ -1800,9 +1830,7 @@ exports.manageEmployees = {
             joinDate: new Date(),
             daily_rate:
               rate ||
-              (employeeDoc.monthlyRate
-                ? parseFloat((employeeDoc.monthlyRate / 30).toFixed(2))
-                : 0),
+              (employeeDoc.monthlyRate ? parseFloat((employeeDoc.monthlyRate / 30).toFixed(2)) : 0),
             monthly_rate: employeeDoc.monthlyRate || 0,
             shiftStartTime: targetShiftStartTime,
             shiftHours: targetShiftHours,
@@ -1824,10 +1852,19 @@ exports.manageEmployees = {
       let defaultShiftCode = 'G';
 
       if (emp) {
-        const activeHistEntry = emp.employmentHistory?.find((e) => e.active) || 
-                               (emp.employmentHistory?.length ? emp.employmentHistory[emp.employmentHistory.length - 1] : null);
+        const activeHistEntry =
+          emp.employmentHistory?.find((e) => e.active) ||
+          (emp.employmentHistory?.length
+            ? emp.employmentHistory[emp.employmentHistory.length - 1]
+            : null);
         if (activeHistEntry) {
-          const groupName = activeHistEntry.groupName || (activeHistEntry.shiftName === 'Day' || activeHistEntry.shiftName === 'Night' || activeHistEntry.shiftName === 'Night12' ? 'DaNi' : 'MANG');
+          const groupName =
+            activeHistEntry.groupName ||
+            (activeHistEntry.shiftName === 'Day' ||
+            activeHistEntry.shiftName === 'Night' ||
+            activeHistEntry.shiftName === 'Night12'
+              ? 'DaNi'
+              : 'MANG');
           defaultShiftLockHours = activeHistEntry.shiftHours || (groupName === 'DaNi' ? 12 : 8);
           defaultShiftType = groupName === 'DaNi' ? '12hr' : '8hr';
           defaultShiftPeriod = activeHistEntry.shiftName || 'General';
@@ -1837,8 +1874,13 @@ exports.manageEmployees = {
           defaultShiftCode = emp.selectedShift || (groupName === 'DaNi' ? 'D' : 'G');
         } else if (emp.dutyShift) {
           const ds = emp.dutyShift;
-          const groupName = ds.groupName || (ds.shiftName === 'Day' || ds.shiftName === 'Night2' || ds.shiftName === 'Night12' ? 'DaNi' : 'MANG');
-          defaultShiftLockHours = ds.durationHrs || ds.shiftHours || (groupName === 'DaNi' ? 12 : 8);
+          const groupName =
+            ds.groupName ||
+            (ds.shiftName === 'Day' || ds.shiftName === 'Night2' || ds.shiftName === 'Night12'
+              ? 'DaNi'
+              : 'MANG');
+          defaultShiftLockHours =
+            ds.durationHrs || ds.shiftHours || (groupName === 'DaNi' ? 12 : 8);
           defaultShiftType = defaultShiftLockHours === 12 ? '12hr' : '8hr';
           defaultShiftPeriod = ds.shiftName || 'General';
           if (ds.shiftName === 'Night2') defaultShiftCode = 'N2';
@@ -1852,11 +1894,15 @@ exports.manageEmployees = {
         }
       } else if (userDoc && userDoc.dutyShift) {
         const ds = userDoc.dutyShift;
-        const groupName = ds.groupName || (ds.shiftName === 'Day' || ds.shiftName === 'Night2' || ds.shiftName === 'Night12' ? 'DaNi' : 'MANG');
+        const groupName =
+          ds.groupName ||
+          (ds.shiftName === 'Day' || ds.shiftName === 'Night2' || ds.shiftName === 'Night12'
+            ? 'DaNi'
+            : 'MANG');
         defaultShiftLockHours = ds.durationHrs || ds.shiftHours || (groupName === 'DaNi' ? 12 : 8);
         defaultShiftType = defaultShiftLockHours === 12 ? '12hr' : '8hr';
         defaultShiftPeriod = ds.shiftName || 'General';
-        
+
         if (ds.shiftName === 'Night2') defaultShiftCode = 'N2';
         else if (ds.shiftName === 'Night1' || ds.shiftName === 'Night') defaultShiftCode = 'N';
         else if (ds.shiftName) defaultShiftCode = ds.shiftName.substring(0, 1);
@@ -1866,18 +1912,22 @@ exports.manageEmployees = {
       const isAdminRole = ['corpadmin', 'useradmin', 'admin'].includes(role.toLowerCase());
       const isEmployeeCollection = !!employeeDoc;
       const isExemptUser = isAdminRole || isEmployeeCollection;
-      const finalGeoHistory = isExemptUser ? [] : (geoHistory || []);
+      const finalGeoHistory = isExemptUser ? [] : geoHistory || [];
 
       // Merge site-shift override on top of defaults (site always wins when available)
-      const finalShiftCode      = SHIFT_CODE_MAP[siteShiftOverride?.shiftCode || shiftCode || defaultShiftCode] || 'G';
-      const finalShiftType      = siteShiftOverride?.shiftType      || shiftType      || defaultShiftType;
-      const finalShiftPeriod    = SHIFT_PERIOD_MAP[siteShiftOverride?.shiftPeriod || shiftPeriod || defaultShiftPeriod] || 'General';
-      const finalShiftLockHours = siteShiftOverride?.shiftLockHours || shiftLockHours || defaultShiftLockHours;
+      const finalShiftCode =
+        SHIFT_CODE_MAP[siteShiftOverride?.shiftCode || shiftCode || defaultShiftCode] || 'G';
+      const finalShiftType = siteShiftOverride?.shiftType || shiftType || defaultShiftType;
+      const finalShiftPeriod =
+        SHIFT_PERIOD_MAP[siteShiftOverride?.shiftPeriod || shiftPeriod || defaultShiftPeriod] ||
+        'General';
+      const finalShiftLockHours =
+        siteShiftOverride?.shiftLockHours || shiftLockHours || defaultShiftLockHours;
 
       // Compute duty end scheduled using final lock hours
-      const dutyStartMs  = dutyStart ? new Date(dutyStart).getTime() : Date.now();
-      const finalDutyEndScheduled = req.body.dutyEndScheduled
-        || new Date(dutyStartMs + finalShiftLockHours * 3600000);
+      const dutyStartMs = dutyStart ? new Date(dutyStart).getTime() : Date.now();
+      const finalDutyEndScheduled =
+        req.body.dutyEndScheduled || new Date(dutyStartMs + finalShiftLockHours * 3600000);
 
       const record = new Attendance({
         employeeId,
@@ -1892,7 +1942,8 @@ exports.manageEmployees = {
         date: date || new Date(),
         site_name,
         remarks,
-        dutyStartScheduled: req.body.dutyStartScheduled || (dutyStart ? new Date(dutyStart) : new Date()),
+        dutyStartScheduled:
+          req.body.dutyStartScheduled || (dutyStart ? new Date(dutyStart) : new Date()),
         dutyStart: dutyStart ? new Date(dutyStart) : new Date(),
         dutyEnd: dutyEnd ? new Date(dutyEnd) : undefined,
         dutyEndScheduled: finalDutyEndScheduled,
@@ -1900,12 +1951,13 @@ exports.manageEmployees = {
         forcedOffReason: forcedOffReason || '',
         geoHistory: finalGeoHistory,
         // Shift (site overrides worker profile)
-        shiftCode:      finalShiftCode,
-        shiftType:      finalShiftType,
-        shiftPeriod:    finalShiftPeriod,
+        shiftCode: finalShiftCode,
+        shiftType: finalShiftType,
+        shiftPeriod: finalShiftPeriod,
         shiftLockHours: finalShiftLockHours,
         markedByDevice: false,
-        markedByUserName: req.user?.userDisplayName || req.user?.name || req.user?.mobile || 'Supervisor',
+        markedByUserName:
+          req.user?.userDisplayName || req.user?.name || req.user?.mobile || 'Supervisor',
       });
       await record.save();
       res.status(201).json({
@@ -1967,7 +2019,7 @@ exports.manageEmployees = {
       if (!isExemptUser && req.body.$push && req.body.$push.geoHistory) {
         const { Leads } = req.tenantModels;
         const tickOrTicks = req.body.$push.geoHistory;
-        
+
         const processTick = async (tick) => {
           if (tick && tick.lat && tick.long) {
             const siteName = await resolveSiteNameForCoordinates(tick.lat, tick.long, Leads);
@@ -2099,17 +2151,19 @@ exports.manageEmployees = {
           $or: [
             { user_id: userDoc._id },
             { mobile: userDoc.mobile || userDoc.userMobile || userDoc.username },
-            { email: userDoc.email }
-          ].filter(q => q.user_id || q.mobile || q.email)
+            { email: userDoc.email },
+          ].filter((q) => q.user_id || q.mobile || q.email),
         }).lean();
       } else if (employeeDoc && !userDoc) {
-        userDoc = await userMaster.findOne({
-          $or: [
-            { _id: employeeDoc.user_id },
-            { mobile: employeeDoc.mobile },
-            { email: employeeDoc.email }
-          ].filter(q => q._id || q.mobile || q.email)
-        }).lean();
+        userDoc = await userMaster
+          .findOne({
+            $or: [
+              { _id: employeeDoc.user_id },
+              { mobile: employeeDoc.mobile },
+              { email: employeeDoc.email },
+            ].filter((q) => q._id || q.mobile || q.email),
+          })
+          .lean();
       }
 
       let emp = null;
@@ -2175,17 +2229,19 @@ exports.manageEmployees = {
           $or: [
             { user_id: userDoc._id },
             { mobile: userDoc.mobile || userDoc.userMobile || userDoc.username },
-            { email: userDoc.email }
-          ].filter(q => q.user_id || q.mobile || q.email)
+            { email: userDoc.email },
+          ].filter((q) => q.user_id || q.mobile || q.email),
         }).lean();
       } else if (employeeDoc && !userDoc) {
-        userDoc = await userMaster.findOne({
-          $or: [
-            { _id: employeeDoc.user_id },
-            { mobile: employeeDoc.mobile },
-            { email: employeeDoc.email }
-          ].filter(q => q._id || q.mobile || q.email)
-        }).lean();
+        userDoc = await userMaster
+          .findOne({
+            $or: [
+              { _id: employeeDoc.user_id },
+              { mobile: employeeDoc.mobile },
+              { email: employeeDoc.email },
+            ].filter((q) => q._id || q.mobile || q.email),
+          })
+          .lean();
       }
 
       let emp = null;
@@ -2203,7 +2259,12 @@ exports.manageEmployees = {
 
       let linkedUser = userDoc || null;
 
-      const checkRole = (emp?.role || emp?.userRole || (linkedUser && (linkedUser.role || linkedUser.userRole)) || '').toLowerCase();
+      const checkRole = (
+        emp?.role ||
+        emp?.userRole ||
+        (linkedUser && (linkedUser.role || linkedUser.userRole)) ||
+        ''
+      ).toLowerCase();
       const isAdminRole = ['corpadmin', 'useradmin', 'admin'].includes(checkRole);
       const isExemptUser = isAdminRole || isWorker;
 
@@ -2299,23 +2360,24 @@ exports.manageEmployees = {
 
         // ── SITE-SHIFT RESOLUTION & SHIFT VALIDATION (toggleAttendance ON) ─────────────────────
         let toggleSiteShiftOverride = null;
-        let toggleSiteShiftExcess   = null;
+        let toggleSiteShiftExcess = null;
         const toggleLeadId = leadId || siteId;
-        
+
         let shiftStartTime = null;
         let lockHrs = 8;
         let finalShiftCode = shiftCode || 'G';
-        
+
         const { Leads } = req.tenantModels;
         if (toggleLeadId && Leads) {
-          const siteDoc = await Leads.findById(toggleLeadId).select('siteShifts sender_name').lean();
+          const siteDoc = await Leads.findById(toggleLeadId)
+            .select('siteShifts sender_name')
+            .lean();
           const activeSiteShifts = (siteDoc?.siteShifts || []).filter((s) => s.active);
 
           if (siteDoc && activeSiteShifts.length === 0) {
             return res.status(422).json({
               success: false,
               noSiteShifts: true,
-              restrictReason: 'Attd04',
               message: `Site "${siteDoc.sender_name || 'this site'}" has no shift configuration. Please set up site shifts before starting duty.`,
               leadId: toggleLeadId,
             });
@@ -2329,7 +2391,7 @@ exports.manageEmployees = {
               const kolkataOffset = 5.5 * 3600000;
               const nowKolkata = new Date(nowCheck.getTime() + kolkataOffset);
               const nowMinutes = nowKolkata.getUTCHours() * 60 + nowKolkata.getUTCMinutes();
-              
+
               matchedShift = activeSiteShifts.find((s) => {
                 if (!s.startTime) return false;
                 const [sh, sm] = s.startTime.split(':').map(Number);
@@ -2347,50 +2409,35 @@ exports.manageEmployees = {
             }
 
             if (matchedShift) {
-              // Check Exempt Days (Weekly Off)
-              const nowCheck = new Date();
-              const kolkataOffset = 5.5 * 3600000;
-              const nowKolkata = new Date(nowCheck.getTime() + kolkataOffset);
-              const daysOfWeek = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-              const currentDayStr = daysOfWeek[nowKolkata.getUTCDay()];
-
-              if (matchedShift.exemptDays && matchedShift.exemptDays.includes(currentDayStr)) {
-                return res.status(403).json({
-                  success: false,
-                  exemptDay: true,
-                  restrictReason: 'Attd01',
-                  message: `Today (${currentDayStr}) is an exempt day (Weekly Off) for shift ${matchedShift.shiftName}. You cannot start duty today.`,
-                });
-              }
-
               finalShiftCode = matchedShift.shiftCode;
               shiftStartTime = matchedShift.startTime;
               lockHrs = matchedShift.durationHrs || 8;
               toggleSiteShiftOverride = {
-                shiftCode:      matchedShift.shiftCode,
-                shiftPeriod:    SHIFT_PERIOD_MAP[matchedShift.shiftName] || 'General',
-                shiftType:      matchedShift.durationHrs === 12 ? '12hr' : '8hr',
+                shiftCode: matchedShift.shiftCode,
+                shiftPeriod: SHIFT_PERIOD_MAP[matchedShift.shiftName] || 'General',
+                shiftType: matchedShift.durationHrs === 12 ? '12hr' : '8hr',
                 shiftLockHours: matchedShift.durationHrs || 8,
-                startTime:      matchedShift.startTime,
-                groupName:      matchedShift.groupName || 'MANG',
-                billRate:       matchedShift.billRate || 0,
-                salaryRate:     matchedShift.salaryRate || 0,
+                startTime: matchedShift.startTime,
+                groupName: matchedShift.groupName || 'MANG',
+                billRate: matchedShift.billRate || 0,
+                salaryRate: matchedShift.salaryRate || 0,
               };
 
               // Per-slot capacity check
               const activeInSlot = await Attendance.countDocuments({
                 leadId: mongoose.isValidObjectId(toggleLeadId)
-                  ? new mongoose.Types.ObjectId(toggleLeadId) : toggleLeadId,
+                  ? new mongoose.Types.ObjectId(toggleLeadId)
+                  : toggleLeadId,
                 shiftCode: matchedShift.shiftCode,
                 $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }],
               });
               if (activeInSlot >= (matchedShift.workerSlots || 1)) {
                 toggleSiteShiftExcess = {
-                  shiftCode:   matchedShift.shiftCode,
-                  shiftName:   matchedShift.shiftName,
+                  shiftCode: matchedShift.shiftCode,
+                  shiftName: matchedShift.shiftName,
                   workerSlots: matchedShift.workerSlots || 1,
-                  activeNow:   activeInSlot,
-                  message:     `Shift ${matchedShift.shiftName} (${matchedShift.shiftCode}) at "${siteDoc.sender_name}" already has ${activeInSlot}/${matchedShift.workerSlots || 1} worker(s). This is an excess duty.`,
+                  activeNow: activeInSlot,
+                  message: `Shift ${matchedShift.shiftName} (${matchedShift.shiftCode}) at "${siteDoc.sender_name}" already has ${activeInSlot}/${matchedShift.workerSlots || 1} worker(s). This is an excess duty.`,
                 };
               }
             }
@@ -2406,7 +2453,11 @@ exports.manageEmployees = {
         }
 
         let isSpecialAction = false;
-        const linkedRole = emp.role || emp.userRole || (linkedUser && (linkedUser.role || linkedUser.userRole)) || '';
+        const linkedRole =
+          emp.role ||
+          emp.userRole ||
+          (linkedUser && (linkedUser.role || linkedUser.userRole)) ||
+          '';
         if (['CorpAdmin', 'userAdmin'].includes(linkedRole)) {
           isSpecialAction = true;
         }
@@ -2429,8 +2480,14 @@ exports.manageEmployees = {
 
           const diffs = [
             { diff: (nowKolkata.getTime() - todayShift.getTime()) / 60000, target: todayShift },
-            { diff: (nowKolkata.getTime() - yesterdayShift.getTime()) / 60000, target: yesterdayShift },
-            { diff: (nowKolkata.getTime() - tomorrowShift.getTime()) / 60000, target: tomorrowShift },
+            {
+              diff: (nowKolkata.getTime() - yesterdayShift.getTime()) / 60000,
+              target: yesterdayShift,
+            },
+            {
+              diff: (nowKolkata.getTime() - tomorrowShift.getTime()) / 60000,
+              target: tomorrowShift,
+            },
           ];
 
           // Filter out future shifts that are more than 120 minutes in the future to prevent wrong assignment on late check-in
@@ -2449,7 +2506,6 @@ exports.manageEmployees = {
             return res.status(403).json({
               success: false,
               tooEarly: true,
-              restrictReason: 'Attd02',
               message: `Too early to start duty. Shift starts at ${shiftStartTime}. Attendance can only be marked starting 15 minutes before shift start.`,
             });
           }
@@ -2489,7 +2545,6 @@ exports.manageEmployees = {
             return res.status(403).json({
               success: false,
               tooLate: true,
-              restrictReason: 'Attd03',
               message: `Too late to start duty. Shift started at ${shiftStartTime}. Please request permission from Admin.`,
             });
           }
@@ -2506,7 +2561,7 @@ exports.manageEmployees = {
         const scheduledEnd = new Date(standardStart.getTime() + lockHrs * 3600000);
         const fetchedMonthlyRate = emp.monthlyRate || 0;
         const fetchedDailyRate = parseFloat((fetchedMonthlyRate / 30).toFixed(2));
-        
+
         let userShiftName = emp.dutyShift && emp.dutyShift.shiftName;
         if (!userShiftName && linkedUser?.dutyShift?.shiftName) {
           userShiftName = linkedUser.dutyShift.shiftName;
@@ -2523,7 +2578,7 @@ exports.manageEmployees = {
         }
 
         const normalizedShiftCode = SHIFT_CODE_MAP[finalShiftCode] || finalShiftCode || 'G';
-        
+
         let finalShiftGroupName = emp.shiftGroupName || (emp.dutyShift && emp.dutyShift.groupName);
         if (!finalShiftGroupName && linkedUser?.dutyShift?.groupName) {
           finalShiftGroupName = linkedUser.dutyShift.groupName;
@@ -2558,7 +2613,8 @@ exports.manageEmployees = {
               if (!lat || !long) {
                 return res.status(400).json({
                   success: false,
-                  message: "You are not at your working site, please first reach the site location to start your duty."
+                  message:
+                    'You are not at your working site, please first reach the site location to start your duty.',
                 });
               }
               const getDistance = (lat1, lon1, lat2, lon2) => {
@@ -2573,16 +2629,12 @@ exports.manageEmployees = {
                     Math.sin(dLon / 2);
                 return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
               };
-              const dist = getDistance(
-                lat,
-                long,
-                siteLat,
-                siteLong
-              );
+              const dist = getDistance(lat, long, siteLat, siteLong);
               if (dist > 100) {
                 return res.status(400).json({
                   success: false,
-                  message: "You are not at your working site, please first reach the site location to start your duty."
+                  message:
+                    'You are not at your working site, please first reach the site location to start your duty.',
                 });
               }
               finalLat = lat;
@@ -2599,23 +2651,38 @@ exports.manageEmployees = {
             finalAddress = formatAddressWithSite(finalAddress, siteName);
           }
         }
-        const finalGeoHistory = isExemptUser ? [] : [
-          {
-            lat: finalLat,
-            long: finalLong,
-            address: finalAddress,
-            type: 'start',
-            timestamp: now,
-          },
-        ];
+        const finalGeoHistory = isExemptUser
+          ? []
+          : [
+              {
+                lat: finalLat,
+                long: finalLong,
+                address: finalAddress,
+                type: 'start',
+                timestamp: now,
+              },
+            ];
 
         // Apply site-shift override (site always wins)
-        const toggleFinalShiftCode = SHIFT_CODE_MAP[toggleSiteShiftOverride?.shiftCode || normalizedShiftCode] || normalizedShiftCode || 'G';
-        const toggleFinalLockHrs   = toggleSiteShiftOverride?.shiftLockHours || lockHrs;
-        const toggleFinalShiftType = toggleSiteShiftOverride?.shiftType || shiftType || (lockHrs === 12 ? '12hr' : '8hr');
-        const toggleFinalShiftPeriod = SHIFT_PERIOD_MAP[toggleSiteShiftOverride?.shiftPeriod || shiftPeriod || userShiftName || activeShift?.shiftName || 'General'] || 'General';
+        const toggleFinalShiftCode =
+          SHIFT_CODE_MAP[toggleSiteShiftOverride?.shiftCode || normalizedShiftCode] ||
+          normalizedShiftCode ||
+          'G';
+        const toggleFinalLockHrs = toggleSiteShiftOverride?.shiftLockHours || lockHrs;
+        const toggleFinalShiftType =
+          toggleSiteShiftOverride?.shiftType || shiftType || (lockHrs === 12 ? '12hr' : '8hr');
+        const toggleFinalShiftPeriod =
+          SHIFT_PERIOD_MAP[
+            toggleSiteShiftOverride?.shiftPeriod ||
+              shiftPeriod ||
+              userShiftName ||
+              activeShift?.shiftName ||
+              'General'
+          ] || 'General';
         const toggleFinalGroupName = toggleSiteShiftOverride?.groupName || finalShiftGroupName;
-        const toggleFinalScheduledEnd = new Date(standardStart.getTime() + toggleFinalLockHrs * 3600000);
+        const toggleFinalScheduledEnd = new Date(
+          standardStart.getTime() + toggleFinalLockHrs * 3600000
+        );
 
         record = new Attendance({
           employeeId,
@@ -2644,7 +2711,10 @@ exports.manageEmployees = {
           siteId: siteId || null,
           leadId: leadId || null,
           markedByDevice: String(req.user._id || req.user.userId) === String(queryId),
-          markedByUserName: String(req.user._id || req.user.userId) === String(queryId) ? '' : (req.user?.userDisplayName || req.user?.name || req.user?.mobile || 'Supervisor'),
+          markedByUserName:
+            String(req.user._id || req.user.userId) === String(queryId)
+              ? ''
+              : req.user?.userDisplayName || req.user?.name || req.user?.mobile || 'Supervisor',
           isLate: shiftStartTime ? diffMins > 15 : false,
           remarks: shiftStartTime && diffMins > 15 ? 'On Duty-Late Coming' : undefined,
         });
@@ -2665,19 +2735,17 @@ exports.manageEmployees = {
         // OFF
         if (!record)
           return res.status(404).json({ success: false, message: 'No active duty session found' });
- 
+
         const now = new Date();
         const lockHrs = record.shiftLockHours || 8;
-        // Strict adherence to shift time: calculate elapsed hours from scheduled start time
-        const effectiveStart = record.dutyStartScheduled || record.dutyStart;
-        const elapsedHrs = (now - effectiveStart) / 3600000;
- 
+        const elapsedHrs = (now - record.dutyStart) / 3600000;
+
         let minRequiredHrs = lockHrs;
         if (lockHrs === 8) minRequiredHrs = 7;
         if (lockHrs === 12) minRequiredHrs = 11;
- 
+
         const isLocked = elapsedHrs < minRequiredHrs;
- 
+
         // Shift lock enforcement
         // Normalize role strings for case‑insensitive checks
         const requesterRole = (req.user?.userRole || '').toLowerCase();
@@ -2685,17 +2753,16 @@ exports.manageEmployees = {
         const canOverride =
           ['corpadmin', 'project', 'useradmin'].includes(requesterRole) ||
           ['corpadmin', 'project', 'sales', 'finance', 'useradmin'].includes(employeeRole);
- 
+
         if (isLocked && !forcedOff && !emergencyOff && !canOverride) {
           return res.status(403).json({
             success: false,
             locked: true,
-            restrictReason: 'Attd05',
             message: `Shift lock active. ${lockHrs}h shift not complete (${elapsedHrs.toFixed(1)}h elapsed). Contact supervisor to override.`,
             remainingHrs: parseFloat((minRequiredHrs - elapsedHrs).toFixed(2)),
           });
         }
- 
+
         record.dutyEnd = now;
         if (!isExemptUser) {
           let finalAddress = address || '';
@@ -2869,17 +2936,19 @@ exports.manageEmployees = {
           $or: [
             { user_id: userDoc._id },
             { mobile: userDoc.mobile || userDoc.userMobile || userDoc.username },
-            { email: userDoc.email }
-          ].filter(q => q.user_id || q.mobile || q.email)
+            { email: userDoc.email },
+          ].filter((q) => q.user_id || q.mobile || q.email),
         }).lean();
       } else if (employeeDoc && !userDoc) {
-        userDoc = await userMaster.findOne({
-          $or: [
-            { _id: employeeDoc.user_id },
-            { mobile: employeeDoc.mobile },
-            { email: employeeDoc.email }
-          ].filter(q => q._id || q.mobile || q.email)
-        }).lean();
+        userDoc = await userMaster
+          .findOne({
+            $or: [
+              { _id: employeeDoc.user_id },
+              { mobile: employeeDoc.mobile },
+              { email: employeeDoc.email },
+            ].filter((q) => q._id || q.mobile || q.email),
+          })
+          .lean();
       }
 
       let emp = null;
@@ -2898,7 +2967,12 @@ exports.manageEmployees = {
       if (isWorker && emp?.user_id) {
         linkedUser = await userMaster.findById(emp.user_id).lean();
       }
-      const checkRole = (emp?.role || emp?.userRole || (linkedUser && (linkedUser.role || linkedUser.userRole)) || '').toLowerCase();
+      const checkRole = (
+        emp?.role ||
+        emp?.userRole ||
+        (linkedUser && (linkedUser.role || linkedUser.userRole)) ||
+        ''
+      ).toLowerCase();
       const isAdminRole = ['corpadmin', 'useradmin', 'admin'].includes(checkRole);
       const isExemptUser = isAdminRole || isWorker;
 
@@ -2936,7 +3010,8 @@ exports.manageEmployees = {
           });
         }
 
-        const nextShift = activeSiteShifts.find((s) => s.shiftCode === nextShiftCode) || activeSiteShifts[0];
+        const nextShift =
+          activeSiteShifts.find((s) => s.shiftCode === nextShiftCode) || activeSiteShifts[0];
         if (nextShift) {
           finalNextShiftCode = nextShift.shiftCode;
           nextLockHrs = nextShift.durationHrs || nextLockHrs;
@@ -2973,7 +3048,9 @@ exports.manageEmployees = {
         isDoubleShift: true,
         previousShiftId: current._id,
         doubleShiftNotified: true,
-        geoHistory: isExemptUser ? [] : [{ lat, long, address: finalStartAddress, type: 'start', timestamp: now }],
+        geoHistory: isExemptUser
+          ? []
+          : [{ lat, long, address: finalStartAddress, type: 'start', timestamp: now }],
         status: 'Present',
         site_name: site_name || current.site_name || 'HQ/Remote',
         siteId: siteId || current.siteId || null,
@@ -3170,7 +3247,9 @@ exports.manageEmployees = {
       const requesterRole = req.user?.userRole || '';
       let filteredData = data;
       if (requesterRole === 'Project') {
-        filteredData = data.filter((item) => ['Employees', 'userMaster'].includes(item.employeeType || 'Employees'));
+        filteredData = data.filter((item) =>
+          ['Employees', 'userMaster'].includes(item.employeeType || 'Employees')
+        );
       }
 
       res.json({ success: true, data: filteredData });
