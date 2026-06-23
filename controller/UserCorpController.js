@@ -731,6 +731,100 @@ exports.manageLeads = {
       res.status(500).json({ success: false, message: err.message });
     }
   },
+
+  // ── GET site shifts + live stats ──────────────────────────────────────────
+  getSiteShifts: async (req, res) => {
+    try {
+      const { Leads, Attendance } = req.tenantModels;
+      const lead = await Leads.findById(req.params.id).lean();
+      if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
+
+      const now = new Date();
+      const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+      const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+
+      // Count monthly Present records at this lead per shift code
+      const monthlyAgg = await Attendance.aggregate([
+        {
+          $match: {
+            leadId: lead._id,
+            status: 'Present',
+            date: { $gte: monthStart, $lte: monthEnd },
+          },
+        },
+        { $group: { _id: '$shiftCode', count: { $sum: 1 } } },
+      ]);
+      const monthlyCountByShift = {};
+      monthlyAgg.forEach((r) => { monthlyCountByShift[r._id] = r.count; });
+
+      // Count currently active (open session) workers per shift at this site
+      const activeAgg = await Attendance.aggregate([
+        {
+          $match: {
+            leadId: lead._id,
+            $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }],
+          },
+        },
+        { $group: { _id: '$shiftCode', count: { $sum: 1 } } },
+      ]);
+      const activeCountByShift = {};
+      activeAgg.forEach((r) => { activeCountByShift[r._id] = r.count; });
+
+      const shiftsWithStats = (lead.siteShifts || []).map((s) => {
+        const permittedThisMonth = (s.workerSlots || 1) * daysInMonth;
+        const actualThisMonth = monthlyCountByShift[s.shiftCode] || 0;
+        const activeNow = activeCountByShift[s.shiftCode] || 0;
+        return {
+          ...s,
+          permittedThisMonth,
+          actualThisMonth,
+          activeNow,
+          isExcess: actualThisMonth > permittedThisMonth,
+          slotExcess: activeNow > (s.workerSlots || 1),
+        };
+      });
+
+      const totalPermitted = shiftsWithStats.reduce((sum, s) => sum + s.permittedThisMonth, 0);
+      const totalActual = shiftsWithStats.reduce((sum, s) => sum + s.actualThisMonth, 0);
+
+      res.json({
+        success: true,
+        data: {
+          leadId: lead._id,
+          siteName: lead.sender_name || lead.name,
+          daysInMonth,
+          shifts: shiftsWithStats,
+          totalPermittedThisMonth: totalPermitted,
+          totalActualThisMonth: totalActual,
+          totalExcess: Math.max(0, totalActual - totalPermitted),
+        },
+      });
+    } catch (err) {
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  // ── PUT site shifts (full replace of siteShifts array) ───────────────────
+  updateSiteShifts: async (req, res) => {
+    try {
+      const { Leads } = req.tenantModels;
+      const { siteShifts } = req.body;
+      if (!Array.isArray(siteShifts)) {
+        return res.status(400).json({ success: false, message: 'siteShifts must be an array' });
+      }
+      const lead = await Leads.findByIdAndUpdate(
+        req.params.id,
+        { $set: { siteShifts } },
+        { new: true }
+      );
+      if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
+      req.io.to(req.tenantDbName).emit('lead:updated', { data: lead });
+      res.json({ success: true, data: lead });
+    } catch (err) {
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
 };
 
 /**
@@ -1541,12 +1635,88 @@ exports.manageEmployees = {
           return res.status(409).json({
             success: false,
             alreadyOnDuty: true,
+            restrictReason: 'Attd06',
             message: `Worker is already on duty (${code}) at ${where}. End that shift first.`,
             activeAttendanceId: openSession._id,
           });
         }
       }
       // ──────────────────────────────────────────────────────────────────────
+
+      // ── SITE-SHIFT RESOLUTION ─────────────────────────────────────────────
+      // If a leadId is provided, resolve shift timing from the site's siteShifts.
+      // Duty start is BLOCKED if the site has no active shifts configured.
+      let siteShiftOverride = null;
+      let siteShiftExcess   = null;
+      const targetLeadIdForShift = leadId;
+      if (targetLeadIdForShift && !dutyEnd) {
+        const { Leads } = req.tenantModels;
+        const siteDoc = await Leads.findById(targetLeadIdForShift).select('siteShifts sender_name').lean();
+        const activeShifts = (siteDoc?.siteShifts || []).filter((s) => s.active);
+
+        if (siteDoc && activeShifts.length === 0) {
+          return res.status(422).json({
+            success: false,
+            noSiteShifts: true,
+            restrictReason: 'Attd04',
+            message: `Site "${siteDoc.sender_name || 'this site'}" has no shift configuration. Please set up site shifts before starting duty.`,
+            leadId: targetLeadIdForShift,
+          });
+        }
+
+        if (siteDoc && activeShifts.length > 0 && shiftCode) {
+          const matchedShift = activeShifts.find((s) => s.shiftCode === shiftCode) || activeShifts[0];
+
+          // Check Exempt Days (Weekly Off)
+          const daysOfWeek = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+          const dutyDate = date ? new Date(date) : (dutyStart ? new Date(dutyStart) : new Date());
+          const kolkataOffset = 5.5 * 3600000;
+          const kolkataDate = new Date(dutyDate.getTime() + kolkataOffset);
+          const currentDayStr = daysOfWeek[kolkataDate.getUTCDay()];
+
+          if (matchedShift.exemptDays && matchedShift.exemptDays.includes(currentDayStr)) {
+            return res.status(403).json({
+              success: false,
+              exemptDay: true,
+              restrictReason: 'Attd01',
+              message: `The selected date (${currentDayStr}) is an exempt day (Weekly Off) for shift ${matchedShift.shiftName}. Cannot assign duty on this day.`,
+            });
+          }
+
+          siteShiftOverride = {
+            shiftCode:      matchedShift.shiftCode,
+            shiftPeriod:    SHIFT_PERIOD_MAP[matchedShift.shiftName] || 'General',
+            shiftType:      matchedShift.durationHrs === 12 ? '12hr' : '8hr',
+            shiftLockHours: matchedShift.durationHrs || 8,
+            startTime:      matchedShift.startTime,
+            groupName:      matchedShift.groupName || 'MANG',
+            billRate:       matchedShift.billRate || 0,
+            salaryRate:     matchedShift.salaryRate || 0,
+          };
+
+          // Per-slot capacity check
+          const { Attendance } = req.tenantModels;
+          const mongoose = require('mongoose');
+          const activeInSlot = await Attendance.countDocuments({
+            leadId: mongoose.isValidObjectId(targetLeadIdForShift)
+              ? new mongoose.Types.ObjectId(targetLeadIdForShift) : targetLeadIdForShift,
+            shiftCode: matchedShift.shiftCode,
+            $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }],
+          });
+
+          if (activeInSlot >= (matchedShift.workerSlots || 1)) {
+            siteShiftExcess = {
+              shiftCode:   matchedShift.shiftCode,
+              shiftName:   matchedShift.shiftName,
+              workerSlots: matchedShift.workerSlots || 1,
+              activeNow:   activeInSlot,
+              message:     `Shift ${matchedShift.shiftName} (${matchedShift.shiftCode}) at "${siteDoc.sender_name}" already has ${activeInSlot}/${matchedShift.workerSlots || 1} worker(s). This is an excess duty.`,
+            };
+            // We don't block — supervisor can override. Returned in response for frontend to display warning.
+          }
+        }
+      }
+      // ─────────────────────────────────────────────────────────────────────
 
       const userMaster = require('../models/userMaster');
       let userDoc = await userMaster.findById(employeeId).lean();
@@ -1698,6 +1868,17 @@ exports.manageEmployees = {
       const isExemptUser = isAdminRole || isEmployeeCollection;
       const finalGeoHistory = isExemptUser ? [] : (geoHistory || []);
 
+      // Merge site-shift override on top of defaults (site always wins when available)
+      const finalShiftCode      = SHIFT_CODE_MAP[siteShiftOverride?.shiftCode || shiftCode || defaultShiftCode] || 'G';
+      const finalShiftType      = siteShiftOverride?.shiftType      || shiftType      || defaultShiftType;
+      const finalShiftPeriod    = SHIFT_PERIOD_MAP[siteShiftOverride?.shiftPeriod || shiftPeriod || defaultShiftPeriod] || 'General';
+      const finalShiftLockHours = siteShiftOverride?.shiftLockHours || shiftLockHours || defaultShiftLockHours;
+
+      // Compute duty end scheduled using final lock hours
+      const dutyStartMs  = dutyStart ? new Date(dutyStart).getTime() : Date.now();
+      const finalDutyEndScheduled = req.body.dutyEndScheduled
+        || new Date(dutyStartMs + finalShiftLockHours * 3600000);
+
       const record = new Attendance({
         employeeId,
         employeeType: employeeDoc ? 'Employees' : 'userMaster',
@@ -1707,27 +1888,32 @@ exports.manageEmployees = {
         status: status || 'Present',
         customCreated: true, // Tag it so we know it was manually marked/handled
         dutyLevel: dutyLevel ?? 1,
-        rate: rate || 0,
+        rate: rate || siteShiftOverride?.billRate || 0,
         date: date || new Date(),
         site_name,
         remarks,
         dutyStartScheduled: req.body.dutyStartScheduled || (dutyStart ? new Date(dutyStart) : new Date()),
         dutyStart: dutyStart ? new Date(dutyStart) : new Date(),
         dutyEnd: dutyEnd ? new Date(dutyEnd) : undefined,
-        dutyEndScheduled: req.body.dutyEndScheduled || (dutyStart ? new Date(new Date(dutyStart).getTime() + (shiftLockHours || defaultShiftLockHours) * 3600000) : new Date(Date.now() + (shiftLockHours || defaultShiftLockHours) * 3600000)),
+        dutyEndScheduled: finalDutyEndScheduled,
         forcedOff: !!forcedOff,
         forcedOffReason: forcedOffReason || '',
         geoHistory: finalGeoHistory,
-        // Shift
-        shiftCode: SHIFT_CODE_MAP[shiftCode || defaultShiftCode] || 'G',
-        shiftType: shiftType || defaultShiftType,
-        shiftPeriod: SHIFT_PERIOD_MAP[shiftPeriod || defaultShiftPeriod] || 'General',
-        shiftLockHours: shiftLockHours || defaultShiftLockHours,
+        // Shift (site overrides worker profile)
+        shiftCode:      finalShiftCode,
+        shiftType:      finalShiftType,
+        shiftPeriod:    finalShiftPeriod,
+        shiftLockHours: finalShiftLockHours,
         markedByDevice: false,
         markedByUserName: req.user?.userDisplayName || req.user?.name || req.user?.mobile || 'Supervisor',
       });
       await record.save();
-      res.status(201).json({ success: true, message: 'Attendance recorded', data: record });
+      res.status(201).json({
+        success: true,
+        message: 'Attendance recorded',
+        data: record,
+        ...(siteShiftExcess ? { excessWarning: siteShiftExcess } : {}),
+      });
     } catch (err) {
       res.status(500).json({ success: false, message: err.message });
     }
@@ -2111,10 +2297,106 @@ exports.manageEmployees = {
         if (!emp)
           return res.status(404).json({ success: false, message: 'Employee details not found' });
 
-        // ─── SHIFT VALIDATION ───
-        const activeShift =
-          (emp.employmentHistory || []).find((h) => h.active) ||
-          (emp.employmentHistory || []).slice(-1)[0];
+        // ── SITE-SHIFT RESOLUTION & SHIFT VALIDATION (toggleAttendance ON) ─────────────────────
+        let toggleSiteShiftOverride = null;
+        let toggleSiteShiftExcess   = null;
+        const toggleLeadId = leadId || siteId;
+        
+        let shiftStartTime = null;
+        let lockHrs = 8;
+        let finalShiftCode = shiftCode || 'G';
+        
+        const { Leads } = req.tenantModels;
+        if (toggleLeadId && Leads) {
+          const siteDoc = await Leads.findById(toggleLeadId).select('siteShifts sender_name').lean();
+          const activeSiteShifts = (siteDoc?.siteShifts || []).filter((s) => s.active);
+
+          if (siteDoc && activeSiteShifts.length === 0) {
+            return res.status(422).json({
+              success: false,
+              noSiteShifts: true,
+              restrictReason: 'Attd04',
+              message: `Site "${siteDoc.sender_name || 'this site'}" has no shift configuration. Please set up site shifts before starting duty.`,
+              leadId: toggleLeadId,
+            });
+          }
+
+          if (siteDoc && activeSiteShifts.length > 0) {
+            // Find matched shift by shiftCode, or fall back to the one matching current time, or first active shift
+            let matchedShift = activeSiteShifts.find((s) => s.shiftCode === finalShiftCode);
+            if (!matchedShift) {
+              const nowCheck = new Date();
+              const kolkataOffset = 5.5 * 3600000;
+              const nowKolkata = new Date(nowCheck.getTime() + kolkataOffset);
+              const nowMinutes = nowKolkata.getUTCHours() * 60 + nowKolkata.getUTCMinutes();
+              
+              matchedShift = activeSiteShifts.find((s) => {
+                if (!s.startTime) return false;
+                const [sh, sm] = s.startTime.split(':').map(Number);
+                const startMins = sh * 60 + sm;
+                const endMins = (startMins + (s.durationHrs || 8) * 60) % 1440;
+                if (startMins < endMins) {
+                  return nowMinutes >= startMins && nowMinutes <= endMins;
+                } else {
+                  return nowMinutes >= startMins || nowMinutes <= endMins;
+                }
+              });
+            }
+            if (!matchedShift) {
+              matchedShift = activeSiteShifts[0];
+            }
+
+            if (matchedShift) {
+              // Check Exempt Days (Weekly Off)
+              const nowCheck = new Date();
+              const kolkataOffset = 5.5 * 3600000;
+              const nowKolkata = new Date(nowCheck.getTime() + kolkataOffset);
+              const daysOfWeek = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+              const currentDayStr = daysOfWeek[nowKolkata.getUTCDay()];
+
+              if (matchedShift.exemptDays && matchedShift.exemptDays.includes(currentDayStr)) {
+                return res.status(403).json({
+                  success: false,
+                  exemptDay: true,
+                  restrictReason: 'Attd01',
+                  message: `Today (${currentDayStr}) is an exempt day (Weekly Off) for shift ${matchedShift.shiftName}. You cannot start duty today.`,
+                });
+              }
+
+              finalShiftCode = matchedShift.shiftCode;
+              shiftStartTime = matchedShift.startTime;
+              lockHrs = matchedShift.durationHrs || 8;
+              toggleSiteShiftOverride = {
+                shiftCode:      matchedShift.shiftCode,
+                shiftPeriod:    SHIFT_PERIOD_MAP[matchedShift.shiftName] || 'General',
+                shiftType:      matchedShift.durationHrs === 12 ? '12hr' : '8hr',
+                shiftLockHours: matchedShift.durationHrs || 8,
+                startTime:      matchedShift.startTime,
+                groupName:      matchedShift.groupName || 'MANG',
+                billRate:       matchedShift.billRate || 0,
+                salaryRate:     matchedShift.salaryRate || 0,
+              };
+
+              // Per-slot capacity check
+              const activeInSlot = await Attendance.countDocuments({
+                leadId: mongoose.isValidObjectId(toggleLeadId)
+                  ? new mongoose.Types.ObjectId(toggleLeadId) : toggleLeadId,
+                shiftCode: matchedShift.shiftCode,
+                $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }],
+              });
+              if (activeInSlot >= (matchedShift.workerSlots || 1)) {
+                toggleSiteShiftExcess = {
+                  shiftCode:   matchedShift.shiftCode,
+                  shiftName:   matchedShift.shiftName,
+                  workerSlots: matchedShift.workerSlots || 1,
+                  activeNow:   activeInSlot,
+                  message:     `Shift ${matchedShift.shiftName} (${matchedShift.shiftCode}) at "${siteDoc.sender_name}" already has ${activeInSlot}/${matchedShift.workerSlots || 1} worker(s). This is an excess duty.`,
+                };
+              }
+            }
+          }
+        }
+        // ─────────────────────────────────────────────────────────────────────
 
         // Fetch linked userMaster profile if this is an employee record linked to a user
         let linkedUser = null;
@@ -2127,15 +2409,6 @@ exports.manageEmployees = {
         const linkedRole = emp.role || emp.userRole || (linkedUser && (linkedUser.role || linkedUser.userRole)) || '';
         if (['CorpAdmin', 'userAdmin'].includes(linkedRole)) {
           isSpecialAction = true;
-        }
-
-        let shiftStartTime = activeShift?.shiftStartTime;
-        if (!shiftStartTime) {
-          if (emp.dutyShift?.startFrom) {
-            shiftStartTime = emp.dutyShift.startFrom;
-          } else if (linkedUser?.dutyShift?.startFrom) {
-            shiftStartTime = linkedUser.dutyShift.startFrom;
-          }
         }
 
         let diffMins = 0;
@@ -2176,6 +2449,7 @@ exports.manageEmployees = {
             return res.status(403).json({
               success: false,
               tooEarly: true,
+              restrictReason: 'Attd02',
               message: `Too early to start duty. Shift starts at ${shiftStartTime}. Attendance can only be marked starting 15 minutes before shift start.`,
             });
           }
@@ -2215,20 +2489,15 @@ exports.manageEmployees = {
             return res.status(403).json({
               success: false,
               tooLate: true,
+              restrictReason: 'Attd03',
               message: `Too late to start duty. Shift started at ${shiftStartTime}. Please request permission from Admin.`,
             });
           }
         }
 
-        let lockHrs = activeShift?.shiftHours || (activeShift?.groupName === 'DaNi' ? 12 : 8);
-        if (!activeShift && emp) {
-          const ds = emp.dutyShift || linkedUser?.dutyShift;
-          if (ds?.durationHrs || ds?.shiftHours) {
-            lockHrs = ds.durationHrs || ds.shiftHours;
-          } else {
-            lockHrs = ds?.groupName === 'DaNi' ? 12 : 8;
-          }
-        }
+        const activeShift =
+          (emp.employmentHistory || []).find((h) => h.active) ||
+          (emp.employmentHistory || []).slice(-1)[0];
         const currentRate = activeShift?.daily_rate || 0;
 
         if (record)
@@ -2253,7 +2522,6 @@ exports.manageEmployees = {
             activeShift.shiftName === 'Night12' ? 'N2' : activeShift.shiftName.substring(0, 1);
         }
 
-        const finalShiftCode = emp.selectedShift || shiftCode || defaultShiftCode;
         const normalizedShiftCode = SHIFT_CODE_MAP[finalShiftCode] || finalShiftCode || 'G';
         
         let finalShiftGroupName = emp.shiftGroupName || (emp.dutyShift && emp.dutyShift.groupName);
@@ -2271,7 +2539,6 @@ exports.manageEmployees = {
         let startLong = long || null;
 
         const targetLeadId = leadId || siteId;
-        const { Leads } = req.tenantModels;
         if (targetLeadId && Leads) {
           const site = await Leads.findById(targetLeadId).lean();
           if (site && site.location && site.location.lat && site.location.long) {
@@ -2342,6 +2609,14 @@ exports.manageEmployees = {
           },
         ];
 
+        // Apply site-shift override (site always wins)
+        const toggleFinalShiftCode = SHIFT_CODE_MAP[toggleSiteShiftOverride?.shiftCode || normalizedShiftCode] || normalizedShiftCode || 'G';
+        const toggleFinalLockHrs   = toggleSiteShiftOverride?.shiftLockHours || lockHrs;
+        const toggleFinalShiftType = toggleSiteShiftOverride?.shiftType || shiftType || (lockHrs === 12 ? '12hr' : '8hr');
+        const toggleFinalShiftPeriod = SHIFT_PERIOD_MAP[toggleSiteShiftOverride?.shiftPeriod || shiftPeriod || userShiftName || activeShift?.shiftName || 'General'] || 'General';
+        const toggleFinalGroupName = toggleSiteShiftOverride?.groupName || finalShiftGroupName;
+        const toggleFinalScheduledEnd = new Date(standardStart.getTime() + toggleFinalLockHrs * 3600000);
+
         record = new Attendance({
           employeeId,
           employeeType: isWorker ? 'Employees' : 'userMaster',
@@ -2353,16 +2628,16 @@ exports.manageEmployees = {
           date: now,
           dutyStartScheduled: standardStart,
           dutyStart: now,
-          dutyEndScheduled: scheduledEnd,
-          shiftCode: normalizedShiftCode,
-          shiftType: shiftType || (lockHrs === 12 ? '12hr' : '8hr'),
-          shiftPeriod: SHIFT_PERIOD_MAP[shiftPeriod || userShiftName || activeShift?.shiftName || 'General'] || 'General',
-          shiftGroupName: finalShiftGroupName,
-          shiftHours: lockHrs,
-          shiftLockHours: lockHrs,
+          dutyEndScheduled: toggleFinalScheduledEnd,
+          shiftCode: toggleFinalShiftCode,
+          shiftType: toggleFinalShiftType,
+          shiftPeriod: toggleFinalShiftPeriod,
+          shiftGroupName: toggleFinalGroupName,
+          shiftHours: toggleFinalLockHrs,
+          shiftLockHours: toggleFinalLockHrs,
           monthlyRate: fetchedMonthlyRate,
           dailyRate: fetchedDailyRate,
-          rate: fetchedDailyRate || currentRate,
+          rate: toggleSiteShiftOverride?.salaryRate || fetchedDailyRate || currentRate,
           geoHistory: finalGeoHistory,
           status: 'Present',
           site_name: finalSiteName,
@@ -2377,10 +2652,15 @@ exports.manageEmployees = {
         req.io.to(req.tenantDbName).emit('attendance:duty_on', {
           employeeId,
           attendanceId: record._id,
-          shiftCode: normalizedShiftCode,
-          shiftPeriod: SHIFT_PERIOD_MAP[shiftPeriod || userShiftName || activeShift?.shiftName || 'General'] || 'General',
+          shiftCode: toggleFinalShiftCode,
+          shiftPeriod: toggleFinalShiftPeriod,
         });
-        return res.json({ success: true, data: record, message: 'Duty started' });
+        return res.json({
+          success: true,
+          data: record,
+          message: 'Duty started',
+          ...(toggleSiteShiftExcess ? { excessWarning: toggleSiteShiftExcess } : {}),
+        });
       } else {
         // OFF
         if (!record)
@@ -2388,7 +2668,9 @@ exports.manageEmployees = {
  
         const now = new Date();
         const lockHrs = record.shiftLockHours || 8;
-        const elapsedHrs = (now - record.dutyStart) / 3600000;
+        // Strict adherence to shift time: calculate elapsed hours from scheduled start time
+        const effectiveStart = record.dutyStartScheduled || record.dutyStart;
+        const elapsedHrs = (now - effectiveStart) / 3600000;
  
         let minRequiredHrs = lockHrs;
         if (lockHrs === 8) minRequiredHrs = 7;
@@ -2408,6 +2690,7 @@ exports.manageEmployees = {
           return res.status(403).json({
             success: false,
             locked: true,
+            restrictReason: 'Attd05',
             message: `Shift lock active. ${lockHrs}h shift not complete (${elapsedHrs.toFixed(1)}h elapsed). Contact supervisor to override.`,
             remainingHrs: parseFloat((minRequiredHrs - elapsedHrs).toFixed(2)),
           });
@@ -2632,8 +2915,36 @@ exports.manageEmployees = {
       }
       await current.save();
 
-      // 3. Determine next shift lock hours
-      const nextLockHrs = nextShiftType === '12hr' ? 12 : 8;
+      // 3. Determine next shift lock hours from leads database
+      let nextLockHrs = nextShiftType === '12hr' ? 12 : 8;
+      let finalNextShiftType = nextShiftType || '8hr';
+      let finalNextShiftPeriod = SHIFT_PERIOD_MAP[nextShiftPeriod] || nextShiftPeriod || 'Morning';
+      let nextRate = current.rate || 0;
+      let finalNextShiftCode = nextShiftCode || 'G';
+
+      const targetLeadId = leadId || siteId || current.leadId;
+      if (targetLeadId && Leads) {
+        const siteDoc = await Leads.findById(targetLeadId).select('siteShifts sender_name').lean();
+        const activeSiteShifts = (siteDoc?.siteShifts || []).filter((s) => s.active);
+
+        if (siteDoc && activeSiteShifts.length === 0) {
+          return res.status(422).json({
+            success: false,
+            noSiteShifts: true,
+            message: `Site "${siteDoc.sender_name || 'this site'}" has no shift configuration. Please set up site shifts before continuing duty.`,
+            leadId: targetLeadId,
+          });
+        }
+
+        const nextShift = activeSiteShifts.find((s) => s.shiftCode === nextShiftCode) || activeSiteShifts[0];
+        if (nextShift) {
+          finalNextShiftCode = nextShift.shiftCode;
+          nextLockHrs = nextShift.durationHrs || nextLockHrs;
+          finalNextShiftType = nextShift.durationHrs === 12 ? '12hr' : '8hr';
+          finalNextShiftPeriod = SHIFT_PERIOD_MAP[nextShift.shiftName] || 'Morning';
+          nextRate = nextShift.salaryRate || nextRate;
+        }
+      }
       const nextScheduledEnd = new Date(now.getTime() + nextLockHrs * 3600000);
 
       // 4. Create new attendance record for next shift (marked as double shift)
@@ -2655,9 +2966,9 @@ exports.manageEmployees = {
         dutyStartScheduled: now,
         dutyStart: now,
         dutyEndScheduled: nextScheduledEnd,
-        shiftCode: SHIFT_CODE_MAP[nextShiftCode] || nextShiftCode || 'G',
-        shiftType: nextShiftType || '8hr',
-        shiftPeriod: SHIFT_PERIOD_MAP[nextShiftPeriod] || nextShiftPeriod || 'Morning',
+        shiftCode: SHIFT_CODE_MAP[finalNextShiftCode] || finalNextShiftCode || 'G',
+        shiftType: finalNextShiftType,
+        shiftPeriod: finalNextShiftPeriod,
         shiftLockHours: nextLockHrs,
         isDoubleShift: true,
         previousShiftId: current._id,
@@ -2666,8 +2977,8 @@ exports.manageEmployees = {
         status: 'Present',
         site_name: site_name || current.site_name || 'HQ/Remote',
         siteId: siteId || current.siteId || null,
-        leadId: leadId || current.leadId || null,
-        rate: current.rate || 0,
+        leadId: targetLeadId || null,
+        rate: nextRate,
       });
       await nextRecord.save();
 
@@ -2676,10 +2987,10 @@ exports.manageEmployees = {
         type: 'double_shift',
         employeeId: String(employeeId),
         previousShiftCode: current.shiftCode,
-        nextShiftCode: SHIFT_CODE_MAP[nextShiftCode] || nextShiftCode || 'G',
+        nextShiftCode: SHIFT_CODE_MAP[finalNextShiftCode] || finalNextShiftCode || 'G',
         attendanceId: nextRecord._id,
         at: now.toISOString(),
-        message: `⚠️ Double Shift Alert: Employee continued into Shift ${nextShiftCode} after completing Shift ${current.shiftCode}.`,
+        message: `⚠️ Double Shift Alert: Employee continued into Shift ${finalNextShiftCode} after completing Shift ${current.shiftCode}.`,
       };
       req.io.to(req.tenantDbName).emit('attendance:double_shift', notification);
       // Also send as broadcast alert targeted at supervisors
@@ -2696,7 +3007,7 @@ exports.manageEmployees = {
 
       res.json({
         success: true,
-        message: `Shift ${current.shiftCode} closed. Shift ${nextShiftCode} started (Double Shift).`,
+        message: `Shift ${current.shiftCode} closed. Shift ${finalNextShiftCode} started (Double Shift).`,
         closedShift: current,
         newShift: nextRecord,
       });

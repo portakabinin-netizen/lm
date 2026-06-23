@@ -5,6 +5,7 @@ const {
     employeeAddressSchema,
     corporateProfileSchema
 } = require("./masterShared");
+const { staffMonitoringSchema } = require("./StaffMonitoring");
 
 /**
  * 🏢 Tenant Models Factory
@@ -133,7 +134,23 @@ const leadSchema = new mongoose.Schema({
         lat: { type: Number },
         long: { type: Number },
         address: { type: String }
-    }
+    },
+    // ── Site Shift Configuration ──────────────────────────────────────────────
+    // Each entry defines one shift slot at this site.
+    // Duty start is BLOCKED until at least one active shift is configured here.
+    siteShifts: [new mongoose.Schema({
+        shiftName:   { type: String, trim: true },  // 'Morning' | 'Afternoon' | 'Night' | 'General' | 'Day' | 'Night12'
+        groupName:   { type: String, trim: true },  // 'MANG' (8hr) | 'DaNi' (12hr)
+        shiftCode:   { type: String, trim: true },  // 'M' | 'A' | 'N' | 'G' | 'D' | 'N2'
+        startTime:   { type: String, trim: true },  // e.g. "06:00"
+        durationHrs: { type: Number, default: 8 },  // 8 or 12
+        workerSlots: { type: Number, default: 1 },  // Required workers for this shift per day
+        // Billing rate options (per-day or per-shift)
+        billRate:    { type: Number, default: 0 },  // Amount charged to client per worker per shift
+        salaryRate:  { type: Number, default: 0 },  // Amount paid to worker per shift
+        active:      { type: Boolean, default: true },
+        exemptDays:  { type: [String], default: [] }
+    }, { _id: true })]
 }, { timestamps: true });
 
 leadSchema.index({ locationId: 1 });
@@ -388,6 +405,7 @@ const getTenantModels = (connection) => {
         TaxInvoices: connection.models.TaxInvoices || connection.model("TaxInvoices", taxInvoiceSchema),
         Counters: connection.models.Counters || connection.model("Counters", counterSchema),
         Messages: connection.models.Messages || connection.model("Messages", messageSchema),
+        StaffMonitoring: connection.models.StaffMonitoring || connection.model("StaffMonitoring", staffMonitoringSchema),
     };
 };
 

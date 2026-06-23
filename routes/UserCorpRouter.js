@@ -46,6 +46,9 @@ router.post("/leads/:id/activity", ctrl.manageLeads.addActivity);
 router.post("/leads/:id/site-visit", ctrl.manageLeads.logSiteVisit);
 router.get("/leads/export/excel",  ctrl.manageLeads.download);
 router.post("/email/readInbox",    ctrl.manageLeads.readInbox);
+// ── Site Shift Configuration (CRUD per lead) ──
+router.get("/leads/:id/shifts",    ctrl.manageLeads.getSiteShifts);
+router.put("/leads/:id/shifts",    ctrl.manageLeads.updateSiteShifts);
 
 // --- 📦 CATALOG (Inventory) ---
 router.get("/catalog/template",  ctrl.manageCatalog.generateTemplate);

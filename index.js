@@ -86,6 +86,9 @@ app.use("/api/finance", FinanceRouter);
 app.use("/api/payment", require("./routes/paymentRouter"));
 app.use("/api/staff", require("./routes/staffRouter"));
 
+// 🛡️ GUARD ALERTNESS MONITORING
+app.use("/api/monitoring", require("./routes/monitoringRouter"));
+
 // Secure Uploads (Tenant Aware)
 const authMiddleware = require("./middleware/authMiddleware");
 const tenantMiddleware = require("./middleware/tenantMiddleware");
