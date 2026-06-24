@@ -979,6 +979,7 @@ exports.manageEmployees = {
           employeeType: 'userMaster',
           user_id: u._id,
           userActive: u.userActive,
+          active: u.userActive,
           photo_url: u.userProfileImage || u.photo_url,
           daily_rate: 0,
           monthly_rate: 0,
@@ -1035,6 +1036,7 @@ exports.manageEmployees = {
           matchedUser.daily_rate = emp.daily_rate || matchedUser.daily_rate;
           matchedUser.monthly_rate = emp.monthly_rate || matchedUser.monthly_rate;
           matchedUser.ledgerId = emp.ledgerId || matchedUser.ledgerId;
+          if (emp.active !== undefined) matchedUser.active = emp.active;
           processedUserIds.add(String(matchedUser._id));
         } else {
           mergedList.push(emp);
@@ -1082,6 +1084,7 @@ exports.manageEmployees = {
           employeeType: 'userMaster',
           user_id: userDoc._id,
           userActive: userDoc.userActive,
+          active: employeeDoc?.active !== undefined ? employeeDoc.active : userDoc.userActive,
           photo_url: userDoc.userProfileImage || userDoc.photo_url,
           daily_rate: employeeDoc?.daily_rate || 0,
           monthly_rate: employeeDoc?.monthly_rate || 0,
@@ -1178,6 +1181,7 @@ exports.manageEmployees = {
         if (req.body.mobile) userDoc.userMobile = req.body.mobile;
         if (req.body.role) userDoc.userRole = req.body.role;
         if (req.body.photo_url) userDoc.userProfileImage = req.body.photo_url;
+        if (req.body.active !== undefined) userDoc.userActive = req.body.active;
         await userDoc.save();
 
         let employeeDoc = await Employees.findOne({
@@ -1225,6 +1229,7 @@ exports.manageEmployees = {
           employeeType: 'userMaster',
           user_id: userDoc._id,
           userActive: userDoc.userActive,
+          active: employeeDoc.active !== undefined ? employeeDoc.active : userDoc.userActive,
           photo_url: userDoc.userProfileImage || userDoc.photo_url,
           daily_rate: employeeDoc.daily_rate || 0,
           monthly_rate: employeeDoc.monthly_rate || 0,
