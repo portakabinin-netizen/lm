@@ -45,6 +45,8 @@ router.post("/contra/approve",         ctrl.approveContraVoucher);
 // --- 🎫 VOUCHERS ---
 router.get("/vouchers/bulk-template", ctrl.generateVoucherTemplate);
 router.post("/vouchers/bulk-upload", upload.single("file"), ctrl.bulkImportVouchers);
+router.get("/vouchers/salary-enrollment-template", ctrl.generateSalaryDuesByEnrollmentTemplate);
+router.post("/vouchers/salary-enrollment-upload", upload.single("file"), ctrl.bulkImportSalaryByEnrollment);
 router.get("/vouchers",          ctrl.manageVouchers.list);
 router.get("/vouchers/ledger/:ledgerId", ctrl.manageVouchers.getByLedger);
 router.post("/vouchers",         ctrl.manageVouchers.create);

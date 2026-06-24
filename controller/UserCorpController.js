@@ -1523,6 +1523,35 @@ exports.manageEmployees = {
       res.status(500).json({ success: false, message: err.message });
     }
   },
+  getAttendanceDashboard: async (req, res) => {
+    try {
+      let empResult = null;
+      let attResult = null;
+
+      const mockResEmp = {
+        status: function() { return this; },
+        json: function(data) { empResult = data; return this; }
+      };
+
+      const mockResAtt = {
+        status: function() { return this; },
+        json: function(data) { attResult = data; return this; }
+      };
+
+      await Promise.all([
+        exports.manageEmployees.list(req, mockResEmp),
+        exports.manageEmployees.listAttendance(req, mockResAtt)
+      ]);
+
+      res.json({
+        success: true,
+        employees: empResult?.data || [],
+        attendance: attResult?.data || []
+      });
+    } catch (err) {
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
   listAttendance: async (req, res) => {
     try {
       const { Attendance } = req.tenantModels;

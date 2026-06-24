@@ -65,6 +65,7 @@ router.post("/hr/employees",     ctrl.manageEmployees.create);
 router.put("/hr/employees/:id",  ctrl.manageEmployees.update);
 router.delete("/hr/employees/:id", ctrl.manageEmployees.delete);
 router.get("/hr/attendance",     ctrl.manageEmployees.listAttendance);
+router.get("/hr/attendance-dashboard", ctrl.manageEmployees.getAttendanceDashboard);
 router.get("/hr/attendance/bulk-template", ctrl.manageEmployees.generateAttendanceTemplate);
 router.post("/hr/attendance/bulk-upload", upload.single("file"), ctrl.manageEmployees.bulkImportAttendance);
 router.get("/hr/attendance/active", ctrl.manageEmployees.getActiveAttendance);

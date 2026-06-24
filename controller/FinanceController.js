@@ -2750,3 +2750,272 @@ exports.bulkImportVouchers = async (req, res) => {
         res.status(500).json({ success: false, message: err.message });
     }
 };
+
+/**
+ * 📄 GET: Download Excel Salary Dues By Enrollment Template
+ */
+exports.generateSalaryDuesByEnrollmentTemplate = async (req, res) => {
+    try {
+        const ExcelJS = require("exceljs");
+        const workbook = new ExcelJS.Workbook();
+        
+        const salarySheet = workbook.addWorksheet('Salary By Enrollment');
+        salarySheet.columns = [
+            { header: 'Enrollment Form Number', key: 'enrollment_no', width: 25 },
+            { header: 'Amount', key: 'amount', width: 15 },
+            { header: 'Narration (Optional)', key: 'narration', width: 35 }
+        ];
+        
+        // Style headers
+        salarySheet.getRow(1).eachCell((cell) => {
+            cell.font = { name: 'Arial', family: 4, size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
+            cell.fill = {
+                type: 'pattern',
+                pattern: 'solid',
+                fgColor: { argb: 'FF375623' } // dark green
+            };
+            cell.alignment = { vertical: 'middle', horizontal: 'left' };
+        });
+        
+        // Sample rows
+        salarySheet.addRow({
+            enrollment_no: 'EMP-001',
+            amount: 25000,
+            narration: 'Salary dues'
+        });
+        
+        res.setHeader(
+            'Content-Type',
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        );
+        res.setHeader('Content-Disposition', 'attachment; filename=Salary_By_Enrollment_Template.xlsx');
+        await workbook.xlsx.write(res);
+        res.end();
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+};
+
+/**
+ * 📥 POST: Parse Excel and Bulk Import Salary Dues by Enrollment Number
+ */
+exports.bulkImportSalaryByEnrollment = async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ success: false, message: "No file uploaded" });
+        }
+
+        const { Employees, Ledgers, Vouchers, Counters } = req.tenantModels;
+        const ExcelJS = require("exceljs");
+        const workbook = new ExcelJS.Workbook();
+        await workbook.xlsx.load(req.file.buffer);
+
+        const salarySheet = workbook.getWorksheet(1);
+        if (!salarySheet) {
+            return res.status(400).json({ success: false, message: "No worksheet found" });
+        }
+
+        const successList = [];
+        const failedList = [];
+        
+        const getCellValue = (cell) => {
+            if (!cell) return null;
+            if (cell.value && typeof cell.value === 'object') {
+                if (cell.value.result !== undefined) return cell.value.result;
+                if (cell.value.text !== undefined) return cell.value.text;
+            }
+            return cell.value;
+        };
+
+        // Cache Ledgers
+        const ledgerCache = {};
+        const allLedgers = await Ledgers.find({}).lean();
+        allLedgers.forEach(l => {
+            ledgerCache[l.ledgerName.trim().toLowerCase()] = l;
+        });
+
+        // Resolve Salary & Wages Expense Ledger
+        const expenseName = "Salary & Wages";
+        const expenseCacheKey = expenseName.toLowerCase();
+        let expenseLedgerPlan = ledgerCache[expenseCacheKey];
+        if (!expenseLedgerPlan) {
+            expenseLedgerPlan = {
+                isNew: true,
+                ledgerName: expenseName,
+                groupName: "Direct Expenses",
+                nature: "Dr"
+            };
+            ledgerCache[expenseCacheKey] = expenseLedgerPlan;
+        }
+
+        const affectedLedgerIds = new Set();
+        const voucherPlans = [];
+
+        // Parse Rows
+        const rowsToProcess = [];
+        salarySheet.eachRow((row, rowNumber) => {
+            if (rowNumber > 1) {
+                const enrollment_no = String(getCellValue(row.getCell(1)) || "").trim();
+                const amountVal = getCellValue(row.getCell(2));
+                const narration = String(getCellValue(row.getCell(3)) || "").trim();
+
+                if (!enrollment_no && !amountVal) return; // skip fully empty rows
+                rowsToProcess.push({ rowNumber, enrollment_no, amountVal, narration });
+            }
+        });
+
+        if (rowsToProcess.length === 0) {
+            return res.status(400).json({ success: false, message: "Excel sheet is empty or contains no records." });
+        }
+
+        for (const row of rowsToProcess) {
+            if (!row.enrollment_no) {
+                failedList.push({ row: row.rowNumber, enrollment_no: row.enrollment_no, reason: "Enrollment number is empty" });
+                continue;
+            }
+            const rowAmt = parseFloat(row.amountVal);
+            if (isNaN(rowAmt) || rowAmt <= 0) {
+                failedList.push({ row: row.rowNumber, enrollment_no: row.enrollment_no, reason: "Invalid amount" });
+                continue;
+            }
+
+            // Find Employee
+            const employee = await Employees.findOne({ enrollment_no: row.enrollment_no }).lean();
+            if (!employee) {
+                failedList.push({ row: row.rowNumber, enrollment_no: row.enrollment_no, reason: `Employee not found with enrollment no ${row.enrollment_no}` });
+                continue;
+            }
+
+            // Employee Ledger
+            const employeeName = employee.name;
+            const employeeCacheKey = employeeName.toLowerCase();
+            let employeeLedgerPlan = ledgerCache[employeeCacheKey];
+            if (!employeeLedgerPlan) {
+                employeeLedgerPlan = {
+                    isNew: true,
+                    ledgerName: employeeName,
+                    groupName: "Account Payables",
+                    parentGroup: "Current Liabilities",
+                    refId: employee._id,
+                    refType: "Staff",
+                    nature: "Cr"
+                };
+                ledgerCache[employeeCacheKey] = employeeLedgerPlan;
+            }
+
+            const entriesPlan = [
+                {
+                    ledgerPlan: expenseLedgerPlan,
+                    debit: rowAmt,
+                    credit: 0
+                },
+                {
+                    ledgerPlan: employeeLedgerPlan,
+                    debit: 0,
+                    credit: rowAmt
+                }
+            ];
+
+            voucherPlans.push({
+                rowNumber: row.rowNumber,
+                enrollment_no: row.enrollment_no,
+                amount: rowAmt,
+                employeeName: employee.name,
+                voucherType: "Journal",
+                date: new Date(),
+                narration: row.narration || `Salary dues for Enrollment No. ${row.enrollment_no}`,
+                entriesPlan
+            });
+        }
+
+        // Get Group IDs for new ledgers
+        const { Groups } = req.tenantModels;
+        const groupCache = {};
+        const allGroups = await Groups.find({}).lean();
+        allGroups.forEach(g => {
+            groupCache[g.groupName.toLowerCase()] = g._id;
+        });
+
+        // Resolve LocId
+        let resolvedLocId;
+        const profile = await req.tenantModels.ProfileMaster.findOne({}).lean();
+        resolvedLocId = profile?.locations?.[0]?._id || req.user?.accessibleLocationIds?.[0];
+        if (!resolvedLocId) {
+            resolvedLocId = new require('mongoose').Types.ObjectId();
+        }
+
+        const savedVouchers = [];
+
+        for (const plan of voucherPlans) {
+            try {
+                const resolvedEntries = [];
+                for (const entry of plan.entriesPlan) {
+                    const lp = entry.ledgerPlan;
+                    let ledgerId = lp._id;
+                    if (lp.isNew) {
+                        const grpId = groupCache[lp.groupName.toLowerCase()];
+                        if (!grpId) throw new Error(`Accounting Group '${lp.groupName}' not found`);
+                        const newLedger = new Ledgers({
+                            ledgerName: lp.ledgerName,
+                            ledgerGroupId: grpId,
+                            openingBalance: 0,
+                            openingBalanceType: lp.nature,
+                            currentBalance: 0,
+                            refId: lp.refId,
+                            refType: lp.refType
+                        });
+                        await newLedger.save();
+                        ledgerId = newLedger._id;
+                        lp._id = ledgerId;
+                        lp.isNew = false;
+                    }
+                    resolvedEntries.push({
+                        ledgerId,
+                        ledgerName: lp.ledgerName,
+                        debit: entry.debit,
+                        credit: entry.credit
+                    });
+                    affectedLedgerIds.add(ledgerId.toString());
+                }
+
+                const voucherType = plan.voucherType;
+                const counterId = `voucher_${voucherType}_${resolvedLocId}`;
+                const counter = await Counters.findByIdAndUpdate(counterId, { $inc: { seq: 1 } }, { upsert: true, new: true });
+                const prefix = voucherType.substring(0, 3).toUpperCase();
+                const voucherNo = `${prefix}-${resolvedLocId.toString().slice(-4)}-${counter.seq}`;
+
+                const newVoucher = new Vouchers({
+                    locationId: resolvedLocId,
+                    voucherType,
+                    voucherNo,
+                    date: plan.date,
+                    narration: plan.narration,
+                    entries: resolvedEntries,
+                    legacyMetadata: {
+                        source: "ExcelUpload_EnrollmentSalary"
+                    }
+                });
+
+                await newVoucher.save();
+                savedVouchers.push(newVoucher);
+                successList.push({ row: plan.rowNumber, enrollment_no: plan.enrollment_no, amount: plan.amount, employee: plan.employeeName });
+            } catch (vErr) {
+                failedList.push({ row: plan.rowNumber, enrollment_no: plan.enrollment_no, reason: vErr.message });
+            }
+        }
+
+        if (affectedLedgerIds.size > 0) {
+            await exports.recalculateLedgerBalances(req.tenantModels, Array.from(affectedLedgerIds));
+        }
+
+        res.json({
+            success: true,
+            message: `Processed ${rowsToProcess.length} rows. Success: ${successList.length}, Failed: ${failedList.length}`,
+            successList,
+            failedList
+        });
+
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+};
