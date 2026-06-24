@@ -947,6 +947,9 @@ exports.manageEmployees = {
       const { Employees } = req.tenantModels;
       const accessibleIds = req.user?.accessibleLocationIds;
       const q = {};
+      if (req.query.all !== 'true') {
+        q.active = { $ne: false };
+      }
       if (req.user?.userRole !== 'CorpAdmin' && accessibleIds?.length > 0) {
         q.locationId = { $in: accessibleIds };
       }

@@ -438,7 +438,7 @@ exports.unregisteredLogin = async (req, res) => {
             // 1. Search Staff (Try finding even if inactive first for debugging)
             const staff = await models.Employees.findOne({ mobile: mobileRegex }).lean();
             if (staff) {
-                if (staff.active !== false) {
+                if (staff.active === true) {
                     role = "Staff";
                     userData = { name: staff.name, _id: staff._id, photo_url: staff.photo_url };
                     finalDbName = dbName;
