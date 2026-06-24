@@ -2162,12 +2162,69 @@ exports.generateVoucherTemplate = async (req, res) => {
             projectLead: '1002'
         });
 
-        // Write to local workspace path as a convenience
-        try {
-            await workbook.xlsx.writeFile("c:/hipk/Voucher_Upload_Template.xlsx");
-        } catch (fErr) {
-            console.error("Failed to write offline template copy:", fErr.message);
+        // 4. Employee Reference Worksheet
+        const empSheet = workbook.addWorksheet('Employee Reference');
+        empSheet.columns = [
+            { header: '_objectId', key: '_id', width: 25 },
+            { header: 'Enrollment Form Number', key: 'enrollment_no', width: 25 },
+            { header: 'Employee Name', key: 'name', width: 30 }
+        ];
+        
+        empSheet.getRow(1).eachCell((cell) => {
+            cell.font = { name: 'Arial', family: 4, size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
+            cell.fill = {
+                type: 'pattern',
+                pattern: 'solid',
+                fgColor: { argb: 'FF595959' } // gray
+            };
+            cell.alignment = { vertical: 'middle', horizontal: 'left' };
+        });
+
+        // Query employees
+        const { Employees, Leads } = req.tenantModels;
+        if (Employees) {
+            const employees = await Employees.find({ active: true }).select('_id enrollment_no name').lean();
+            employees.forEach(emp => {
+                empSheet.addRow({
+                    _id: emp._id.toString(),
+                    enrollment_no: emp.enrollment_no || '',
+                    name: emp.name || ''
+                });
+            });
         }
+
+        // 5. Client Reference Worksheet
+        const clientSheet = workbook.addWorksheet('Client Reference');
+        clientSheet.columns = [
+            { header: '_objectId', key: '_id', width: 25 },
+            { header: 'Lead No', key: 'lead_no', width: 20 },
+            { header: 'Client Name', key: 'name', width: 30 }
+        ];
+
+        clientSheet.getRow(1).eachCell((cell) => {
+            cell.font = { name: 'Arial', family: 4, size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
+            cell.fill = {
+                type: 'pattern',
+                pattern: 'solid',
+                fgColor: { argb: 'FF595959' } // gray
+            };
+            cell.alignment = { vertical: 'middle', horizontal: 'left' };
+        });
+
+        // Query clients (leads)
+        if (Leads) {
+            const leads = await Leads.find({}).select('_id lead_no sender_name').lean();
+            leads.forEach(lead => {
+                clientSheet.addRow({
+                    _id: lead._id.toString(),
+                    lead_no: lead.lead_no || '',
+                    name: lead.sender_name || ''
+                });
+            });
+        }
+
+        // Removed local disk writeFile because it blocks and causes concurrent write issues
+        // We only need to write to the response stream
 
         res.setHeader(
             'Content-Type',
