@@ -31,6 +31,11 @@ const userMasterSchema = new mongoose.Schema({
             pincode: { type: String, trim: true },
         }
     },
+    location: {
+        district: { type: String, trim: true },
+        lat: { type: Number },
+        long: { type: Number }
+    },
 
     // 🕒 Predefined Duty Shift
     dutyShift: {

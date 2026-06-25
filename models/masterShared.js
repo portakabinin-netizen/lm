@@ -178,7 +178,7 @@ const corporateProfileSchema = new mongoose.Schema({
     },
 
     locations: [{
-        locationName:       { type: String, trim: true, default: "Registered Office" },
+        locationName:       { type: String, trim: true, default: "Head Office" },
         locationType:       { type: String, enum: ["HO", "RO", "BO"], default: "BO" },
         parentId:           { type: mongoose.Schema.Types.ObjectId, default: null },
         isRegisteredOffice: { type: Boolean, default: false },
@@ -261,3 +261,4 @@ module.exports = {
     totalsSchema,
     corporateProfileSchema
 };
+

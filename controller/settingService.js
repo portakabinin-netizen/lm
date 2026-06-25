@@ -120,7 +120,9 @@ const updateCorporate = {
         },
 
         locations: Array.isArray(b.locations) ? b.locations.map(loc => ({
-          locationName:       clean(loc.locationName) || "Office",
+          locationName:       clean(loc.locationName) || "Head Office",
+          locationType:       clean(loc.locationType) || "BO",
+          parentId:           loc.parentId || null,
           isRegisteredOffice: !!loc.isRegisteredOffice,
           address: {
             line1:   clean(loc.address?.line1),
@@ -469,6 +471,7 @@ const otherUser = {
       if (typeof b.userActive === "boolean") $set.userActive = b.userActive;
       if (clean(b.userProfileImage)) $set.userProfileImage = clean(b.userProfileImage);
       if (b.addresses) $set.addresses = b.addresses;
+      if (b.location) $set.location = b.location;
       if (b.dutyShift) {
         const ds = { ...b.dutyShift };
         const durationHrs = Number(ds.durationHrs);
