@@ -249,7 +249,36 @@ const updateCorporate = {
         authorizedSignatory: {
           name: clean(b.authorizedSignatory?.name),
           designation: clean(b.authorizedSignatory?.designation),
-        }
+        },
+        locations: Array.isArray(b.locations) ? b.locations.map(loc => ({
+          locationName:       clean(loc.locationName) || "Head Office",
+          locationType:       clean(loc.locationType) || "BO",
+          parentId:           loc.parentId || null,
+          isRegisteredOffice: !!loc.isRegisteredOffice,
+          address: {
+            line1:   clean(loc.address?.line1),
+            city:    clean(loc.address?.city),
+            district: clean(loc.address?.district),
+            state:   clean(loc.address?.state),
+            pincode: clean(loc.address?.pincode),
+            country: clean(loc.address?.country) || "India",
+            lat:     loc.address?.lat ? Number(loc.address?.lat) : undefined,
+            long:    loc.address?.long ? Number(loc.address?.long) : undefined,
+          },
+          gstin:              clean(loc.gstin)?.toUpperCase(),
+          bankDetails: {
+            bank_name:      clean(loc.bankDetails?.bank_name),
+            branch:         clean(loc.bankDetails?.branch),
+            account_number: clean(loc.bankDetails?.account_number),
+            ifsc_code:      clean(loc.bankDetails?.ifsc_code)?.toUpperCase(),
+            account_type:   clean(loc.bankDetails?.account_type) || "Current",
+            upi_id:         clean(loc.bankDetails?.upi_id),
+          },
+          contactPerson:      clean(loc.contactPerson),
+          contactMobile:      clean(loc.contactMobile),
+          contactEmail:       clean(loc.contactEmail),
+          active:             typeof loc.active === "boolean" ? loc.active : true,
+        })) : []
       };
 
       // 3. Provision Infrastructure
