@@ -2243,6 +2243,7 @@ exports.manageEmployees = {
         shiftType,
         shiftPeriod,
         shiftLockHours,
+        startTime,
         site_name,
         siteId,
         leadId,
@@ -2509,6 +2510,12 @@ exports.manageEmployees = {
 
         let diffMins = 0;
         let standardStart = now;
+
+        // Fallback to employee's assigned startTime from frontend if site doesn't have shift config
+        if (!shiftStartTime && startTime) {
+          shiftStartTime = startTime;
+        }
+
         if (shiftStartTime && !isSpecialAction) {
           const [h, m] = shiftStartTime.split(':').map(Number);
 
