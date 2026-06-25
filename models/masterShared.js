@@ -16,6 +16,8 @@ const fullAddressSchema = new mongoose.Schema(
         state: { type: String, trim: true },
         pincode: { type: String, trim: true },
         country: { type: String, trim: true, default: "India" },
+        lat: { type: Number },
+        long: { type: Number },
     },
     { _id: false }
 );

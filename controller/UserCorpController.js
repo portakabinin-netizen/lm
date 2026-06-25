@@ -11,6 +11,32 @@ const mongoose = require('mongoose');
 const ExcelJS = require('exceljs');
 const externalService = require('../utils/externalService');
 const { resolveDatePreset } = require('../utils/dateUtils');
+const autoEndScheduler = require('../utils/autoEndScheduler');
+const relieverRotation = require('../utils/relieverRotation');
+
+// ── Phase 2a: Unique partial index — one active session per worker ─────────────
+// Track which tenant DBs already have the index so we only create it once.
+const _indexedAttendanceDbs = new Set();
+const ensureAttendanceIndex = async (AttendanceModel) => {
+  try {
+    const dbName = AttendanceModel?.db?.name;
+    if (!dbName || _indexedAttendanceDbs.has(dbName)) return;
+    await AttendanceModel.collection.createIndex(
+      { employeeId: 1 },
+      {
+        unique: true,
+        partialFilterExpression: { dutyEnd: null },
+        background: true,
+        name: 'unique_active_session_per_employee',
+      }
+    );
+    _indexedAttendanceDbs.add(dbName);
+  } catch (e) {
+    // Index may already exist; not critical — fail silently
+  }
+};
+// ─────────────────────────────────────────────────────────────────────────────
+
 
 const getDistanceMetres = (lat1, lon1, lat2, lon2) => {
   if (!lat1 || !lon1 || !lat2 || !lon2) return Infinity;
@@ -1671,6 +1697,8 @@ exports.manageEmployees = {
   markAttendance: async (req, res) => {
     try {
       const { Attendance, Employees } = req.tenantModels;
+      // Phase 2a: ensure unique index exists for this tenant
+      ensureAttendanceIndex(Attendance).catch(() => {});
       const {
         employeeId,
         leadId,
@@ -2052,32 +2080,8 @@ exports.manageEmployees = {
         }
       }
 
-      // Proximity resolver for ticks in push
-      if (!isExemptUser && req.body.$push && req.body.$push.geoHistory) {
-        const { Leads } = req.tenantModels;
-        const tickOrTicks = req.body.$push.geoHistory;
-
-        const processTick = async (tick) => {
-          if (tick && tick.lat && tick.long) {
-            const siteName = await resolveSiteNameForCoordinates(tick.lat, tick.long, Leads);
-            if (siteName) {
-              tick.address = formatAddressWithSite(tick.address, siteName);
-            }
-          }
-        };
-
-        if (tickOrTicks.$each && Array.isArray(tickOrTicks.$each)) {
-          for (const t of tickOrTicks.$each) {
-            await processTick(t);
-          }
-        } else if (Array.isArray(tickOrTicks)) {
-          for (const t of tickOrTicks) {
-            await processTick(t);
-          }
-        } else {
-          await processTick(tickOrTicks);
-        }
-      }
+      // Proximity resolver for ticks in push — runs ASYNC after save (Phase 1)
+      // Ticks are saved immediately with raw address; address is enriched in background.
 
       // Auto-calculate hours worked and daily earn on duty end
       let newlyEnded = false;
@@ -2227,6 +2231,8 @@ exports.manageEmployees = {
   toggleAttendance: async (req, res) => {
     try {
       const { Attendance, Employees } = req.tenantModels;
+      // Phase 2a: ensure unique index exists for this tenant
+      ensureAttendanceIndex(Attendance).catch(() => {});
       const {
         employeeId,
         type,
@@ -2477,6 +2483,8 @@ exports.manageEmployees = {
                   message: `Shift ${matchedShift.shiftName} (${matchedShift.shiftCode}) at "${siteDoc.sender_name}" already has ${activeInSlot}/${matchedShift.workerSlots || 1} worker(s). This is an excess duty.`,
                 };
               }
+              // Phase 2b: store workerSlots for auto-end trigger after record save
+              req._matchedSiteShiftSlots = matchedShift.workerSlots || 1;
             }
           }
         }
@@ -2667,9 +2675,13 @@ exports.manageEmployees = {
                 return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
               };
               const dist = getDistance(lat, long, siteLat, siteLong);
-              if (dist > 100) {
+              // Phase 4 — configurable geofence radius (defaults to 100m if not set on site)
+              const geofenceRadius = Number(site.geofenceRadiusMeters) || 100;
+              if (dist > geofenceRadius) {
                 return res.status(400).json({
                   success: false,
+                  distanceMetres: Math.round(dist),
+                  geofenceRadiusMetres: geofenceRadius,
                   message:
                     'You are not at your working site, please first reach the site location to start your duty.',
                 });
@@ -2681,20 +2693,13 @@ exports.manageEmployees = {
           }
         }
 
-        let finalAddress = address || '';
-        if (!isExemptUser) {
-          const siteName = await resolveSiteNameForCoordinates(finalLat, finalLong, Leads);
-          if (siteName) {
-            finalAddress = formatAddressWithSite(finalAddress, siteName);
-          }
-        }
         const finalGeoHistory = isExemptUser
           ? []
           : [
               {
                 lat: finalLat,
                 long: finalLong,
-                address: finalAddress,
+                address: address || '',  // filled async below
                 type: 'start',
                 timestamp: now,
               },
@@ -2756,12 +2761,81 @@ exports.manageEmployees = {
           remarks: shiftStartTime && diffMins > 15 ? 'On Duty-Late Coming' : undefined,
         });
         await record.save();
+
+        // ── Async geocoding: patch geoHistory[0].address after response ─────
+        if (!isExemptUser && finalLat && finalLong) {
+          const _recId = record._id;
+          const _Attendance = Attendance;
+          const _Leads = Leads;
+          const _rawAddr = address || '';
+          setImmediate(async () => {
+            try {
+              const siteName = await resolveSiteNameForCoordinates(finalLat, finalLong, _Leads);
+              if (siteName) {
+                const enrichedAddr = formatAddressWithSite(_rawAddr, siteName);
+                await _Attendance.updateOne(
+                  { _id: _recId, 'geoHistory.0.address': _rawAddr },
+                  { $set: { 'geoHistory.0.address': enrichedAddr } }
+                );
+              }
+            } catch (e) { /* non-critical, fail silently */ }
+          });
+        }
+        // ────────────────────────────────────────────────────────────────────
+
         req.io.to(req.tenantDbName).emit('attendance:duty_on', {
           employeeId,
           attendanceId: record._id,
           shiftCode: toggleFinalShiftCode,
           shiftPeriod: toggleFinalShiftPeriod,
         });
+
+        // ── Phase 2b: Auto-end for single-worker shifts ─────────────────────
+        const matchedShiftSlots = toggleSiteShiftOverride ? (
+          // Re-read workerSlots from the site doc that was already resolved above
+          (() => {
+            try {
+              const _msd = req._matchedSiteShift;
+              return _msd?.workerSlots ?? null;
+            } catch { return null; }
+          })()
+        ) : null;
+
+        // Store matched shift on req for slot check — resolved during site-shift lookup
+        if (req._matchedSiteShiftSlots === 1 && record.dutyEndScheduled) {
+          autoEndScheduler.scheduleAutoEnd(
+            record._id,
+            record.dutyEndScheduled,
+            Attendance,
+            req.tenantDbName,
+            req.io
+          );
+        }
+        // ────────────────────────────────────────────────────────────────────
+
+        // ── Phase 2c: Async reliever rotation suggestion ─────────────────────
+        if (toggleSiteShiftOverride && (leadId || siteId)) {
+          const _recId = record._id;
+          const _Attendance = Attendance;
+          const _siteId = leadId || siteId;
+          const _group = toggleSiteShiftOverride.groupName || 'MANG';
+          const _nextCode = relieverRotation.nextShiftCode(_group, toggleFinalShiftCode);
+          if (_nextCode) {
+            setImmediate(async () => {
+              try {
+                const suggestedId = await relieverRotation.resolveReliever(
+                  { siteId: _siteId, shiftGroup: _group, targetShiftCode: _nextCode, date: new Date() },
+                  { Attendance: _Attendance }
+                );
+                if (suggestedId) {
+                  await _Attendance.updateOne({ _id: _recId }, { $set: { suggestedRelieverId: suggestedId } });
+                }
+              } catch (e) { /* non-critical */ }
+            });
+          }
+        }
+        // ────────────────────────────────────────────────────────────────────
+
         return res.json({
           success: true,
           data: record,
@@ -2802,13 +2876,8 @@ exports.manageEmployees = {
 
         record.dutyEnd = now;
         if (!isExemptUser) {
-          let finalAddress = address || '';
-          const { Leads } = req.tenantModels;
-          const siteName = await resolveSiteNameForCoordinates(lat, long, Leads);
-          if (siteName) {
-            finalAddress = formatAddressWithSite(finalAddress, siteName);
-          }
-          record.geoHistory.push({ lat, long, address: finalAddress, type: 'end', timestamp: now });
+          // Push end tick with raw address — enriched asynchronously below
+          record.geoHistory.push({ lat, long, address: address || '', type: 'end', timestamp: now });
         }
         record.hoursWorked = parseFloat(Math.max(0, elapsedHrs).toFixed(2));
         const standardHours = record.shiftHours || record.shiftLockHours || 8;
@@ -2819,13 +2888,49 @@ exports.manageEmployees = {
         if (forcedOff) {
           record.forcedOff = true;
           record.forcedOffReason = forcedOffReason || 'Manual override';
+          // Phase 2b — Audit trail for bypasses
+          if (isLocked || canOverride) {
+            record.bypassedBy = req.user?.userDisplayName || req.user?.name || 'Supervisor';
+            record.bypassRole = req.user?.userRole || 'unknown';
+            record.originalLockExpiryAt = record.dutyEndScheduled || null;
+          }
         }
         if (emergencyOff) {
           record.emergencyOff = true;
           record.emergencyReason = emergencyReason || 'Emergency shutdown';
           record.emergencyByUser = req.user?.userDisplayName || 'System';
+          // Phase 2b — Audit trail for emergency bypass
+          record.bypassedBy = req.user?.userDisplayName || req.user?.name || 'Supervisor';
+          record.bypassRole = req.user?.userRole || 'unknown';
+          record.originalLockExpiryAt = record.dutyEndScheduled || null;
         }
+
+        // Phase 2b: Cancel any pending auto-end timer (worker clocked out manually)
+        autoEndScheduler.cancelAutoEnd(record._id);
+
         await record.save();
+
+        // ── Async geocoding: patch end tick address after response ──────────
+        if (!isExemptUser && lat && long) {
+          const _recId = record._id;
+          const _Attendance = Attendance;
+          const _Leads = req.tenantModels.Leads;
+          const _endIdx = record.geoHistory.length - 1;
+          const _rawAddr = address || '';
+          setImmediate(async () => {
+            try {
+              const siteName = await resolveSiteNameForCoordinates(lat, long, _Leads);
+              if (siteName) {
+                const enrichedAddr = formatAddressWithSite(_rawAddr, siteName);
+                await _Attendance.updateOne(
+                  { _id: _recId },
+                  { $set: { [`geoHistory.${_endIdx}.address`]: enrichedAddr } }
+                );
+              }
+            } catch (e) { /* non-critical */ }
+          });
+        }
+        // ────────────────────────────────────────────────────────────────────
 
         req.io.to(req.tenantDbName).emit('attendance:duty_off', {
           employeeId,
@@ -2887,6 +2992,12 @@ exports.manageEmployees = {
       record.forcedOff = true;
       record.forcedOffReason = 'Emergency End by Supervisor';
       record.hoursWorked = parseFloat(Math.max(0, elapsedHrs).toFixed(2));
+      // Phase 2b — Audit trail for emergency bypass
+      record.bypassedBy = byUser;
+      record.bypassRole = req.user?.userRole || 'unknown';
+      record.originalLockExpiryAt = record.dutyEndScheduled || null;
+      // Phase 2b: Cancel any pending auto-end timer
+      autoEndScheduler.cancelAutoEnd(record._id);
       await record.save();
 
       // Notify the specific employee via Socket.IO
@@ -3017,14 +3128,32 @@ exports.manageEmployees = {
       current.dutyEnd = now;
       current.hoursWorked = parseFloat(elapsedHrs.toFixed(2));
       if (!isExemptUser) {
-        let finalAddress = address || '';
-        const siteName = await resolveSiteNameForCoordinates(lat, long, Leads);
-        if (siteName) {
-          finalAddress = formatAddressWithSite(finalAddress, siteName);
-        }
-        current.geoHistory.push({ lat, long, address: finalAddress, type: 'end', timestamp: now });
+        // Push raw address — enriched asynchronously below
+        current.geoHistory.push({ lat, long, address: address || '', type: 'end', timestamp: now });
       }
       await current.save();
+
+      // ── Async geocoding: patch shift-end tick address ─────────────────────
+      if (!isExemptUser && lat && long) {
+        const _curId = current._id;
+        const _AttendanceRef = Attendance;
+        const _LeadsRef = Leads;
+        const _endIdx = current.geoHistory.length - 1;
+        const _rawAddr = address || '';
+        setImmediate(async () => {
+          try {
+            const siteName = await resolveSiteNameForCoordinates(lat, long, _LeadsRef);
+            if (siteName) {
+              const enrichedAddr = formatAddressWithSite(_rawAddr, siteName);
+              await _AttendanceRef.updateOne(
+                { _id: _curId },
+                { $set: { [`geoHistory.${_endIdx}.address`]: enrichedAddr } }
+              );
+            }
+          } catch (e) { /* non-critical */ }
+        });
+      }
+      // ───────────────────────────────────────────────────────────────────────
 
       // 3. Determine next shift lock hours from leads database
       let nextLockHrs = nextShiftType === '12hr' ? 12 : 8;
@@ -3060,13 +3189,6 @@ exports.manageEmployees = {
       const nextScheduledEnd = new Date(now.getTime() + nextLockHrs * 3600000);
 
       // 4. Create new attendance record for next shift (marked as double shift)
-      let finalStartAddress = address || '';
-      if (!isExemptUser) {
-        const siteName = await resolveSiteNameForCoordinates(lat, long, Leads);
-        if (siteName) {
-          finalStartAddress = formatAddressWithSite(finalStartAddress, siteName);
-        }
-      }
       const nextRecord = new Attendance({
         employeeId,
         employeeType: isWorker ? 'Employees' : 'userMaster',
@@ -3087,7 +3209,7 @@ exports.manageEmployees = {
         doubleShiftNotified: true,
         geoHistory: isExemptUser
           ? []
-          : [{ lat, long, address: finalStartAddress, type: 'start', timestamp: now }],
+          : [{ lat, long, address: address || '', type: 'start', timestamp: now }],  // enriched async
         status: 'Present',
         site_name: site_name || current.site_name || 'HQ/Remote',
         siteId: siteId || current.siteId || null,
@@ -3095,6 +3217,27 @@ exports.manageEmployees = {
         rate: nextRate,
       });
       await nextRecord.save();
+
+      // ── Async geocoding: patch new-shift start tick address ──────────────────
+      if (!isExemptUser && lat && long) {
+        const _nextId = nextRecord._id;
+        const _AttendanceRef2 = Attendance;
+        const _LeadsRef2 = Leads;
+        const _rawAddr2 = address || '';
+        setImmediate(async () => {
+          try {
+            const siteName = await resolveSiteNameForCoordinates(lat, long, _LeadsRef2);
+            if (siteName) {
+              const enrichedAddr = formatAddressWithSite(_rawAddr2, siteName);
+              await _AttendanceRef2.updateOne(
+                { _id: _nextId, 'geoHistory.0.address': _rawAddr2 },
+                { $set: { 'geoHistory.0.address': enrichedAddr } }
+              );
+            }
+          } catch (e) { /* non-critical */ }
+        });
+      }
+      // ───────────────────────────────────────────────────────────────────────
 
       // 5. Broadcast double-shift notification to supervisors
       const notification = {
@@ -3295,6 +3438,50 @@ exports.manageEmployees = {
       console.error('   Message:', err.message);
       console.error('   Stack:\n', err.stack);
       res.status(500).json({ success: false, message: err.message, stack: err.stack });
+    }
+  },
+
+  /**
+   * Phase 2c — Roster Suggestion
+   * GET /hr/attendance/roster-suggestion?siteId=&shiftGroup=&shiftCode=&date=
+   * Returns the rotation-based reliever suggestion for a given site + shift.
+   */
+  getRosterSuggestion: async (req, res) => {
+    try {
+      const { Attendance } = req.tenantModels;
+      const { siteId, shiftGroup, shiftCode, date } = req.query;
+
+      if (!siteId || !shiftGroup || !shiftCode) {
+        return res.status(400).json({ success: false, message: 'siteId, shiftGroup, and shiftCode are required' });
+      }
+
+      // Check if a suggestion is already stored on an active attendance record
+      const mongoose = require('mongoose');
+      const storedRecord = await Attendance.findOne({
+        leadId: mongoose.isValidObjectId(siteId) ? new mongoose.Types.ObjectId(siteId) : siteId,
+        shiftGroupName: shiftGroup,
+        shiftCode,
+        suggestedRelieverId: { $exists: true, $ne: null },
+        $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }],
+      }).select('suggestedRelieverId').lean();
+
+      if (storedRecord?.suggestedRelieverId) {
+        return res.json({ success: true, suggestedRelieverId: String(storedRecord.suggestedRelieverId), source: 'cached' });
+      }
+
+      // Live compute as fallback
+      const nextCode = relieverRotation.nextShiftCode(shiftGroup, shiftCode);
+      if (!nextCode) {
+        return res.json({ success: true, suggestedRelieverId: null, message: 'Unknown shift group' });
+      }
+      const suggestedId = await relieverRotation.resolveReliever(
+        { siteId, shiftGroup, targetShiftCode: nextCode, date: date ? new Date(date) : new Date() },
+        { Attendance }
+      );
+
+      res.json({ success: true, suggestedRelieverId: suggestedId, nextShiftCode: nextCode, source: 'live' });
+    } catch (err) {
+      res.status(500).json({ success: false, message: err.message });
     }
   },
 };
