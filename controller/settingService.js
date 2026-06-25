@@ -125,11 +125,15 @@ const updateCorporate = {
         },
 
         locations: Array.isArray(b.locations)
-          ? b.locations.map((loc) => ({
-              _id: loc._id || undefined,
+          ? (() => {
+              console.log('--- INCOMING LOCATIONS ---');
+              console.log(JSON.stringify(b.locations, null, 2));
+              return b.locations;
+            })().map((loc) => ({
+              ...(loc._id ? { _id: new mongoose.Types.ObjectId(loc._id) } : {}),
               locationName: clean(loc.locationName) || 'Head Office',
               locationType: clean(loc.locationType) || 'HO',
-              parentId: loc.parentId || null,
+              ...(loc.parentId ? { parentId: new mongoose.Types.ObjectId(loc.parentId) } : {}),
               isRegisteredOffice: !!loc.isRegisteredOffice,
               address: {
                 line1: clean(loc.address?.line1),
@@ -172,6 +176,9 @@ const updateCorporate = {
         { $set: profileUpdates },
         { upsert: true, new: true }
       ).lean();
+
+      console.log('--- POST MONGOOSE UPDATE LOCATIONS ---');
+      console.log(JSON.stringify(updatedProfile.locations, null, 2));
 
       // 2. Synchronize Display Label in Identity Layer (userMaster)
       const admin = await resolveCorpAdmin(req);
