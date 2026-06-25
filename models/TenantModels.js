@@ -14,10 +14,9 @@ const { staffMonitoringSchema } = require('./StaffMonitoring');
  */
 
 // 1. Profile Master (Local Source of Truth in Tenant DB)
-const profileMasterSchema = new mongoose.Schema(corporateProfileSchema.obj, {
-  timestamps: true,
-  collection: 'profileMaster',
-});
+const profileMasterSchema = corporateProfileSchema.clone();
+profileMasterSchema.set('timestamps', true);
+profileMasterSchema.set('collection', 'profileMaster');
 
 // 2. Product & Category
 const categorySchema = new mongoose.Schema({
