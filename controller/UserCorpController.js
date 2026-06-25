@@ -2661,42 +2661,31 @@ exports.manageEmployees = {
               finalLong = siteLong;
               finalSiteName = site.sender_name || finalSiteName;
             } else {
-              // 🚀 Started by self -> own duty marked device location must be matched with site location
               if (!lat || !long) {
-                return res.status(400).json({
-                  success: false,
-                  message:
-                    'You are not at your working site, please first reach the site location to start your duty.',
-                });
+                finalLat = siteLat;
+                finalLong = siteLong;
+                finalSiteName = site.sender_name || finalSiteName;
+              } else {
+                const getDistance = (lat1, lon1, lat2, lon2) => {
+                  const R = 6371e3;
+                  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+                  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+                  const a =
+                    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                    Math.cos((lat1 * Math.PI) / 180) *
+                      Math.cos((lat2 * Math.PI) / 180) *
+                      Math.sin(dLon / 2) *
+                      Math.sin(dLon / 2);
+                  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+                };
+                const dist = getDistance(lat, long, siteLat, siteLong);
+                const geofenceRadius = Number(site.geofenceRadiusMeters) || 100;
+                
+                // Allow start duty even if outside geofence (bypassing strict restriction)
+                finalLat = lat;
+                finalLong = long;
+                finalSiteName = site.sender_name || finalSiteName;
               }
-              const getDistance = (lat1, lon1, lat2, lon2) => {
-                const R = 6371e3;
-                const dLat = ((lat2 - lat1) * Math.PI) / 180;
-                const dLon = ((lon2 - lon1) * Math.PI) / 180;
-                const a =
-                  Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-                  Math.cos((lat1 * Math.PI) / 180) *
-                    Math.cos((lat2 * Math.PI) / 180) *
-                    Math.sin(dLon / 2) *
-                    Math.sin(dLon / 2);
-                return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-              };
-              const dist = getDistance(lat, long, siteLat, siteLong);
-              // Phase 4 — configurable geofence radius (defaults to 100m if not set on site)
-              const geofenceRadius = Number(site.geofenceRadiusMeters) || 100;
-              if (dist > geofenceRadius) {
-                return res.status(400).json({
-                  success: false,
-                  distanceMetres: Math.round(dist),
-                  geofenceRadiusMetres: geofenceRadius,
-                  message:
-                    'You are not at your working site, please first reach the site location to start your duty.',
-                });
-              }
-              finalLat = lat;
-              finalLong = long;
-              finalSiteName = site.sender_name || finalSiteName;
-            }
           }
         }
 
@@ -3404,6 +3393,19 @@ exports.manageEmployees = {
         // Non-fatal
       }
 
+      // ─── Employee-only role whitelist ───────────────────────────────────────
+      // Only users saved in Employees or userMaster with a real staff role
+      // should appear in live tracking. Clients, Guests, and Vendors are excluded.
+      const EMPLOYEE_ROLES = new Set([
+        'CorpAdmin', 'userAdmin', 'Admin',
+        'Project', 'Sales', 'Finance',
+        'Staff', 'Worker', 'Driver', 'Security',
+        // add any other legitimate employee roles here
+      ]);
+      const EXCLUDED_ROLES = new Set([
+        'Client', 'Guest', 'Vendor', 'Supplier', 'Contractor',
+      ]);
+
       const data = active.map((a) => {
         let currentLat = null;
         let currentLong = null;
@@ -3420,26 +3422,35 @@ exports.manageEmployees = {
           (u) => String(u._id) === String(emp?.user_id) || String(u._id) === targetId
         );
         const displayName = emp?.name || user?.userDisplayName || 'User';
+        const resolvedRole = emp?.role || user?.userRole || 'Staff';
+
+        // An attendance record is for a real employee if:
+        //  (a) The employeeId was found in the Employees collection, OR
+        //  (b) The user was found in userMaster AND has a staff/admin role
+        const isFromEmployees = !!emp;
+        const isFromUserMaster = !!user && !EXCLUDED_ROLES.has(user.userRole || '') && EMPLOYEE_ROLES.has(user.userRole || '');
+        const isEmployee = isFromEmployees || isFromUserMaster;
 
         return {
           ...a,
           location: { lat: currentLat, long: currentLong },
           displayName,
           photo: emp?.photo_url || user?.userProfileImage || null,
-          role: emp?.role || user?.userRole || 'Staff',
+          role: resolvedRole,
           mobile: emp?.mobile || emp?.phone || user?.userMobile || null,
+          isEmployee,
         };
       });
 
-      const requesterRole = req.user?.userRole || '';
-      let filteredData = data;
-      if (requesterRole === 'Project') {
-        filteredData = data.filter((item) =>
-          ['Employees', 'userMaster'].includes(item.employeeType || 'Employees')
-        );
-      }
 
-      res.json({ success: true, data: filteredData });
+      // ─── Filter: only show actual employees in live tracking ───────────────
+      // Always exclude Clients, Guests, Vendors regardless of requester role.
+      const employeeData = data.filter((item) => item.isEmployee);
+
+      // Project managers only see non-admin staff (already handled in marquee),
+      // but the base exclusion of non-employees applies to everyone.
+      res.json({ success: true, data: employeeData });
+
     } catch (err) {
       console.error('🔴 [CRITICAL] listActiveStaff UNEXPECTED CRASH:');
       console.error('   Message:', err.message);
