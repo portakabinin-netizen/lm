@@ -127,9 +127,12 @@ const updateCorporate = {
           address: {
             line1:   clean(loc.address?.line1),
             city:    clean(loc.address?.city),
+            district: clean(loc.address?.district),
             state:   clean(loc.address?.state),
             pincode: clean(loc.address?.pincode),
             country: clean(loc.address?.country) || "India",
+            lat:     loc.address?.lat ? Number(loc.address?.lat) : undefined,
+            long:    loc.address?.long ? Number(loc.address?.long) : undefined,
           },
           gstin:              clean(loc.gstin)?.toUpperCase(),
           bankDetails: {
