@@ -1624,28 +1624,37 @@ exports.manageEmployees = {
       const data = await Attendance.find(q).lean();
 
       const userMaster = require('../models/userMaster');
-      const { Employees } = req.tenantModels;
+      const { Employees, Leads } = req.tenantModels;
 
       const userMasterIds = [];
       const employeeIds = [];
+      const leadIds = [];
       for (const item of data) {
-        if (!item.employeeId) continue;
-        if (item.employeeType === 'userMaster') {
-          userMasterIds.push(item.employeeId);
-        } else {
-          employeeIds.push(item.employeeId);
+        if (item.employeeId) {
+          if (item.employeeType === 'userMaster') {
+            userMasterIds.push(item.employeeId);
+          } else {
+            employeeIds.push(item.employeeId);
+          }
+        }
+        if (item.leadId) {
+          leadIds.push(item.leadId);
         }
       }
 
       const uniqueUserMasterIds = [...new Set(userMasterIds.map((id) => id.toString()))];
       const uniqueEmployeeIds = [...new Set(employeeIds.map((id) => id.toString()))];
+      const uniqueLeadIds = [...new Set(leadIds.map((id) => id.toString()))];
 
-      const [usersList, empsList] = await Promise.all([
+      const [usersList, empsList, leadsList] = await Promise.all([
         uniqueUserMasterIds.length > 0
           ? userMaster.find({ _id: { $in: uniqueUserMasterIds } }).lean()
           : Promise.resolve([]),
         uniqueEmployeeIds.length > 0
           ? Employees.find({ _id: { $in: uniqueEmployeeIds } }).lean()
+          : Promise.resolve([]),
+        uniqueLeadIds.length > 0
+          ? Leads.find({ _id: { $in: uniqueLeadIds } }).lean()
           : Promise.resolve([]),
       ]);
 
@@ -1673,18 +1682,28 @@ exports.manageEmployees = {
         empsMap[emp._id.toString()] = emp;
       }
 
+      const leadsMap = {};
+      for (const lead of leadsList) {
+        leadsMap[lead._id.toString()] = lead;
+      }
+
       for (let item of data) {
         const idStr = item.employeeId?.toString();
-        if (!idStr) continue;
+        if (idStr) {
+          if (item.employeeType === 'userMaster') {
+            if (usersMap[idStr]) {
+              item.employeeId = usersMap[idStr];
+            }
+          } else {
+            if (empsMap[idStr]) {
+              item.employeeId = empsMap[idStr];
+            }
+          }
+        }
 
-        if (item.employeeType === 'userMaster') {
-          if (usersMap[idStr]) {
-            item.employeeId = usersMap[idStr];
-          }
-        } else {
-          if (empsMap[idStr]) {
-            item.employeeId = empsMap[idStr];
-          }
+        const lIdStr = item.leadId?.toString();
+        if (lIdStr && leadsMap[lIdStr]) {
+          item.leadId = leadsMap[lIdStr];
         }
       }
 
@@ -1696,7 +1715,7 @@ exports.manageEmployees = {
   },
   markAttendance: async (req, res) => {
     try {
-      const { Attendance, Employees } = req.tenantModels;
+      const { Attendance, Employees, Leads } = req.tenantModels;
       // Phase 2a: ensure unique index exists for this tenant
       ensureAttendanceIndex(Attendance).catch(() => {});
       const {
@@ -1757,7 +1776,6 @@ exports.manageEmployees = {
       let siteShiftExcess = null;
       const targetLeadIdForShift = leadId;
       if (targetLeadIdForShift && !dutyEnd) {
-        const { Leads } = req.tenantModels;
         const siteDoc = await Leads.findById(targetLeadIdForShift)
           .select('siteShifts sender_name')
           .lean();
@@ -1994,6 +2012,20 @@ exports.manageEmployees = {
       const finalDutyEndScheduled =
         req.body.dutyEndScheduled || new Date(dutyStartMs + finalShiftLockHours * 3600000);
 
+      // Fetch site coordinates if leadId exists
+      let siteLat = undefined;
+      let siteLong = undefined;
+      if (leadId) {
+        const site = await Leads.findById(leadId).lean();
+        if (site && site.location && site.location.lat && site.location.long) {
+          siteLat = Number(site.location.lat);
+          siteLong = Number(site.location.long);
+        }
+      }
+
+      const startLat = req.body.startLat || req.body.lat || (finalGeoHistory && finalGeoHistory.length > 0 ? finalGeoHistory[0].lat : undefined) || siteLat;
+      const startLong = req.body.startLong || req.body.long || (finalGeoHistory && finalGeoHistory.length > 0 ? finalGeoHistory[0].long : undefined) || siteLong;
+
       const record = new Attendance({
         employeeId,
         employeeType: employeeDoc ? 'Employees' : 'userMaster',
@@ -2023,6 +2055,10 @@ exports.manageEmployees = {
         markedByDevice: false,
         markedByUserName:
           req.user?.userDisplayName || req.user?.name || req.user?.mobile || 'Supervisor',
+        startLat,
+        startLong,
+        siteLat,
+        siteLong,
       });
       await record.save();
       res.status(201).json({
@@ -2035,7 +2071,28 @@ exports.manageEmployees = {
       res.status(500).json({ success: false, message: err.message });
     }
   },
-  deleteAttendance: (req, res) => manageSpoke.delete(req, res, 'Attendance'),
+  deleteAttendance: async (req, res) => {
+    try {
+      const { Attendance } = req.tenantModels;
+      if (req.params.id === 'cleanup') {
+        const result = await Attendance.deleteMany({
+          dutyEnd: { $ne: null },
+          hoursWorked: { $lt: 2 }
+        });
+        return res.json({
+          success: true,
+          message: `Cleaned database: deleted ${result.deletedCount} completed attendance records with less than 2 hours worked.`
+        });
+      }
+      const record = await Attendance.findByIdAndDelete(req.params.id);
+      if (!record) {
+        return res.status(404).json({ success: false, message: 'Attendance record not found' });
+      }
+      res.json({ success: true, message: 'Attendance record deleted' });
+    } catch (err) {
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
   updateAttendance: async (req, res) => {
     try {
       const { Attendance } = req.tenantModels;
@@ -2662,9 +2719,10 @@ exports.manageEmployees = {
               finalSiteName = site.sender_name || finalSiteName;
             } else {
               if (!lat || !long) {
-                finalLat = siteLat;
-                finalLong = siteLong;
-                finalSiteName = site.sender_name || finalSiteName;
+                return res.status(400).json({
+                  success: false,
+                  message: "Location services must be enabled to mark your attendance."
+                });
               } else {
                 const getDistance = (lat1, lon1, lat2, lon2) => {
                   const R = 6371e3;
@@ -2681,11 +2739,19 @@ exports.manageEmployees = {
                 const dist = getDistance(lat, long, siteLat, siteLong);
                 const geofenceRadius = Number(site.geofenceRadiusMeters) || 100;
                 
-                // Allow start duty even if outside geofence (bypassing strict restriction)
+                if (dist > geofenceRadius) {
+                  return res.status(400).json({
+                    success: false,
+                    message: "You are not at selected site. Reach your selected site or select site where you are available.",
+                    notAtSite: true
+                  });
+                }
+                
                 finalLat = lat;
                 finalLong = long;
                 finalSiteName = site.sender_name || finalSiteName;
               }
+            }
           }
         }
 
@@ -2723,7 +2789,7 @@ exports.manageEmployees = {
         );
 
         record = new Attendance({
-          employeeId,
+          employeeId: isWorker ? emp._id : queryId,
           employeeType: isWorker ? 'Employees' : 'userMaster',
           startLat,
           startLong,
@@ -2748,10 +2814,10 @@ exports.manageEmployees = {
           site_name: finalSiteName,
           siteId: siteId || null,
           leadId: leadId || null,
-          markedByDevice: String(req.user._id || req.user.userId) === String(queryId),
+          markedByDevice: String(req.user._id || req.user.userId) === String(queryId) || String(req.user._id || req.user.userId) === String(emp?.user_id || emp?._id),
           markedByUserName:
-            String(req.user._id || req.user.userId) === String(queryId)
-              ? ''
+            (String(req.user._id || req.user.userId) === String(queryId) || String(req.user._id || req.user.userId) === String(emp?.user_id || emp?._id))
+              ? req.body.userName || req.user?.userDisplayName || req.user?.name || 'Self'
               : req.user?.userDisplayName || req.user?.name || req.user?.mobile || 'Supervisor',
           isLate: shiftStartTime ? diffMins > 15 : false,
           remarks: shiftStartTime && diffMins > 15 ? 'On Duty-Late Coming' : undefined,
@@ -3397,13 +3463,12 @@ exports.manageEmployees = {
       // Only users saved in Employees or userMaster with a real staff role
       // should appear in live tracking. Clients, Guests, and Vendors are excluded.
       const EMPLOYEE_ROLES = new Set([
-        'CorpAdmin', 'userAdmin', 'Admin',
-        'Project', 'Sales', 'Finance',
-        'Staff', 'Worker', 'Driver', 'Security',
-        // add any other legitimate employee roles here
+        'corpadmin', 'useradmin', 'admin',
+        'project', 'sales', 'finance',
+        'staff', 'worker', 'driver', 'security', 'supervisor', 'employee'
       ]);
       const EXCLUDED_ROLES = new Set([
-        'Client', 'Guest', 'Vendor', 'Supplier', 'Contractor',
+        'client', 'guest', 'vendor', 'supplier', 'contractor',
       ]);
 
       const data = active.map((a) => {
@@ -3428,7 +3493,8 @@ exports.manageEmployees = {
         //  (a) The employeeId was found in the Employees collection, OR
         //  (b) The user was found in userMaster AND has a staff/admin role
         const isFromEmployees = !!emp;
-        const isFromUserMaster = !!user && !EXCLUDED_ROLES.has(user.userRole || '') && EMPLOYEE_ROLES.has(user.userRole || '');
+        const roleLower = resolvedRole.toLowerCase();
+        const isFromUserMaster = !!user && !EXCLUDED_ROLES.has(roleLower) && EMPLOYEE_ROLES.has(roleLower);
         const isEmployee = isFromEmployees || isFromUserMaster;
 
         return {
