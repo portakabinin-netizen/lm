@@ -376,6 +376,7 @@ exports.login = async (req, res) => {
                 dbName: activeLink.dbName,
                 corporateName: activeLink.corporateName || "",
                 corporatePAN: activeLink.corporatePAN || "",
+                userEmail: user.userEmail || "",
                 CorpProfileImage: activeLink.CorpProfileImage || "",
                 locationId: activeLink.locationId || null,
                 userDisplayName: user.userDisplayName,
