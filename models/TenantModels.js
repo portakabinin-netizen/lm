@@ -454,6 +454,17 @@ const counterSchema = new mongoose.Schema({
   seq: { type: Number, default: 0 },
 });
 
+// 10. Site Client Check (Progress Reports)
+const siteClientCheckSchema = new mongoose.Schema(
+  {
+    employeeId: { type: mongoose.Schema.Types.ObjectId, ref: 'Employees', required: true },
+    leadId: { type: mongoose.Schema.Types.ObjectId, ref: 'Leads', required: true },
+    images: [{ type: String }], // Cloudinary full image paths
+    progressDescription: { type: String, trim: true },
+  },
+  { timestamps: true }
+);
+
 /**
  * Factory function to bind models to a tenant connection
  */
@@ -479,6 +490,9 @@ const getTenantModels = (connection) => {
     StaffMonitoring:
       connection.models.StaffMonitoring ||
       connection.model('StaffMonitoring', staffMonitoringSchema),
+    SiteClientCheck:
+      connection.models.SiteClientCheck ||
+      connection.model('SiteClientCheck', siteClientCheckSchema),
   };
 };
 

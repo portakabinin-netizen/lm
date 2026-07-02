@@ -245,6 +245,31 @@ exports.manageLeads = {
     }
   },
 
+  addSiteClientCheck: async (req, res) => {
+    try {
+      const { SiteClientCheck } = req.tenantModels;
+      const { id } = req.params; // leadId
+      const { employeeId, images, progressDescription } = req.body;
+
+      if (!employeeId || !id) {
+        return res.status(400).json({ success: false, message: 'employeeId and leadId (in params) are required' });
+      }
+
+      const check = new SiteClientCheck({
+        employeeId,
+        leadId: id,
+        images: images || [],
+        progressDescription: progressDescription || ''
+      });
+
+      await check.save();
+      res.status(201).json({ success: true, data: check });
+    } catch (err) {
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+
   getAllGallery: async (req, res) => {
     try {
       const { ProfileMaster } = req.tenantModels || {};
