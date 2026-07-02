@@ -535,14 +535,30 @@ exports.manageLeads = {
       const leads = await Leads.find(q).lean();
       const profile = await ProfileMaster.findOne({}).lean();
 
+      res.json({ success: true, data: leads, corporateProfile: profile });
+    } catch (err) {
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  getProjectGallery: async (req, res) => {
+    try {
+      const { Leads, ProfileMaster } = req.tenantModels;
+      
+      const q = {};
+      const accessibleIds = req.user?.accessibleLocationIds;
+      if (req.user?.userRole !== 'CorpAdmin' && accessibleIds?.length > 0) {
+        q.locationId = { $in: accessibleIds };
+      }
+
+      const leads = await Leads.find(q).lean();
+      const profile = await ProfileMaster.findOne({}).lean();
+
       try {
-        // Isolated search using externalService
         const cloudConfig = profile?.apiUrls?.cloudinary || null;
         const searchRes = await externalService.searchLeadsMedia(req.tenantDbName, cloudConfig);
         const mediaMap = {};
         searchRes.resources.forEach((a) => {
-          // Path: hipk/<dbName>/leads/<lead_no>/<filename>
-          // Split gives: ["hipk", "<dbName>", "leads", "<lead_no>", "<filename>"]
           const parts = a.public_id.split('/');
           const leadsIdx = parts.indexOf('leads');
           if (leadsIdx !== -1 && parts[leadsIdx + 1]) {
@@ -551,7 +567,6 @@ exports.manageLeads = {
             mediaMap[leadNo].push(a.secure_url);
           }
         });
-        // Map by both lead_no and _id to capture all images regardless of how they were uploaded
         leads.forEach((l) => {
           l.folderGallery = [
             ...(mediaMap[String(l.lead_no)] || []),
@@ -562,7 +577,16 @@ exports.manageLeads = {
         console.error('Cloudinary Fetch Error:', ce.message);
       }
 
-      res.json({ success: true, data: leads, corporateProfile: profile });
+      // Only return leads that have at least some gallery or activity images
+      const galleryLeads = leads.filter(l => {
+        const hasFolderMedia = l.folderGallery && l.folderGallery.length > 0;
+        const hasActivityMedia = (l.activity || []).some(a => 
+          a.metadata?.media_url || a.metadata?.selfie_url || a.metadata?.site_image || a.metadata?.progress_image
+        );
+        return hasFolderMedia || hasActivityMedia;
+      });
+
+      res.json({ success: true, data: galleryLeads, corporateProfile: profile });
     } catch (err) {
       res.status(500).json({ success: false, message: err.message });
     }

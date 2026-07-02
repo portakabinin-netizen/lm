@@ -37,6 +37,7 @@ router.get("/leads/search",     ctrl.manageLeads.searchByMobile);
 router.get("/leads/analytics",  ctrl.manageLeads.analytics);
 router.get("/leads/all/gallery", ctrl.manageLeads.getAllGallery);
 router.get("/leads/project-active", ctrl.manageLeads.getProjectActive);
+router.get("/leads/project-gallery", ctrl.manageLeads.getProjectGallery);
 router.get("/leads/status/:status", ctrl.manageLeads.getLeadsByStatus);
 router.get("/leads/:id",        ctrl.manageLeads.get);
 router.post("/leads/create",    ctrl.manageLeads.create);
