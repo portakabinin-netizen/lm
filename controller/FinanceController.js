@@ -1151,8 +1151,6 @@ const resolveAndValidateVoucher = async (req, voucherType, entries, leadId, lega
         let entryRequiresLead = false;
         if (voucherType === "Sales" || voucherType === "Purchase") {
             entryRequiresLead = true;
-        } else if (await isEmployeeLedger(entry.ledgerId)) {
-            entryRequiresLead = true;
         } else {
             const ledger = await Ledgers.findById(entry.ledgerId).lean();
             if (ledger) {
