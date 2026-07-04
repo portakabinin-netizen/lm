@@ -2032,49 +2032,32 @@ exports.getLedgerTransactions = async (req, res) => {
  */
 exports.generateVoucherTemplate = async (req, res) => {
     try {
+        const variant = String(req.query.variant || 'all').toLowerCase();
+        const { Leads, Employees, Attendance } = req.tenantModels;
         const workbook = new ExcelJS.Workbook();
-        
+
         // 1. Sales Vouchers Worksheet
         const salesSheet = workbook.addWorksheet('Sales Vouchers');
         salesSheet.columns = [
             { header: 'Date (YYYY-MM-DD)', key: 'date', width: 18 },
             { header: 'Voucher No / Ref', key: 'voucherNo', width: 18 },
             { header: 'Client Ledger Name', key: 'clientLedger', width: 25 },
+            { header: 'Client Ledger _id', key: 'clientId', width: 28 },
             { header: 'Sales Ledger Name', key: 'salesLedger', width: 20 },
             { header: 'Amount', key: 'amount', width: 12 },
             { header: 'Narration', key: 'narration', width: 30 },
-            { header: 'Project / Lead (No, Name or ID)', key: 'projectLead', width: 30 }
+            { header: 'Project / Lead (No, Name or ID)', key: 'projectLead', width: 30 },
+            { header: 'Project / Lead _id', key: 'projectLeadId', width: 28 }
         ];
-        
-        // Style headers for Sales sheet (Blue styling)
+
         salesSheet.getRow(1).eachCell((cell) => {
             cell.font = { name: 'Arial', family: 4, size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
             cell.fill = {
                 type: 'pattern',
                 pattern: 'solid',
-                fgColor: { argb: 'FF1F497D' } // dark blue
+                fgColor: { argb: 'FF1F497D' },
             };
             cell.alignment = { vertical: 'middle', horizontal: 'left' };
-        });
-        
-        // Sample rows
-        salesSheet.addRow({
-            date: '2026-06-01',
-            voucherNo: 'SAL-2026-06-01',
-            clientLedger: 'Acme Corporation',
-            salesLedger: 'Sales',
-            amount: 150000,
-            narration: 'Sales invoice billing for June',
-            projectLead: '1001'
-        });
-        salesSheet.addRow({
-            date: '2026-06-02',
-            voucherNo: 'SAL-2026-06-02',
-            clientLedger: 'Beta Technologies',
-            salesLedger: 'Sales',
-            amount: 75000,
-            narration: 'Consulting services for project Beta',
-            projectLead: 'Beta Project'
         });
 
         // 2. Salary Payable Vouchers Worksheet
@@ -2084,40 +2067,21 @@ exports.generateVoucherTemplate = async (req, res) => {
             { header: 'Voucher No / Ref', key: 'voucherNo', width: 18 },
             { header: 'Salary Expense Ledger Name', key: 'expenseLedger', width: 28 },
             { header: 'Employee Ledger Name', key: 'employeeLedger', width: 25 },
+            { header: 'Employee Ledger _id', key: 'employeeId', width: 28 },
             { header: 'Amount', key: 'amount', width: 12 },
             { header: 'Narration', key: 'narration', width: 30 },
-            { header: 'Project / Lead (No, Name or ID)', key: 'projectLead', width: 30 }
+            { header: 'Project / Lead (No, Name or ID)', key: 'projectLead', width: 30 },
+            { header: 'Project / Lead _id', key: 'projectLeadId', width: 28 }
         ];
 
-        // Style headers for Salary sheet (Green styling)
         salarySheet.getRow(1).eachCell((cell) => {
             cell.font = { name: 'Arial', family: 4, size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
             cell.fill = {
                 type: 'pattern',
                 pattern: 'solid',
-                fgColor: { argb: 'FF375623' } // dark green
+                fgColor: { argb: 'FF375623' },
             };
             cell.alignment = { vertical: 'middle', horizontal: 'left' };
-        });
-
-        // Sample rows
-        salarySheet.addRow({
-            date: '2026-06-14',
-            voucherNo: 'SALARY-2026-06',
-            expenseLedger: 'Salary Expenses',
-            employeeLedger: 'John Doe',
-            amount: 25000,
-            narration: 'Salary payable for June 2026',
-            projectLead: '1001'
-        });
-        salarySheet.addRow({
-            date: '2026-06-14',
-            voucherNo: 'SALARY-2026-06',
-            expenseLedger: 'Salary Expenses',
-            employeeLedger: 'Jane Smith',
-            amount: 28000,
-            narration: 'Salary payable for June 2026',
-            projectLead: '1002'
         });
 
         // 3. Uniform & Equipment Issues Worksheet
@@ -2126,103 +2090,235 @@ exports.generateVoucherTemplate = async (req, res) => {
             { header: 'Date (YYYY-MM-DD)', key: 'date', width: 18 },
             { header: 'Voucher No / Ref', key: 'voucherNo', width: 18 },
             { header: 'Employee Ledger Name', key: 'employeeLedger', width: 25 },
+            { header: 'Employee Ledger _id', key: 'employeeId', width: 28 },
             { header: 'Amount', key: 'amount', width: 12 },
             { header: 'Narration', key: 'narration', width: 30 },
-            { header: 'Project / Lead (No, Name or ID)', key: 'projectLead', width: 30 }
+            { header: 'Project / Lead (No, Name or ID)', key: 'projectLead', width: 30 },
+            { header: 'Project / Lead _id', key: 'projectLeadId', width: 28 }
         ];
 
-        // Style headers for Uniform sheet (Purple styling)
         uniformSheet.getRow(1).eachCell((cell) => {
             cell.font = { name: 'Arial', family: 4, size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
             cell.fill = {
                 type: 'pattern',
                 pattern: 'solid',
-                fgColor: { argb: 'FF7030A0' } // purple
+                fgColor: { argb: 'FF7030A0' },
             };
             cell.alignment = { vertical: 'middle', horizontal: 'left' };
         });
 
-        // Sample rows
+        const attendanceRecords = Attendance
+            ? await Attendance.find({ dutyEnd: { $ne: null } }).sort({ dutyStart: -1 }).limit(40).lean()
+            : [];
+
+        const employeeIds = [...new Set(attendanceRecords.map((a) => String(a.employeeId)).filter(Boolean))];
+        const leadIds = [...new Set(attendanceRecords.map((a) => String(a.leadId)).filter(Boolean))];
+
+        const employeeMap = {};
+        if (Employees && employeeIds.length > 0) {
+            const employees = await Employees.find({ _id: { $in: employeeIds } }).select('_id enrollment_no name').lean();
+            employees.forEach((emp) => {
+                employeeMap[String(emp._id)] = emp;
+            });
+        }
+
+        const leadMap = {};
+        if (Leads && leadIds.length > 0) {
+            const leads = await Leads.find({ _id: { $in: leadIds } }).select('_id lead_no sender_name').lean();
+            leads.forEach((lead) => {
+                leadMap[String(lead._id)] = lead;
+            });
+        }
+
+        const addSalesSamplesFromAttendance = () => {
+            const leadLookup = attendanceRecords
+                .map((a) => String(a.leadId))
+                .filter(Boolean)
+                .reduce((acc, id) => {
+                    acc[id] = acc[id] ? acc[id] + 1 : 1;
+                    return acc;
+                }, {} as Record<string, number>);
+
+            const sortedLeadIds = Object.keys(leadLookup).sort((a, b) => leadLookup[b] - leadLookup[a]).slice(0, 4);
+            if (sortedLeadIds.length > 0) {
+                sortedLeadIds.forEach((leadId, idx) => {
+                    const lead = leadMap[leadId];
+                    const record = attendanceRecords.find((a) => String(a.leadId) === leadId);
+                    salesSheet.addRow({
+                        date: record?.date ? formatDateToDDMMYYYY(new Date(record.date)) : '2026-06-14',
+                        voucherNo: `SAL-${lead?.lead_no || '0000'}-${idx + 1}`,
+                        clientLedger: lead?.sender_name || record?.site_name || 'Unknown Client',
+                        clientId: leadId,
+                        salesLedger: 'Sales',
+                        amount: record?.dailyEarn || 1200,
+                        narration: `Sales voucher for work at ${lead?.sender_name || record?.site_name}`,
+                        projectLead: lead?.sender_name || record?.site_name || 'Unknown Site',
+                        projectLeadId: leadId,
+                    });
+                });
+                return;
+            }
+
+            salesSheet.addRow({
+                date: '2026-06-01',
+                voucherNo: 'SAL-2026-06-01',
+                clientLedger: 'Acme Corporation',
+                clientId: '',
+                salesLedger: 'Sales',
+                amount: 150000,
+                narration: 'Sales invoice billing for June',
+                projectLead: '1001',
+                projectLeadId: '',
+            });
+        };
+
+        const addSalarySamplesFromAttendance = () => {
+            const empLookup = attendanceRecords
+                .map((a) => String(a.employeeId))
+                .filter(Boolean)
+                .reduce((acc, id) => {
+                    acc[id] = acc[id] ? acc[id] + 1 : 1;
+                    return acc;
+                }, {} as Record<string, number>);
+
+            const sortedEmpIds = Object.keys(empLookup).sort((a, b) => empLookup[b] - empLookup[a]).slice(0, 4);
+            if (sortedEmpIds.length > 0) {
+                sortedEmpIds.forEach((employeeId, idx) => {
+                    const employee = employeeMap[employeeId];
+                    const record = attendanceRecords.find((a) => String(a.employeeId) === employeeId);
+                    const lead = record?.leadId ? leadMap[String(record.leadId)] : null;
+                    salarySheet.addRow({
+                        date: record?.date ? formatDateToDDMMYYYY(new Date(record.date)) : '2026-06-14',
+                        voucherNo: `SALARY-${record?._id?.toString().slice(-6) || '000000'}-${idx + 1}`,
+                        expenseLedger: 'Salary Expenses',
+                        employeeLedger: employee?.name || record?.employeeName || 'Unknown Employee',
+                        employeeId: employeeId,
+                        amount: record?.dailyEarn || 25000,
+                        narration: `Salary payable for duties at ${lead?.sender_name || record?.site_name}`,
+                        projectLead: lead?.sender_name || record?.site_name || 'Unknown Site',
+                        projectLeadId: record?.leadId ? String(record.leadId) : '',
+                    });
+                });
+                return;
+            }
+
+            salarySheet.addRow({
+                date: '2026-06-14',
+                voucherNo: 'SALARY-2026-06',
+                expenseLedger: 'Salary Expenses',
+                employeeLedger: 'John Doe',
+                employeeId: '',
+                amount: 25000,
+                narration: 'Salary payable for June 2026',
+                projectLead: '1001',
+                projectLeadId: '',
+            });
+        };
+
+        if (variant === 'sales' || variant === 'all') {
+            addSalesSamplesFromAttendance();
+        } else {
+            salesSheet.addRow({
+                date: '2026-06-01',
+                voucherNo: 'SAL-2026-06-01',
+                clientLedger: 'Acme Corporation',
+                clientId: '',
+                salesLedger: 'Sales',
+                amount: 150000,
+                narration: 'Sales invoice billing for June',
+                projectLead: '1001',
+                projectLeadId: '',
+            });
+        }
+
+        if (variant === 'salary' || variant === 'all') {
+            addSalarySamplesFromAttendance();
+        } else {
+            salarySheet.addRow({
+                date: '2026-06-14',
+                voucherNo: 'SALARY-2026-06',
+                expenseLedger: 'Salary Expenses',
+                employeeLedger: 'John Doe',
+                employeeId: '',
+                amount: 25000,
+                narration: 'Salary payable for June 2026',
+                projectLead: '1001',
+                projectLeadId: '',
+            });
+        }
+
         uniformSheet.addRow({
             date: '2026-06-15',
             voucherNo: 'UNI-2026-06-01',
             employeeLedger: 'John Doe',
+            employeeId: '',
             amount: 1200,
             narration: 'Safety boots and safety vest issued',
-            projectLead: '1001'
+            projectLead: '1001',
+            projectLeadId: '',
         });
         uniformSheet.addRow({
             date: '2026-06-15',
             voucherNo: 'UNI-2026-06-02',
             employeeLedger: 'Jane Smith',
+            employeeId: '',
             amount: 800,
             narration: 'Uniform shirt issued (2 pairs)',
-            projectLead: '1002'
+            projectLead: '1002',
+            projectLeadId: '',
         });
 
-        // 4. Employee Reference Worksheet
         const empSheet = workbook.addWorksheet('Employee Reference');
         empSheet.columns = [
             { header: '_objectId', key: '_id', width: 25 },
             { header: 'Enrollment Form Number', key: 'enrollment_no', width: 25 },
             { header: 'Employee Name', key: 'name', width: 30 }
         ];
-        
         empSheet.getRow(1).eachCell((cell) => {
             cell.font = { name: 'Arial', family: 4, size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
             cell.fill = {
                 type: 'pattern',
                 pattern: 'solid',
-                fgColor: { argb: 'FF595959' } // gray
+                fgColor: { argb: 'FF595959' },
             };
             cell.alignment = { vertical: 'middle', horizontal: 'left' };
         });
-
-        // Query employees
-        const { Employees, Leads } = req.tenantModels;
         if (Employees) {
             const employees = await Employees.find({ active: true }).select('_id enrollment_no name').lean();
-            employees.forEach(emp => {
+            employees.forEach((emp) => {
                 empSheet.addRow({
                     _id: emp._id.toString(),
                     enrollment_no: emp.enrollment_no || '',
-                    name: emp.name || ''
+                    name: emp.name || '',
                 });
             });
         }
 
-        // 5. Client Reference Worksheet
         const clientSheet = workbook.addWorksheet('Client Reference');
         clientSheet.columns = [
             { header: '_objectId', key: '_id', width: 25 },
             { header: 'Lead No', key: 'lead_no', width: 20 },
             { header: 'Client Name', key: 'name', width: 30 }
         ];
-
         clientSheet.getRow(1).eachCell((cell) => {
             cell.font = { name: 'Arial', family: 4, size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
             cell.fill = {
                 type: 'pattern',
                 pattern: 'solid',
-                fgColor: { argb: 'FF595959' } // gray
+                fgColor: { argb: 'FF595959' },
             };
             cell.alignment = { vertical: 'middle', horizontal: 'left' };
         });
-
-        // Query clients (leads)
         if (Leads) {
             const leads = await Leads.find({}).select('_id lead_no sender_name').lean();
-            leads.forEach(lead => {
+            leads.forEach((lead) => {
                 clientSheet.addRow({
                     _id: lead._id.toString(),
                     lead_no: lead.lead_no || '',
-                    name: lead.sender_name || ''
+                    name: lead.sender_name || '',
                 });
             });
         }
-
-        // Removed local disk writeFile because it blocks and causes concurrent write issues
-        // We only need to write to the response stream
 
         res.setHeader(
             'Content-Type',
@@ -2245,6 +2341,7 @@ exports.bulkImportVouchers = async (req, res) => {
             return res.status(400).json({ success: false, message: "No file uploaded" });
         }
 
+        const previewOnly = String(req.query.preview || 'false').toLowerCase() === 'true';
         const { Leads, Employees, Ledgers, Groups, Vouchers, Counters, Parties } = req.tenantModels;
         const workbook = new ExcelJS.Workbook();
         await workbook.xlsx.load(req.file.buffer);
