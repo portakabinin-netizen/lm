@@ -241,6 +241,7 @@ const attendanceSchema = new mongoose.Schema(
     // ── Device & Marked By ──
     markedByDevice: { type: Boolean, default: true }, // true if user marked themselves
     markedByUserName: { type: String, trim: true }, // name of supervisor if markedByDevice is false
+    isPaid: { type: Boolean, default: false },
 
     // ── Duty Toggle Fields ──
     dutyStartScheduled: { type: Date },

@@ -79,6 +79,7 @@ router.post("/hr/attendance/continue-shift",         ctrl.manageEmployees.contin
 router.post("/hr/broadcast",                         ctrl.manageEmployees.sendBroadcast);
 
 router.post("/hr/attendance",    ctrl.manageEmployees.markAttendance);
+router.post("/hr/attendance/mark-paid", ctrl.manageEmployees.markPaid);
 router.put("/hr/attendance/:id", ctrl.manageEmployees.updateAttendance);
 router.delete("/hr/attendance/:id", ctrl.manageEmployees.deleteAttendance);
 router.get("/hr/rate-lookup",   ctrl.manageEmployees.getRateLookup);

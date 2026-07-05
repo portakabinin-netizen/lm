@@ -1017,6 +1017,26 @@ exports.manageProducts = {
  * 👷 EMPLOYEES & STAFF (Identity Reverted to Standalone Users)
  */
 exports.manageEmployees = {
+  markPaid: async (req, res) => {
+    try {
+      const { logIds } = req.body;
+      const { Attendance } = req.tenantModels;
+      
+      if (!Array.isArray(logIds) || logIds.length === 0) {
+        return res.status(400).json({ success: false, message: 'Invalid or missing logIds.' });
+      }
+
+      await Attendance.updateMany(
+        { _id: { $in: logIds } },
+        { $set: { isPaid: true } }
+      );
+
+      res.status(200).json({ success: true, message: 'Attendance records marked as paid.' });
+    } catch (error) {
+      console.error('Error marking attendance as paid:', error);
+      res.status(500).json({ success: false, message: 'Server error marking as paid.' });
+    }
+  },
   list: async (req, res) => {
     try {
       const { Employees } = req.tenantModels;
