@@ -280,6 +280,7 @@ exports.ensureLedgerFolioInternal = async (tenantModels, options) => {
         ledger = new Ledgers({
             ledgerName: finalName,
             ledgerGroupId: groupDoc._id,
+            groupName: groupDoc.groupName,
             refId: refId || null,
             refType: refType || "Manual",
             openingBalance: openingBalance || 0,
@@ -784,6 +785,7 @@ exports.manageLedgers = {
                 }
                 // Set ledgerGroupId for update
                 req.body.ledgerGroupId = groupDoc._id;
+                req.body.groupName = groupDoc.groupName;
             }
 
             await Ledgers.findByIdAndUpdate(req.params.id, req.body, { new: true });

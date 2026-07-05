@@ -289,6 +289,7 @@ const groupSchema = new mongoose.Schema(
 const ledgerSchema = new mongoose.Schema(
   {
     ledgerName: { type: String, required: true, trim: true },
+    groupName: { type: String, trim: true },
     ledgerGroupId: { type: mongoose.Schema.Types.ObjectId, ref: 'Groups', required: true },
 
     // Balances
