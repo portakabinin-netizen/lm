@@ -772,15 +772,16 @@ exports.manageLedgers = {
             }
 
             // Handle group change if provided (accept name or id)
-            if (req.body.group) {
+            const providedGroup = req.body.group || req.body.groupName;
+            if (providedGroup) {
                 const { Groups } = req.tenantModels;
                 // Try to find existing group by name (case-insensitive)
-                let groupDoc = await Groups.findOne({ groupName: { $regex: new RegExp(`^${req.body.group}$`, "i") } });
+                let groupDoc = await Groups.findOne({ groupName: { $regex: new RegExp(`^${providedGroup}$`, "i") } });
                 if (!groupDoc) {
                     // Determine nature based on ledger's existing nature
                     const ledgerNature = oldLedger.openingBalanceType || (oldLedger.currentBalance < 0 ? "Cr" : "Dr");
                     const resolvedGroupNature = ledgerNature === "Cr" ? "Liability" : "Asset";
-                    groupDoc = new Groups({ groupName: req.body.group, parentGroup: null, nature: resolvedGroupNature });
+                    groupDoc = new Groups({ groupName: providedGroup, parentGroup: null, nature: resolvedGroupNature });
                     await groupDoc.save();
                 }
                 // Set ledgerGroupId for update
