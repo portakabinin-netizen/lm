@@ -2140,7 +2140,7 @@ exports.generateVoucherTemplate = async (req, res) => {
                 .reduce((acc, id) => {
                     acc[id] = acc[id] ? acc[id] + 1 : 1;
                     return acc;
-                }, {} as Record<string, number>);
+                }, {});
 
             const sortedLeadIds = Object.keys(leadLookup).sort((a, b) => leadLookup[b] - leadLookup[a]).slice(0, 4);
             if (sortedLeadIds.length > 0) {
@@ -2182,7 +2182,7 @@ exports.generateVoucherTemplate = async (req, res) => {
                 .reduce((acc, id) => {
                     acc[id] = acc[id] ? acc[id] + 1 : 1;
                     return acc;
-                }, {} as Record<string, number>);
+                }, {});
 
             const sortedEmpIds = Object.keys(empLookup).sort((a, b) => empLookup[b] - empLookup[a]).slice(0, 4);
             if (sortedEmpIds.length > 0) {
