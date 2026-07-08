@@ -1172,7 +1172,7 @@ const resolveAndValidateVoucher = async (req, voucherType, entries, leadId, lega
         }
 
         const effectiveLeadId = entry.leadId || leadId;
-        if (entryRequiresLead) {
+        if (entryRequiresLead && voucherType !== "Journal") {
             if (!effectiveLeadId || !mongoose.Types.ObjectId.isValid(effectiveLeadId)) {
                 return { error: `Project/Enquiry linkage (leadId) is required for Sales, Purchase, Salary, and Expense entry (${entry.ledgerName}).` };
             }
@@ -3174,3 +3174,92 @@ exports.bulkImportSalaryByEnrollment = async (req, res) => {
         res.status(500).json({ success: false, message: err.message });
     }
 };
+
+exports.saveTempVoucher = async (req, res) => {
+    try {
+        const fs = require("fs");
+        const path = require("path");
+        const { voucherType, date, narration, entries, leadId, legacyMetadata } = req.body;
+        
+        const payload = {
+            voucherType: voucherType || "Journal",
+            date: date || new Date(),
+            narration: narration || "",
+            entries: entries || [],
+            leadId,
+            legacyMetadata
+        };
+        
+        const tempFilePath = path.join(__dirname, "../temp_vch.json");
+        fs.writeFileSync(tempFilePath, JSON.stringify(payload, null, 2), "utf8");
+        
+        res.status(200).json({ success: true, message: "Voucher saved to temp_vch.json successfully!" });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+};
+
+exports.postFromTempVoucher = async (req, res) => {
+    try {
+        const fs = require("fs");
+        const path = require("path");
+        const { Vouchers, Counters } = req.tenantModels;
+        
+        const tempFilePath = path.join(__dirname, "../temp_vch.json");
+        if (!fs.existsSync(tempFilePath)) {
+            return res.status(400).json({ success: false, message: "temp_vch.json file not found. Save it first." });
+        }
+        
+        const fileData = fs.readFileSync(tempFilePath, "utf8");
+        const payload = JSON.parse(fileData);
+        
+        const { voucherType, date, narration, entries, leadId, legacyMetadata } = payload;
+        
+        // Validate using the helper
+        const validation = await resolveAndValidateVoucher(req, voucherType || "Journal", entries, leadId, legacyMetadata);
+        if (validation.error) {
+            return res.status(400).json({ success: false, message: validation.error });
+        }
+        
+        const resolvedEntries = validation.resolvedEntries;
+        
+        const type = voucherType || "Journal";
+        const locationId = req.query.locationId || req.body.locationId;
+        let resolvedLocId = locationId;
+        if (!resolvedLocId || !mongoose.Types.ObjectId.isValid(resolvedLocId)) {
+            const profile = await req.tenantModels.ProfileMaster.findOne({}).lean();
+            resolvedLocId = profile?.locations?.[0]?._id || req.user?.accessibleLocationIds?.[0];
+        }
+        if (!resolvedLocId) {
+            resolvedLocId = new mongoose.Types.ObjectId();
+        }
+        
+        const counterId = `voucher_${type}_${resolvedLocId}`;
+        const counter = await Counters.findByIdAndUpdate(counterId, { $inc: { seq: 1 } }, { upsert: true, new: true });
+        
+        const voucherNo = `${type.substring(0, 3).toUpperCase()}-${resolvedLocId.toString().slice(-4)}-${counter.seq}`;
+        
+        const newVoucher = new Vouchers({
+            locationId: resolvedLocId,
+            voucherType: type,
+            voucherNo,
+            date: date ? new Date(date) : new Date(),
+            narration: narration || `Voucher posted from temp file`,
+            entries: resolvedEntries,
+            leadId,
+            legacyMetadata
+        });
+        
+        await newVoucher.save();
+        
+        await exports.recalculateLedgerBalances(req.tenantModels, resolvedEntries.map(e => e.ledgerId));
+        
+        // Remove temp file
+        fs.unlinkSync(tempFilePath);
+        
+        res.status(201).json({ success: true, message: "Voucher posted from temp_vch.json successfully!", data: newVoucher });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+};
+

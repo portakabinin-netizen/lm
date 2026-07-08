@@ -49,6 +49,8 @@ router.get("/vouchers/salary-enrollment-template", ctrl.generateSalaryDuesByEnro
 router.post("/vouchers/salary-enrollment-upload", upload.single("file"), ctrl.bulkImportSalaryByEnrollment);
 router.get("/vouchers",          ctrl.manageVouchers.list);
 router.get("/vouchers/ledger/:ledgerId", ctrl.manageVouchers.getByLedger);
+router.post("/vouchers/temp-save", ctrl.saveTempVoucher);
+router.post("/vouchers/temp-post", ctrl.postFromTempVoucher);
 router.post("/vouchers",         ctrl.manageVouchers.create);
 router.put("/vouchers/:id",      ctrl.manageVouchers.update);
 router.delete("/vouchers/:id",   ctrl.manageVouchers.delete);

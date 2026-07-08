@@ -78,6 +78,7 @@ router.post("/hr/attendance/emergency-end-employee", ctrl.manageEmployees.emerge
 router.post("/hr/attendance/continue-shift",         ctrl.manageEmployees.continueShift);         // double shift continuation
 router.post("/hr/broadcast",                         ctrl.manageEmployees.sendBroadcast);
 
+router.post("/hr/attendance/lock-worker", ctrl.manageEmployees.lockWorkerAttendance);
 router.post("/hr/attendance",    ctrl.manageEmployees.markAttendance);
 router.post("/hr/attendance/mark-paid", ctrl.manageEmployees.markPaid);
 router.put("/hr/attendance/:id", ctrl.manageEmployees.updateAttendance);

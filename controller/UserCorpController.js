@@ -2153,10 +2153,18 @@ exports.manageEmployees = {
           message: `Cleaned database: deleted ${result.deletedCount} completed attendance records with less than 2 hours worked.`
         });
       }
-      const record = await Attendance.findByIdAndDelete(req.params.id);
+      const record = await Attendance.findById(req.params.id);
       if (!record) {
         return res.status(404).json({ success: false, message: 'Attendance record not found' });
       }
+      const isRequesterAdmin = ['CorpAdmin', 'userAdmin'].includes(req.user?.userRole);
+      if (record.isLocked && !isRequesterAdmin) {
+        return res.status(403).json({
+          success: false,
+          message: 'This attendance record is locked and secure. Deletion is disabled.'
+        });
+      }
+      await Attendance.findByIdAndDelete(req.params.id);
       res.json({ success: true, message: 'Attendance record deleted' });
     } catch (err) {
       res.status(500).json({ success: false, message: err.message });
@@ -2169,6 +2177,25 @@ exports.manageEmployees = {
       if (!record) {
         console.log('🔴 [updateAttendance] Record not found:', req.params.id);
         return res.status(404).json({ success: false, message: 'Attendance record not found' });
+      }
+
+      // Lock security checks
+      const isRequesterAdmin = ['CorpAdmin', 'userAdmin'].includes(req.user?.userRole);
+      if (record.isLocked) {
+        if (!isRequesterAdmin) {
+          return res.status(403).json({
+            success: false,
+            message: 'This attendance record is locked and secure. Editing is disabled.'
+          });
+        }
+      }
+      if (record.isLocked && req.body.isLocked === false) {
+        if (!isRequesterAdmin) {
+          return res.status(403).json({
+            success: false,
+            message: 'Only Admin users can unlock attendance records.'
+          });
+        }
       }
 
       // Exemption check: Admins and workers are exempt.
@@ -2192,6 +2219,7 @@ exports.manageEmployees = {
         'dutyEnd',
         'dailyRate',
         'dailyEarn',
+        'isLocked',
       ];
       const update = {};
       allowed.forEach((k) => {
@@ -2279,6 +2307,36 @@ exports.manageEmployees = {
       res.json({ success: true, data: record });
     } catch (err) {
       console.error('🔴 [updateAttendance] Error:', err.message);
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+  lockWorkerAttendance: async (req, res) => {
+    try {
+      const { Attendance } = req.tenantModels;
+      const { employeeId, siteId, year, month, isLocked } = req.body;
+
+      const start = new Date(year, month, 1, 0, 0, 0);
+      const end = new Date(year, month + 1, 0, 23, 59, 59);
+
+      const query = {
+        employeeId,
+        date: { $gte: start, $lte: end },
+      };
+      if (siteId && siteId !== 'hq_remote') {
+        const mongoose = require('mongoose');
+        const sId = mongoose.Types.ObjectId.isValid(siteId) ? new mongoose.Types.ObjectId(siteId) : siteId;
+        query.$or = [{ siteId: String(siteId) }, { leadId: sId }];
+      }
+
+      // If trying to unlock, only Admin can do it
+      const isRequesterAdmin = ['CorpAdmin', 'userAdmin'].includes(req.user?.userRole);
+      if (isLocked === false && !isRequesterAdmin) {
+        return res.status(403).json({ success: false, message: 'Only Admin users can unlock attendance records.' });
+      }
+
+      await Attendance.updateMany(query, { $set: { isLocked } });
+      res.json({ success: true, message: `Attendance ${isLocked ? 'locked' : 'unlocked'} successfully` });
+    } catch (err) {
       res.status(500).json({ success: false, message: err.message });
     }
   },
