@@ -51,9 +51,49 @@ const cleanupBroadcastMedia = async (Messages) => {
     }
 };
 
+exports.createGroup = async (req, res) => {
+    try {
+        const { name, members } = req.body;
+        const { ChatGroups } = req.tenantModels;
+        
+        if (!ChatGroups) {
+            return res.status(400).json({ success: false, message: "Tenant models not initialized" });
+        }
+
+        const group = new ChatGroups({
+            name,
+            members,
+            createdBy: req.user.userId
+        });
+
+        await group.save();
+        return res.status(201).json({ success: true, data: group });
+    } catch (err) {
+        console.error("🔴 createGroup Error:", err.message);
+        return res.status(500).json({ success: false, message: err.message });
+    }
+};
+
+exports.getGroups = async (req, res) => {
+    try {
+        const { ChatGroups } = req.tenantModels;
+        
+        if (!ChatGroups) {
+            return res.status(400).json({ success: false, message: "Tenant models not initialized" });
+        }
+
+        // Only fetch groups the current user is a member of
+        const groups = await ChatGroups.find({ members: req.user.userId }).sort({ createdAt: -1 });
+        return res.status(200).json({ success: true, data: groups });
+    } catch (err) {
+        console.error("🔴 getGroups Error:", err.message);
+        return res.status(500).json({ success: false, message: err.message });
+    }
+};
+
 exports.sendMessage = async (req, res) => {
     try {
-        const { senderName, senderId, text, type, mediaUrl, mediaType, public_id, isOneToOne, receiverId } = req.body;
+        const { senderName, senderId, text, type, mediaUrl, mediaType, public_id, isOneToOne, isGroup, groupId, location, contact, receiverId } = req.body;
         const { Messages } = req.tenantModels;
         
         if (!Messages) {
@@ -69,6 +109,10 @@ exports.sendMessage = async (req, res) => {
             mediaUrl,
             mediaType,
             isOneToOne,
+            isGroup,
+            groupId,
+            location,
+            contact,
             receiverId
         };
 
@@ -124,10 +168,12 @@ exports.getMessages = async (req, res) => {
         // Lazy cleanup for broadcast media (older than 10 days)
         cleanupBroadcastMedia(Messages);
 
-        const { isOneToOne, receiverId, senderId } = req.query;
+        const { isOneToOne, isGroup, groupId, receiverId, senderId } = req.query;
         
         let query = {};
-        if (isOneToOne === 'true') {
+        if (isGroup === 'true') {
+            query = { isGroup: true, groupId: groupId };
+        } else if (isOneToOne === 'true') {
             query = {
                 isOneToOne: true,
                 $or: [
@@ -136,15 +182,27 @@ exports.getMessages = async (req, res) => {
                 ]
             };
         } else if (isOneToOne === 'false') {
-            query = { isOneToOne: { $ne: true } }; // Public chat
+            query = { isOneToOne: { $ne: true }, isGroup: { $ne: true } }; // Public chat
         } else {
-            // Default: Fetch all public messages + private messages involving the current user
+            // Default: Fetch all public messages + private messages involving the current user + groups the user is in
             const currentUserId = req.user.userId;
+            
+            // To properly fetch group messages in default, we'd need to know user's groups, 
+            // but usually getMessages is called per room or gets all relevant.
+            // Let's assume if no specific filter is passed, we fetch everything relevant
+            const { ChatGroups } = req.tenantModels;
+            let userGroupIds = [];
+            if (ChatGroups) {
+                const userGroups = await ChatGroups.find({ members: currentUserId }).select('_id');
+                userGroupIds = userGroups.map(g => g._id.toString());
+            }
+
             query = {
                 $or: [
-                    { isOneToOne: { $ne: true } }, // Public chat
+                    { isOneToOne: { $ne: true }, isGroup: { $ne: true } }, // Public broadcast chat
                     { senderId: currentUserId },    // Sent by me
-                    { receiverId: currentUserId }   // Received by me
+                    { receiverId: currentUserId },  // Received by me
+                    { isGroup: true, groupId: { $in: userGroupIds } } // Group messages for my groups
                 ]
             };
         }

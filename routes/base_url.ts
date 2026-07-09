@@ -31,7 +31,7 @@ const webHost =
     ? window.location.hostname
     : "";
 const fallbackHost = Platform.OS === "android" ? "10.0.2.2" : "localhost";
-const resolvedHost = configuredApiHost || webHost || fallbackHost || expoHost;
+const resolvedHost = configuredApiHost || webHost || expoHost || fallbackHost;
 
 const api_url = configuredApiUrl
   ? normalizeApiUrl(configuredApiUrl)

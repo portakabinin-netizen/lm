@@ -107,6 +107,8 @@ router.delete("/staff/:id",      ctrl.manageStaff.delete);
 router.post("/chat/send", chatCtrl.sendMessage);
 router.get("/chat/messages", chatCtrl.getMessages);
 router.put("/chat/seen", chatCtrl.markAsSeen);
+router.post("/chat/groups", chatCtrl.createGroup);
+router.get("/chat/groups", chatCtrl.getGroups);
 
 // --- 🏢 CORPORATE PROFILE ---
 router.get("/profile",           ctrl.manageProfile.get);

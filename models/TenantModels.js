@@ -432,7 +432,13 @@ const taxInvoiceSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// 9. Messages (Chat)
+// 9. Messages & Groups (Chat)
+const chatGroupSchema = new mongoose.Schema({
+  name: { type: String, required: true, trim: true },
+  members: [{ type: String, required: true }], // Array of user IDs
+  createdBy: { type: String, required: true },
+}, { timestamps: true });
+
 const messageSchema = new mongoose.Schema(
   {
     senderName: { type: String, required: true },
@@ -446,7 +452,19 @@ const messageSchema = new mongoose.Schema(
     mediaPath: { type: String }, // Path on device or server
     isCloudDeleted: { type: Boolean, default: false }, // Flag for cloud removal
     isOneToOne: { type: Boolean, default: false },
+    isGroup: { type: Boolean, default: false }, // Explicit group flag
+    groupId: { type: String }, // Link to ChatGroups
     receiverId: { type: String }, // If one-to-one
+    location: {
+      lat: { type: Number },
+      long: { type: Number },
+      address: { type: String }
+    },
+    contact: {
+      name: { type: String },
+      mobile: { type: String },
+      role: { type: String }
+    }
   },
   { timestamps: true }
 );
@@ -490,6 +508,7 @@ const getTenantModels = (connection) => {
     TaxInvoices: connection.models.TaxInvoices || connection.model('TaxInvoices', taxInvoiceSchema),
     Counters: connection.models.Counters || connection.model('Counters', counterSchema),
     Messages: connection.models.Messages || connection.model('Messages', messageSchema),
+    ChatGroups: connection.models.ChatGroups || connection.model('ChatGroups', chatGroupSchema),
     StaffMonitoring:
       connection.models.StaffMonitoring ||
       connection.model('StaffMonitoring', staffMonitoringSchema),
