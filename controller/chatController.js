@@ -221,11 +221,26 @@ exports.markAsSeen = async (req, res) => {
         if (!Messages) return res.status(400).json({ success: false, message: "Tenant models not initialized" });
 
         const { messageIds } = req.body;
+        const userId = req.user.userId;
         
-        await Messages.updateMany(
-            { _id: { $in: messageIds } },
-            { $set: { status: 'seen' } }
-        );
+        // Find messages to see what type they are
+        const messages = await Messages.find({ _id: { $in: messageIds } });
+        const oneToOneIds = messages.filter(m => m.isOneToOne).map(m => m._id);
+        const groupIds = messages.filter(m => !m.isOneToOne).map(m => m._id);
+
+        if (oneToOneIds.length > 0) {
+            await Messages.updateMany(
+                { _id: { $in: oneToOneIds } },
+                { $set: { status: 'seen' } }
+            );
+        }
+
+        if (groupIds.length > 0) {
+            await Messages.updateMany(
+                { _id: { $in: groupIds } },
+                { $addToSet: { seenBy: userId } }
+            );
+        }
 
         // Emit to socket room so sender knows messages were seen
         if (req.io && req.user && req.user.dbName) {
@@ -235,6 +250,27 @@ exports.markAsSeen = async (req, res) => {
         return res.json({ success: true, message: "Messages marked as seen" });
     } catch (err) {
         console.error("🔴 markAsSeen Error:", err.message);
+        return res.status(500).json({ success: false, message: err.message });
+    }
+};
+
+exports.getUnreadCount = async (req, res) => {
+    try {
+        const { Messages } = req.tenantModels;
+        if (!Messages) return res.status(400).json({ success: false, message: 'Tenant models not initialized' });
+
+        const userId = req.user.userId;
+
+        const count = await Messages.countDocuments({
+            $or: [
+                { isOneToOne: true, receiverId: userId, status: 'unseen' },
+                { isOneToOne: false, senderId: { $ne: userId }, seenBy: { $ne: userId } }
+            ]
+        });
+
+        return res.json({ success: true, count });
+    } catch (err) {
+        console.error('getUnreadCount Error:', err.message);
         return res.status(500).json({ success: false, message: err.message });
     }
 };

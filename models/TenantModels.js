@@ -455,6 +455,7 @@ const messageSchema = new mongoose.Schema(
     isGroup: { type: Boolean, default: false }, // Explicit group flag
     groupId: { type: String }, // Link to ChatGroups
     receiverId: { type: String }, // If one-to-one
+    seenBy: [{ type: String }], // Array of userIds who have seen this message
     location: {
       lat: { type: Number },
       long: { type: Number },

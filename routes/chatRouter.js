@@ -13,5 +13,6 @@ router.use(tenant); // Resolve tenant connection for chat routes
 router.post("/send", ctrl.sendMessage);
 router.get("/messages", ctrl.getMessages);
 router.put("/seen", ctrl.markAsSeen);
+router.get("/unread-count", ctrl.getUnreadCount);
 
 module.exports = router;

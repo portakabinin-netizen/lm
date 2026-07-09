@@ -138,6 +138,88 @@ const SHIFT_PERIOD_MAP = {
   Night12: 'Night12',
 };
 
+// ── Geo-coordinate matching helpers ──────────────────────────────────────
+function haversineMetres(lat1, lon1, lat2, lon2) {
+  if (!lat1 || !lon1 || !lat2 || !lon2) return Infinity;
+  const R = 6371e3;
+  const p1 = (lat1 * Math.PI) / 180;
+  const p2 = (lat2 * Math.PI) / 180;
+  const dp = ((lat2 - lat1) * Math.PI) / 180;
+  const dl = ((lon2 - lon1) * Math.PI) / 180;
+
+  const a =
+    Math.sin(dp / 2) * Math.sin(dp / 2) +
+    Math.cos(p1) * Math.cos(p2) * Math.sin(dl / 2) * Math.sin(dl / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+  return R * c;
+}
+
+async function resolveGeoName(req, lat, long, maxDistanceMeters = 50) {
+  if (!lat || !long) return null;
+  
+  let closestName = null;
+  let minDistance = maxDistanceMeters;
+
+  // 1. Check Leads (Sites)
+  if (req.tenantModels && req.tenantModels.Leads) {
+    const leads = await req.tenantModels.Leads.find({
+      'location.lat': { $exists: true },
+      'location.long': { $exists: true }
+    }).lean();
+    
+    for (const lead of leads) {
+      if (lead.location?.lat && lead.location?.long) {
+        const dist = haversineMetres(lat, long, lead.location.lat, lead.location.long);
+        if (dist <= minDistance) {
+          minDistance = dist;
+          closestName = lead.site_name || lead.sender_name || 'Site';
+        }
+      }
+    }
+  }
+
+  // 2. Check Clients
+  if (req.tenantModels && req.tenantModels.Parties) {
+    const clients = await req.tenantModels.Parties.find({
+      type: 'Client',
+      'billingAddress.lat': { $exists: true },
+      'billingAddress.long': { $exists: true }
+    }).lean();
+    
+    for (const client of clients) {
+      if (client.billingAddress?.lat && client.billingAddress?.long) {
+        const dist = haversineMetres(lat, long, client.billingAddress.lat, client.billingAddress.long);
+        if (dist <= minDistance) {
+          minDistance = dist;
+          closestName = client.name;
+        }
+      }
+    }
+  }
+
+  // 3. Check Corporate Branches (HO, RO, BO)
+  try {
+    const CorpDataMaster = require('../models/CorpDataMaster');
+    const corpData = await CorpDataMaster.findOne({ dbName: req.tenantDbName || req.dbName }).lean();
+    if (corpData && corpData.locations && Array.isArray(corpData.locations)) {
+      for (const loc of corpData.locations) {
+        if (loc.address?.lat && loc.address?.long) {
+          const dist = haversineMetres(lat, long, loc.address.lat, loc.address.long);
+          if (dist <= minDistance) {
+            minDistance = dist;
+            closestName = loc.locationName || loc.locationType;
+          }
+        }
+      }
+    }
+  } catch(e) {
+    console.warn('[resolveGeoName] Could not query CorpDataMaster:', e.message);
+  }
+  
+  return closestName;
+}
+
 /**
  * 🛠️ Internal Helper: Dynamic Spoke Resolver (for Hub Data)
  */
@@ -2063,7 +2145,8 @@ exports.manageEmployees = {
       // Exemption check for geoHistory: admins and workers are exempt.
       const isAdminRole = ['corpadmin', 'useradmin', 'admin'].includes(role.toLowerCase());
       const isEmployeeCollection = !!employeeDoc;
-      const isExemptUser = isAdminRole || isEmployeeCollection;
+      // We do not exempt anyone from geoHistory if tracking is required, but keeping original logic for others:
+      const isExemptUser = false; // Always track geoHistory
       const finalGeoHistory = isExemptUser ? [] : geoHistory || [];
 
       // Merge site-shift override on top of defaults (site always wins when available)
@@ -2094,6 +2177,25 @@ exports.manageEmployees = {
 
       const startLat = req.body.startLat || req.body.lat || (finalGeoHistory && finalGeoHistory.length > 0 ? finalGeoHistory[0].lat : undefined) || siteLat;
       const startLong = req.body.startLong || req.body.long || (finalGeoHistory && finalGeoHistory.length > 0 ? finalGeoHistory[0].long : undefined) || siteLong;
+
+      // Ensure address is resolved if geoHistory is created from frontend without one
+      if (finalGeoHistory && finalGeoHistory.length > 0 && startLat && startLong) {
+        const resolvedName = await resolveGeoName(req, startLat, startLong, 50);
+        if (resolvedName) {
+          finalGeoHistory[0].address = resolvedName;
+        }
+        finalGeoHistory[0].type = 'start'; // Explicitly mark it as a start tick
+      } else if (isExemptUser === false && startLat && startLong && finalGeoHistory.length === 0) {
+        // If frontend didn't send initial geoHistory but we have coordinates
+        const resolvedName = await resolveGeoName(req, startLat, startLong, 50);
+        finalGeoHistory.push({
+          lat: startLat,
+          long: startLong,
+          address: resolvedName || '',
+          type: 'start',
+          timestamp: new Date()
+        });
+      }
 
       const record = new Attendance({
         employeeId,
@@ -2202,7 +2304,7 @@ exports.manageEmployees = {
       const recordRole = (record.role || '').toLowerCase();
       const isAdminRole = ['corpadmin', 'useradmin', 'admin'].includes(recordRole);
       const isWorker = record.employeeType === 'Employees';
-      const isExemptUser = isAdminRole || isWorker;
+      const isExemptUser = false; // Always allow geo tracking
 
       const allowed = [
         'forcedOff',
@@ -2275,6 +2377,23 @@ exports.manageEmployees = {
         for (const key in req.body.$push) {
           if (Array.isArray(record[key])) {
             const pushData = req.body.$push[key];
+
+            // Intercept geoHistory to resolve names synchronously
+            if (key === 'geoHistory') {
+              if (pushData && pushData.$each && Array.isArray(pushData.$each)) {
+                for (let i = 0; i < pushData.$each.length; i++) {
+                  const tick = pushData.$each[i];
+                  if (tick.lat && tick.long) {
+                    const resolvedName = await resolveGeoName(req, tick.lat, tick.long, 50);
+                    if (resolvedName) tick.address = resolvedName;
+                  }
+                }
+              } else if (pushData && pushData.lat && pushData.long) {
+                const resolvedName = await resolveGeoName(req, pushData.lat, pushData.long, 50);
+                if (resolvedName) pushData.address = resolvedName;
+              }
+            }
+
             if (pushData && pushData.$each && Array.isArray(pushData.$each)) {
               record[key].push(...pushData.$each);
               if (key === 'geoHistory') emittedGeoUpdate = pushData.$each;
@@ -2494,7 +2613,7 @@ exports.manageEmployees = {
         ''
       ).toLowerCase();
       const isAdminRole = ['corpadmin', 'useradmin', 'admin'].includes(checkRole);
-      const isExemptUser = isAdminRole || isWorker;
+      const isExemptUser = false; // Everyone can have geoHistory
 
       if (type === 'ON' && emp && isWorker && !emp.shiftGroupName) {
         // Find employee document to update
@@ -2592,7 +2711,7 @@ exports.manageEmployees = {
         const toggleLeadId = leadId || siteId;
 
         let shiftStartTime = null;
-        let lockHrs = 8;
+        let lockHrs = shiftLockHours || 8;
         let finalShiftCode = shiftCode || 'G';
 
         const { Leads } = req.tenantModels;
@@ -2688,7 +2807,7 @@ exports.manageEmployees = {
           emp.userRole ||
           (linkedUser && (linkedUser.role || linkedUser.userRole)) ||
           '';
-        if (['CorpAdmin', 'userAdmin'].includes(linkedRole)) {
+        if (['CorpAdmin', 'userAdmin', 'Project', 'project'].includes(linkedRole)) {
           isSpecialAction = true;
         }
 
@@ -2700,7 +2819,7 @@ exports.manageEmployees = {
           shiftStartTime = startTime;
         }
 
-        if (shiftStartTime && !isSpecialAction) {
+        if (shiftStartTime) {
           const [h, m] = shiftStartTime.split(':').map(Number);
 
           // Asia/Kolkata is always UTC+05:30 (offset of 5.5 hours = 19,800,000 ms)
@@ -2738,51 +2857,53 @@ exports.manageEmployees = {
 
           const displayName = emp.name || emp.userDisplayName || 'User';
 
-          if (diffMins < -15) {
-            return res.status(403).json({
-              success: false,
-              tooEarly: true,
-              message: `Too early to start duty. Shift starts at ${shiftStartTime}. Attendance can only be marked starting 15 minutes before shift start.`,
-            });
-          }
-
-          if (diffMins > 60) {
-            if (req.body.requestPermission) {
-              const { Messages } = req.tenantModels;
-              if (Messages) {
-                const msg = new Messages({
-                  senderName: displayName,
-                  senderId: queryId,
-                  text: `⚠️ Request to start late duty from ${displayName}. Shift started at ${shiftStartTime}.`,
-                  type: 'text',
-                  isOneToOne: false,
-                  status: 'unseen',
-                });
-                await msg.save();
-                req.io.to(req.tenantDbName).emit('newMessage', msg);
-              }
-
-              req.io.to(req.tenantDbName).emit('admin:broadcast', {
-                id: new mongoose.Types.ObjectId().toString(),
-                title: '⚠️ Late Start Request',
-                message: `Employee ${displayName} requested to start duty late. Shift started at ${shiftStartTime}.`,
-                priority: 'normal',
-                targetRoles: ['CorpAdmin'],
-                sentBy: displayName,
-                sentByRole: 'Employee',
-                at: now.toISOString(),
-              });
-
-              return res.json({
-                success: true,
-                message: `Request to start duty late has been sent to Admin via chatroom.`,
+          if (!isSpecialAction) {
+            if (diffMins < -15) {
+              return res.status(403).json({
+                success: false,
+                tooEarly: true,
+                message: `Too early to start duty. Shift starts at ${shiftStartTime}. Attendance can only be marked starting 15 minutes before shift start.`,
               });
             }
-            return res.status(403).json({
-              success: false,
-              tooLate: true,
-              message: `Too late to start duty. Shift started at ${shiftStartTime}. Please request permission from Admin.`,
-            });
+
+            if (diffMins > 60) {
+              if (req.body.requestPermission) {
+                const { Messages } = req.tenantModels;
+                if (Messages) {
+                  const msg = new Messages({
+                    senderName: displayName,
+                    senderId: queryId,
+                    text: `⚠️ Request to start late duty from ${displayName}. Shift started at ${shiftStartTime}.`,
+                    type: 'text',
+                    isOneToOne: false,
+                    status: 'unseen',
+                  });
+                  await msg.save();
+                  req.io.to(req.tenantDbName).emit('newMessage', msg);
+                }
+
+                req.io.to(req.tenantDbName).emit('admin:broadcast', {
+                  id: new mongoose.Types.ObjectId().toString(),
+                  title: '⚠️ Late Start Request',
+                  message: `Employee ${displayName} requested to start duty late. Shift started at ${shiftStartTime}.`,
+                  priority: 'normal',
+                  targetRoles: ['CorpAdmin'],
+                  sentBy: displayName,
+                  sentByRole: 'Employee',
+                  at: now.toISOString(),
+                });
+
+                return res.json({
+                  success: true,
+                  message: `Request to start duty late has been sent to Admin via chatroom.`,
+                });
+              }
+              return res.status(403).json({
+                success: false,
+                tooLate: true,
+                message: `Too late to start duty. Shift started at ${shiftStartTime}. Please request permission from Admin.`,
+              });
+            }
           }
         }
 
@@ -2830,6 +2951,8 @@ exports.manageEmployees = {
         let startLong = long || null;
 
         const targetLeadId = leadId || siteId;
+        let matchedSiteNameForGeo = 'tick'; // default if no match
+
         if (targetLeadId && Leads) {
           const site = await Leads.findById(targetLeadId).lean();
           if (site && site.location && site.location.lat && site.location.long) {
@@ -2844,6 +2967,7 @@ exports.manageEmployees = {
               finalLat = siteLat;
               finalLong = siteLong;
               finalSiteName = site.sender_name || finalSiteName;
+              matchedSiteNameForGeo = 'start';
             } else {
               if (!lat || !long) {
                 return res.status(400).json({
@@ -2851,33 +2975,35 @@ exports.manageEmployees = {
                   message: "Location services must be enabled to mark your attendance."
                 });
               } else {
-                const getDistance = (lat1, lon1, lat2, lon2) => {
-                  const R = 6371e3;
-                  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-                  const dLon = ((lon2 - lon1) * Math.PI) / 180;
-                  const a =
-                    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-                    Math.cos((lat1 * Math.PI) / 180) *
-                      Math.cos((lat2 * Math.PI) / 180) *
-                      Math.sin(dLon / 2) *
-                      Math.sin(dLon / 2);
-                  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-                };
-                const dist = getDistance(lat, long, siteLat, siteLong);
-                const geofenceRadius = Number(site.geofenceRadiusMeters) || 100;
-                
-                if (dist > geofenceRadius) {
-                  return res.status(400).json({
-                    success: false,
-                    message: "You are not at selected site. Reach your selected site or select site where you are available.",
-                    notAtSite: true
-                  });
-                }
-                
                 finalLat = lat;
                 finalLong = long;
                 finalSiteName = site.sender_name || finalSiteName;
               }
+            }
+          }
+        }
+
+        // Match against all sites/clients to determine geoHistory type (Radius Threshold 50m)
+        if (lat && long && Leads && matchedSiteNameForGeo === 'tick') {
+          const allLeads = await Leads.find({ 'location.lat': { $exists: true, $ne: null }, 'location.long': { $exists: true, $ne: null } }).lean();
+          const getDistance = (lat1, lon1, lat2, lon2) => {
+            const R = 6371e3;
+            const dLat = ((lat2 - lat1) * Math.PI) / 180;
+            const dLon = ((lon2 - lon1) * Math.PI) / 180;
+            const a =
+              Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+              Math.cos((lat1 * Math.PI) / 180) *
+                Math.cos((lat2 * Math.PI) / 180) *
+                Math.sin(dLon / 2) *
+                Math.sin(dLon / 2);
+            return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+          };
+
+          for (const s of allLeads) {
+            const dist = getDistance(lat, long, s.location.lat, s.location.long);
+            if (dist <= 50) {
+              matchedSiteNameForGeo = s.sender_name || s.product_name || 'start';
+              break;
             }
           }
         }
@@ -2889,7 +3015,7 @@ exports.manageEmployees = {
                 lat: finalLat,
                 long: finalLong,
                 address: address || '',  // filled async below
-                type: 'start',
+                type: matchedSiteNameForGeo,
                 timestamp: now,
               },
             ];
@@ -2952,14 +3078,13 @@ exports.manageEmployees = {
         await record.save();
 
         // ── Async geocoding: patch geoHistory[0].address after response ─────
-        if (!isExemptUser && finalLat && finalLong) {
+        if (finalLat && finalLong) {
           const _recId = record._id;
           const _Attendance = Attendance;
-          const _Leads = Leads;
           const _rawAddr = address || '';
           setImmediate(async () => {
             try {
-              const siteName = await resolveSiteNameForCoordinates(finalLat, finalLong, _Leads);
+              const siteName = await resolveGeoName(req, finalLat, finalLong, 50);
               if (siteName) {
                 const enrichedAddr = formatAddressWithSite(_rawAddr, siteName);
                 await _Attendance.updateOne(
@@ -3100,15 +3225,14 @@ exports.manageEmployees = {
         await record.save();
 
         // ── Async geocoding: patch end tick address after response ──────────
-        if (!isExemptUser && lat && long) {
+        if (lat && long) {
           const _recId = record._id;
           const _Attendance = Attendance;
-          const _Leads = req.tenantModels.Leads;
           const _endIdx = record.geoHistory.length - 1;
           const _rawAddr = address || '';
           setImmediate(async () => {
             try {
-              const siteName = await resolveSiteNameForCoordinates(lat, long, _Leads);
+              const siteName = await resolveGeoName(req, lat, long, 50);
               if (siteName) {
                 const enrichedAddr = formatAddressWithSite(_rawAddr, siteName);
                 await _Attendance.updateOne(
@@ -3311,7 +3435,7 @@ exports.manageEmployees = {
         ''
       ).toLowerCase();
       const isAdminRole = ['corpadmin', 'useradmin', 'admin'].includes(checkRole);
-      const isExemptUser = isAdminRole || isWorker;
+      const isExemptUser = false; // Everyone can have geo tracking
 
       // 2. Close current shift
       current.dutyEnd = now;
@@ -3323,15 +3447,14 @@ exports.manageEmployees = {
       await current.save();
 
       // ── Async geocoding: patch shift-end tick address ─────────────────────
-      if (!isExemptUser && lat && long) {
+      if (lat && long) {
         const _curId = current._id;
         const _AttendanceRef = Attendance;
-        const _LeadsRef = Leads;
         const _endIdx = current.geoHistory.length - 1;
         const _rawAddr = address || '';
         setImmediate(async () => {
           try {
-            const siteName = await resolveSiteNameForCoordinates(lat, long, _LeadsRef);
+            const siteName = await resolveGeoName(req, lat, long, 50);
             if (siteName) {
               const enrichedAddr = formatAddressWithSite(_rawAddr, siteName);
               await _AttendanceRef.updateOne(
@@ -3408,14 +3531,13 @@ exports.manageEmployees = {
       await nextRecord.save();
 
       // ── Async geocoding: patch new-shift start tick address ──────────────────
-      if (!isExemptUser && lat && long) {
+      if (lat && long) {
         const _nextId = nextRecord._id;
         const _AttendanceRef2 = Attendance;
-        const _LeadsRef2 = Leads;
         const _rawAddr2 = address || '';
         setImmediate(async () => {
           try {
-            const siteName = await resolveSiteNameForCoordinates(lat, long, _LeadsRef2);
+            const siteName = await resolveGeoName(req, lat, long, 50);
             if (siteName) {
               const enrichedAddr = formatAddressWithSite(_rawAddr2, siteName);
               await _AttendanceRef2.updateOne(
