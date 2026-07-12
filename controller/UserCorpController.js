@@ -1263,6 +1263,7 @@ exports.manageEmployees = {
           role: userDoc.userRole || userDoc.role || 'project',
           employeeType: 'userMaster',
           user_id: userDoc._id,
+          employee_id: employeeDoc?._id,
           userActive: userDoc.userActive,
           active: employeeDoc?.active !== undefined ? employeeDoc.active : userDoc.userActive,
           photo_url: userDoc.userProfileImage || userDoc.photo_url,
@@ -1744,7 +1745,39 @@ exports.manageEmployees = {
       let q = {};
 
       if (employeeId) {
-        q.employeeId = employeeId;
+        const mongoose = require('mongoose');
+        const queryId = mongoose.isValidObjectId(employeeId)
+          ? new mongoose.Types.ObjectId(employeeId)
+          : employeeId;
+
+        const userMaster = require('../models/userMaster');
+        const { Employees } = req.tenantModels;
+        
+        let userDoc = await userMaster.findById(queryId).lean();
+        let employeeDoc = await Employees.findById(queryId).lean();
+
+        let matchIds = [employeeId, queryId];
+
+        if (userDoc && !employeeDoc) {
+          employeeDoc = await Employees.findOne({
+            $or: [
+              { user_id: userDoc._id },
+              { mobile: userDoc.mobile || userDoc.userMobile || userDoc.username },
+              { email: userDoc.email },
+            ].filter((q) => q.user_id || q.mobile || q.email),
+          }).lean();
+        }
+
+        if (employeeDoc) {
+          matchIds.push(employeeDoc._id.toString());
+          matchIds.push(employeeDoc._id);
+          if (employeeDoc.user_id) {
+            matchIds.push(employeeDoc.user_id.toString());
+            matchIds.push(employeeDoc.user_id);
+          }
+        }
+        
+        q.employeeId = { $in: matchIds };
       }
 
       if (from_date || to_date) {
@@ -1763,11 +1796,11 @@ exports.manageEmployees = {
           if (q.employeeId) {
             q = {
               employeeId: q.employeeId,
-              $or: [{ date: dateFilter }, { dutyEnd: { $exists: false } }, { dutyEnd: null }],
+              $or: [{ date: dateFilter }, { dutyStart: dateFilter }, { dutyEnd: { $exists: false } }, { dutyEnd: null }],
             };
           } else {
             q = {
-              $or: [{ date: dateFilter }, { dutyEnd: { $exists: false } }, { dutyEnd: null }],
+              $or: [{ date: dateFilter }, { dutyStart: dateFilter }, { dutyEnd: { $exists: false } }, { dutyEnd: null }],
             };
           }
         }
