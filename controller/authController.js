@@ -526,7 +526,9 @@ exports.unregisteredLogin = async (req, res) => {
             accessAllow: true,
             isGuest: true,
             ownMobile: cleanMobile,
-            referenceMobile: cleanRef
+            referenceMobile: cleanRef,
+            actualRole: userData.actualRole || "",
+            enrollment_no: userData.enrollment_no || ""
         }, process.env.JWT_SECRET, { expiresIn: "90d" });
 
 

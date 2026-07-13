@@ -907,10 +907,16 @@ exports.getContactLedger = async (req, res) => {
 
 exports.getEmployeeLedgerById = async (req, res) => {
     try {
-        const { Vouchers, Ledgers } = req.tenantModels;
+        const { Vouchers, Ledgers, Employees } = req.tenantModels;
         const employeeId = req.params.id;
 
-        let ledgerDoc = await Ledgers.findOne({ refId: employeeId }).lean();
+        let employeeDoc = await Employees.findOne({
+            $or: [{ _id: employeeId }, { user_id: employeeId }]
+        }).lean();
+
+        let targetRefId = employeeDoc ? employeeDoc._id : employeeId;
+
+        let ledgerDoc = await Ledgers.findOne({ refId: targetRefId }).lean();
         let vouchers = [];
 
         if (ledgerDoc) {
