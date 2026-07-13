@@ -437,15 +437,21 @@ exports.unregisteredLogin = async (req, res) => {
             const models = getTenantModels(tenantConnection);
 
             // 1. Search Staff (Try finding even if inactive first for debugging)
-            const staff = await models.Employees.findOne({ mobile: mobileRegex }).lean();
+            const digits = cleanMobile.replace(/\D/g, '');
+            const ten = digits.length >= 10 ? digits.slice(-10) : digits;
+            const staff = await models.Employees.findOne({
+                $or: [
+                    { mobile: { $regex: new RegExp(ten + '$', 'i') } },
+                    { mobile: cleanMobile },
+                    { mobile: mobileRegex }
+                ]
+            }).lean();
             if (staff) {
-                if (staff.active === true) {
-                    role = "Staff";
-                    userData = { name: staff.name, _id: staff._id, photo_url: staff.photo_url };
-                    finalDbName = dbName;
-                    matchedCorp = corp;
-                    break;
-                }
+                role = "Staff";
+                userData = { name: staff.name, _id: staff._id, photo_url: staff.photo_url };
+                finalDbName = dbName;
+                matchedCorp = corp;
+                break;
             }
 
             // 2. Search Vendor
@@ -483,6 +489,26 @@ exports.unregisteredLogin = async (req, res) => {
             // Default to first corp if not found anywhere (Legacy behavior)
             finalDbName = refUser.accessCorporate[0].dbName;
             matchedCorp = refUser.accessCorporate[0];
+        }
+
+        // 🚀 Resolve employee ID and "Staff" role if they exist in the assigned database
+        if (finalDbName) {
+            const tenantConnection = await dbConnector.getTenantConnection(finalDbName);
+            const models = getTenantModels(tenantConnection);
+            const digits = cleanMobile.replace(/\D/g, '');
+            if (digits.length >= 10) {
+                const ten = digits.slice(-10);
+                const staff = await models.Employees.findOne({
+                    $or: [
+                        { mobile: { $regex: new RegExp(ten + '$', 'i') } },
+                        { mobile: cleanMobile }
+                    ]
+                }).lean();
+                if (staff) {
+                    role = "Staff";
+                    userData = { name: staff.name, _id: staff._id, photo_url: staff.photo_url };
+                }
+            }
         }
 
         // Generate a Authorized Token with the resolved role
