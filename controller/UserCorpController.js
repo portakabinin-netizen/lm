@@ -1774,11 +1774,23 @@ exports.manageEmployees = {
           }
 
           if (orConditions.length > 0) {
-            employeeDoc = await Employees.findOne({ $or: orConditions }).lean();
+            const matchingEmps = await Employees.find({ $or: orConditions }).lean();
+            if (matchingEmps.length > 0) {
+              employeeDoc = matchingEmps[0];
+              for (const emp of matchingEmps) {
+                matchIds.push(emp._id.toString());
+                matchIds.push(emp._id);
+                if (emp.user_id) {
+                  matchIds.push(emp.user_id.toString());
+                  matchIds.push(emp.user_id);
+                }
+              }
+            }
           }
         }
 
         if (employeeDoc) {
+          // In case it was found initially, add it (duplicates in matchIds are fine)
           matchIds.push(employeeDoc._id.toString());
           matchIds.push(employeeDoc._id);
           if (employeeDoc.user_id) {
