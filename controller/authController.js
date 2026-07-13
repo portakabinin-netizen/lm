@@ -506,7 +506,13 @@ exports.unregisteredLogin = async (req, res) => {
                 }).lean();
                 if (staff) {
                     role = "Staff";
-                    userData = { name: staff.name, _id: staff._id, photo_url: staff.photo_url };
+                    userData = { 
+                        name: staff.name, 
+                        _id: staff._id, 
+                        photo_url: staff.photo_url,
+                        actualRole: staff.role,
+                        enrollment_no: staff.enrollment_no
+                    };
                 }
             }
         }
@@ -538,6 +544,8 @@ exports.unregisteredLogin = async (req, res) => {
                 CorpProfileImage: matchedCorp.CorpProfileImage || "",
                 userProfileImage: userData.photo_url || "",
                 referenceMobile: cleanRef, // 🚀 Added for "Call Supervisor" feature
+                actualRole: userData.actualRole || "",
+                enrollment_no: userData.enrollment_no || "",
                 isGuest: true,
                 accessAllow: true
             }

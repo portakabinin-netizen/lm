@@ -905,6 +905,43 @@ exports.getContactLedger = async (req, res) => {
     }
 };
 
+exports.getEmployeeLedgerById = async (req, res) => {
+    try {
+        const { Vouchers, Ledgers } = req.tenantModels;
+        const employeeId = req.params.id;
+
+        let ledgerDoc = await Ledgers.findOne({ refId: employeeId }).lean();
+        let vouchers = [];
+
+        if (ledgerDoc) {
+            vouchers = await Vouchers.find({ "entries.ledgerId": ledgerDoc._id }).sort({ date: 1 }).lean();
+        }
+
+        let balance = 0;
+        const ledger = vouchers.map(v => {
+            const entry = v.entries?.find(e => String(e.ledgerId) === String(ledgerDoc?._id)) || {};
+            const amt = entry.debit || entry.credit || v.legacyMetadata?.amount || 0;
+            const type = entry.debit > 0 ? "Dr" : (entry.credit > 0 ? "Cr" : (v.legacyMetadata?.direction === "PAYMENT" ? "Dr" : "Cr"));
+            
+            if (type === "Dr") balance += amt;
+            else balance -= amt;
+
+            return {
+                _id: v._id,
+                voucherDate: v.date,
+                paymentType: type,
+                amt: amt,
+                voucherNarration: v.narration || v.legacyMetadata?.description || "Transaction"
+            };
+        });
+
+        res.json({ success: true, data: { balance, ledger } });
+    } catch (err) {
+        console.error("🔴 getEmployeeLedgerById Error:", err.message);
+        res.status(500).json({ success: false, message: err.message });
+    }
+};
+
 // Dummy exports for unused endpoints
 exports.getTransactionsByLead = async (req, res) => res.json({ success: true, data: [] });
 exports.getTransaction = async (req, res) => res.json({ success: true, data: {} });

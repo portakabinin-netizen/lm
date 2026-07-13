@@ -11,5 +11,6 @@ router.use(tenant);
 router.get("/picker",               ctrl.getStaffPicker);
 router.post("/contact/add",         ctrl.addContact);
 router.get("/contact/ledger/:mobile", ctrl.getContactLedger);
+router.get("/contact/ledger-by-id/:id", ctrl.getEmployeeLedgerById);
 
 module.exports = router;
