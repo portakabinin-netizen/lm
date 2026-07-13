@@ -1816,13 +1816,34 @@ exports.manageEmployees = {
         if (Object.keys(dateFilter).length > 0) {
           // Include either the date range OR anything that is still "On Duty"
           if (q.employeeId) {
+            const currentQ = { ...q };
+            delete currentQ.employeeId;
+            
             q = {
-              employeeId: q.employeeId,
-              $or: [{ date: dateFilter }, { dutyStart: dateFilter }, { dutyEnd: { $exists: false } }, { dutyEnd: null }],
+              ...currentQ,
+              $and: [
+                { employeeId: q.employeeId },
+                {
+                  $or: [
+                    { date: dateFilter },
+                    { dutyStart: dateFilter },
+                    { dutyEnd: { $exists: false } },
+                    { dutyEnd: null },
+                    { dutyEnd: '' }
+                  ]
+                }
+              ]
             };
           } else {
             q = {
-              $or: [{ date: dateFilter }, { dutyStart: dateFilter }, { dutyEnd: { $exists: false } }, { dutyEnd: null }],
+              ...q,
+              $or: [
+                { date: dateFilter },
+                { dutyStart: dateFilter },
+                { dutyEnd: { $exists: false } },
+                { dutyEnd: null },
+                { dutyEnd: '' }
+              ]
             };
           }
         }
@@ -2570,13 +2591,17 @@ exports.manageEmployees = {
       if (userDoc) emp = { ...emp, ...userDoc };
 
       const linkedIds = [queryId];
-      if (emp?.user_id) linkedIds.push(new mongoose.Types.ObjectId(emp.user_id));
-      if (emp?._id && String(emp._id) !== String(queryId)) linkedIds.push(emp._id);
+      if (emp?.user_id && mongoose.isValidObjectId(emp.user_id)) {
+        linkedIds.push(new mongoose.Types.ObjectId(emp.user_id));
+      }
+      if (emp?._id && String(emp._id) !== String(queryId)) {
+        linkedIds.push(emp._id);
+      }
 
       // Find an open session (dutyEnd not exists or null) using any linked IDs
       const active = await Attendance.findOne({
         employeeId: { $in: linkedIds },
-        $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }],
+        $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }, { dutyEnd: '' }],
       })
         .sort({ dutyStart: -1 })
         .lean();
