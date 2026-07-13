@@ -1759,13 +1759,23 @@ exports.manageEmployees = {
         let matchIds = [employeeId, queryId];
 
         if (userDoc && !employeeDoc) {
-          employeeDoc = await Employees.findOne({
-            $or: [
-              { user_id: userDoc._id },
-              { mobile: userDoc.mobile || userDoc.userMobile || userDoc.username },
-              { email: userDoc.email },
-            ].filter((q) => q.user_id || q.mobile || q.email),
-          }).lean();
+          const userMobile = userDoc.mobile || userDoc.userMobile || userDoc.username || '';
+          const digits = String(userMobile).replace(/\D/g, '');
+          const orConditions = [];
+          
+          if (userDoc._id) orConditions.push({ user_id: userDoc._id });
+          if (userDoc.email) orConditions.push({ email: userDoc.email });
+          
+          if (digits.length >= 10) {
+            const ten = digits.slice(-10);
+            orConditions.push({ mobile: { $regex: new RegExp(ten + '$', 'i') } });
+          } else if (userMobile) {
+            orConditions.push({ mobile: userMobile });
+          }
+
+          if (orConditions.length > 0) {
+            employeeDoc = await Employees.findOne({ $or: orConditions }).lean();
+          }
         }
 
         if (employeeDoc) {
