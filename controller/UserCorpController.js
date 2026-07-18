@@ -1757,6 +1757,8 @@ exports.manageEmployees = {
     try {
       const { Attendance } = req.tenantModels;
       const { from_date, to_date, employeeId } = req.query;
+      console.log(`\n[API /listAttendance] requested by employeeId: ${employeeId}, from: ${from_date}, to: ${to_date}`);
+      
       let q = {};
 
       if (employeeId) {
