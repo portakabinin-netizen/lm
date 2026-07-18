@@ -1130,6 +1130,15 @@ exports.manageEmployees = {
       if (req.user?.userRole !== 'CorpAdmin' && accessibleIds?.length > 0) {
         q.locationId = { $in: accessibleIds };
       }
+      if (req.query.mobile) {
+        const digits = String(req.query.mobile).replace(/\D/g, '');
+        if (digits.length >= 10) {
+          const ten = digits.slice(-10);
+          q.mobile = { $regex: new RegExp(ten + '$', 'i') };
+        } else {
+          q.mobile = req.query.mobile;
+        }
+      }
       const employeesList = await Employees.find(q).lean();
 
       const userMaster = require('../models/userMaster');
@@ -1137,6 +1146,17 @@ exports.manageEmployees = {
       const uQuery = { userActive: true };
       if (tenantDbName) {
         uQuery.accessCorporate = { $elemMatch: { dbName: tenantDbName, isActive: { $ne: false } } };
+      }
+      if (req.query.mobile) {
+        const digits = String(req.query.mobile).replace(/\D/g, '');
+        if (digits.length >= 10) {
+          const ten = digits.slice(-10);
+          uQuery.$or = [
+            { mobile: { $regex: new RegExp(ten + '$', 'i') } },
+            { userMobile: { $regex: new RegExp(ten + '$', 'i') } },
+            { username: { $regex: new RegExp(ten + '$', 'i') } }
+          ];
+        }
       }
       const userMasterList = await userMaster.find(uQuery).lean();
 
@@ -1224,7 +1244,9 @@ exports.manageEmployees = {
       });
 
       userMapById.forEach((mappedUser) => {
-        mergedList.push(mappedUser);
+        if (!processedUserIds.has(String(mappedUser._id))) {
+          mergedList.push(mappedUser);
+        }
       });
 
       res.json({ success: true, data: mergedList });
