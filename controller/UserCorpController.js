@@ -1247,6 +1247,21 @@ exports.manageEmployees = {
         $or: [{ _id: id }, { user_id: id }],
       }).lean();
 
+      if (userDoc && !employeeDoc) {
+        const userMobile = userDoc.mobile || userDoc.userMobile || userDoc.username || '';
+        const digits = String(userMobile).replace(/\D/g, '');
+        const orConditions = [];
+        if (digits.length >= 10) {
+          const ten = digits.slice(-10);
+          orConditions.push({ mobile: { $regex: new RegExp(ten + '$', 'i') } });
+        } else if (userMobile) {
+          orConditions.push({ mobile: userMobile });
+        }
+        if (orConditions.length > 0) {
+          employeeDoc = await Employees.findOne({ $or: orConditions }).lean();
+        }
+      }
+
       if (userDoc) {
         console.log(
           `[hr/employees/get] Matched registered user in userMaster: ${userDoc.name || userDoc.email} (ID: ${id}).`
