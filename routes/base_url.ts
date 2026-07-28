@@ -33,8 +33,10 @@ const webHost =
 const fallbackHost = Platform.OS === "android" ? "10.0.2.2" : "localhost";
 const resolvedHost = configuredApiHost || webHost || expoHost || fallbackHost;
 
+export const local_api_url = `http://${resolvedHost}:${configuredApiPort}/api`;
+
 const api_url = configuredApiUrl
   ? normalizeApiUrl(configuredApiUrl)
-  : `http://${resolvedHost}:${configuredApiPort}/api`;
+  : local_api_url;
 
 export default api_url;

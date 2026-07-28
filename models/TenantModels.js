@@ -465,7 +465,15 @@ const messageSchema = new mongoose.Schema(
       name: { type: String },
       mobile: { type: String },
       role: { type: String }
-    }
+    },
+    // New fields for Leave & Advance Requests
+    requestStatus: { type: String, enum: ['pending', 'passed', 'rejected'], default: 'pending' },
+    requestType: { type: String }, // e.g. 'Periodical Leave', 'Cash Advance'
+    fromDate: { type: Date },
+    toDate: { type: Date },
+    amount: { type: Number },
+    approvedAmount: { type: Number },
+    remarks: { type: String }
   },
   { timestamps: true }
 );

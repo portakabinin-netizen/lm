@@ -2312,6 +2312,28 @@ exports.manageEmployees = {
         });
       }
 
+      if (finalShiftLockHours >= 4 && (status === 'Present' || !status)) {
+        const today = new Date(dutyStartMs);
+        today.setHours(0, 0, 0, 0);
+        
+        const shiftAlreadyWorked = await Attendance.findOne({
+          employeeId,
+          date: {
+            $gte: today,
+            $lt: new Date(today.getTime() + 24 * 60 * 60 * 1000)
+          },
+          shiftCode: finalShiftCode,
+          status: 'Present'
+        }).lean();
+
+        if (shiftAlreadyWorked) {
+          return res.status(403).json({
+            success: false,
+            message: `You cannot work multiple ${finalShiftLockHours}hr ${finalShiftCode} shifts in the same day.`
+          });
+        }
+      }
+
       const record = new Attendance({
         employeeId,
         employeeType: employeeDoc ? 'Employees' : 'userMaster',
@@ -3031,6 +3053,28 @@ exports.manageEmployees = {
           (emp.employmentHistory || []).slice(-1)[0];
         const currentRate = activeShift?.daily_rate || 0;
 
+        const checkLockHrs = toggleSiteShiftOverride?.shiftLockHours || lockHrs;
+        const checkShiftCode = SHIFT_CODE_MAP[toggleSiteShiftOverride?.shiftCode || normalizedShiftCode] || normalizedShiftCode || finalShiftCode || 'G';
+        
+        if (checkLockHrs >= 4) {
+          const shiftAlreadyWorked = await Attendance.findOne({
+            employeeId: isWorker ? emp._id : queryId,
+            date: {
+              $gte: today,
+              $lt: new Date(today.getTime() + 24 * 60 * 60 * 1000)
+            },
+            shiftCode: checkShiftCode,
+            status: 'Present'
+          }).lean();
+
+          if (shiftAlreadyWorked) {
+            return res.status(403).json({
+              success: false,
+              message: `You cannot work multiple ${checkLockHrs}hr ${checkShiftCode} shifts in the same day.`
+            });
+          }
+        }
+
         if (record)
           return res.status(400).json({ success: false, message: 'Duty already started' });
 
@@ -3607,17 +3651,66 @@ exports.manageEmployees = {
           });
         }
 
-        const nextShift =
-          activeSiteShifts.find((s) => s.shiftCode === nextShiftCode) || activeSiteShifts[0];
+        let nextShift = null;
+        if (nextShiftCode && nextShiftCode !== 'Continued') {
+          nextShift = activeSiteShifts.find((s) => s.shiftCode === nextShiftCode);
+        }
+
+        if (!nextShift) {
+          const nowCheck = new Date();
+          const kolkataOffset = 5.5 * 3600000;
+          const nowKolkata = new Date(nowCheck.getTime() + kolkataOffset);
+          const nowMinutes = nowKolkata.getUTCHours() * 60 + nowKolkata.getUTCMinutes();
+
+          nextShift = activeSiteShifts.find((s) => {
+            if (!s.startTime) return false;
+            const [sh, sm] = s.startTime.split(':').map(Number);
+            const startMins = sh * 60 + sm;
+            const endMins = (startMins + (s.durationHrs || 8) * 60) % 1440;
+            if (startMins < endMins) {
+              return nowMinutes >= startMins && nowMinutes <= endMins;
+            } else {
+              return nowMinutes >= startMins || nowMinutes <= endMins;
+            }
+          });
+        }
+
+        if (!nextShift) {
+          nextShift = activeSiteShifts.find((s) => s.shiftCode !== current.shiftCode) || activeSiteShifts[0];
+        }
+
         if (nextShift) {
           finalNextShiftCode = nextShift.shiftCode;
           nextLockHrs = nextShift.durationHrs || nextLockHrs;
           finalNextShiftType = nextShift.durationHrs === 12 ? '12hr' : '8hr';
-          finalNextShiftPeriod = SHIFT_PERIOD_MAP[nextShift.shiftName] || 'Morning';
+          finalNextShiftPeriod = SHIFT_PERIOD_MAP[nextShift.shiftName] || nextShift.shiftName || 'Morning';
           nextRate = nextShift.salaryRate || nextRate;
+          req._matchedSiteShiftSlots = nextShift.workerSlots;
         }
       }
       const nextScheduledEnd = new Date(now.getTime() + nextLockHrs * 3600000);
+
+      if (nextLockHrs >= 4) {
+        const today = new Date(now);
+        today.setHours(0, 0, 0, 0);
+        
+        const shiftAlreadyWorked = await Attendance.findOne({
+          employeeId: queryId,
+          date: {
+            $gte: today,
+            $lt: new Date(today.getTime() + 24 * 60 * 60 * 1000)
+          },
+          shiftCode: SHIFT_CODE_MAP[finalNextShiftCode] || finalNextShiftCode || 'G',
+          status: 'Present'
+        }).lean();
+
+        if (shiftAlreadyWorked) {
+          return res.status(403).json({
+            success: false,
+            message: `You cannot work multiple ${nextLockHrs}hr shifts with the same shift code in the same day.`
+          });
+        }
+      }
 
       // 4. Create new attendance record for next shift (marked as double shift)
       const nextRecord = new Attendance({
@@ -3648,6 +3741,17 @@ exports.manageEmployees = {
         rate: nextRate,
       });
       await nextRecord.save();
+
+      if (req._matchedSiteShiftSlots === 1 && nextRecord.dutyEndScheduled) {
+        const autoEndScheduler = require('../utils/autoEndScheduler');
+        autoEndScheduler.scheduleAutoEnd(
+          nextRecord._id,
+          nextRecord.dutyEndScheduled,
+          Attendance,
+          req.tenantDbName,
+          req.io
+        );
+      }
 
       // ── Async geocoding: patch new-shift start tick address ──────────────────
       if (lat && long) {

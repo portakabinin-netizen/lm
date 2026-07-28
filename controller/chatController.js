@@ -93,7 +93,7 @@ exports.getGroups = async (req, res) => {
 
 exports.sendMessage = async (req, res) => {
     try {
-        const { senderName, senderId, text, type, mediaUrl, mediaType, public_id, isOneToOne, isGroup, groupId, location, contact, receiverId } = req.body;
+        const { senderName, senderId, text, type, mediaUrl, mediaType, public_id, isOneToOne, isGroup, groupId, location, contact, receiverId, requestStatus, requestType, fromDate, toDate, amount, remarks } = req.body;
         const { Messages } = req.tenantModels;
         
         if (!Messages) {
@@ -113,7 +113,14 @@ exports.sendMessage = async (req, res) => {
             groupId,
             location,
             contact,
-            receiverId
+            contact,
+            receiverId,
+            requestStatus: requestStatus || 'pending',
+            requestType,
+            fromDate,
+            toDate,
+            amount,
+            remarks
         };
 
         // If message has media and was uploaded to Cloudinary, download it to server and delete from cloud
@@ -271,6 +278,120 @@ exports.getUnreadCount = async (req, res) => {
         return res.json({ success: true, count });
     } catch (err) {
         console.error('getUnreadCount Error:', err.message);
+        return res.status(500).json({ success: false, message: err.message });
+    }
+};
+
+exports.getLatestRequest = async (req, res) => {
+    try {
+        const { Messages } = req.tenantModels || {};
+        if (!Messages) {
+            return res.status(400).json({ success: false, message: "Tenant models not initialized" });
+        }
+
+        // Fetch the latest leave or advance request for the logged-in user
+        const latestRequest = await Messages.findOne({
+            senderId: req.user.userId,
+            type: { $in: ['leave', 'advance'] }
+        }).sort({ createdAt: -1 });
+
+        return res.status(200).json({ success: true, data: latestRequest });
+    } catch (err) {
+        console.error("🔴 getLatestRequest Error:", err.message);
+        return res.status(500).json({ success: false, message: err.message });
+    }
+};
+
+exports.updateRequestStatus = async (req, res) => {
+    try {
+        const { Messages } = req.tenantModels || {};
+        if (!Messages) {
+            return res.status(400).json({ success: false, message: "Tenant models not initialized" });
+        }
+
+        const { messageId, status, approvedAmount } = req.body;
+        if (!messageId || !status) {
+            return res.status(400).json({ success: false, message: "Missing required fields" });
+        }
+
+        const updateData = { requestStatus: status };
+        if (approvedAmount !== undefined) {
+            updateData.approvedAmount = approvedAmount;
+        }
+
+        const updatedMessage = await Messages.findByIdAndUpdate(
+            messageId,
+            { $set: updateData },
+            { new: true }
+        );
+
+        if (!updatedMessage) {
+            return res.status(404).json({ success: false, message: "Message not found" });
+        }
+
+        // Optionally, we could emit a socket event here if we want real-time updates of the status
+
+        return res.status(200).json({ success: true, data: updatedMessage });
+    } catch (err) {
+        console.error("🔴 updateRequestStatus Error:", err.message);
+        return res.status(500).json({ success: false, message: err.message });
+    }
+};
+
+exports.addGroupMember = async (req, res) => {
+    try {
+        const { groupId, memberId } = req.body;
+        const { ChatGroups } = req.tenantModels || {};
+        
+        if (!ChatGroups) {
+            return res.status(400).json({ success: false, message: "Tenant models not initialized" });
+        }
+        
+        if (!groupId || !memberId) {
+            return res.status(400).json({ success: false, message: "Missing required fields" });
+        }
+
+        const group = await ChatGroups.findById(groupId);
+        if (!group) {
+            return res.status(404).json({ success: false, message: "Group not found" });
+        }
+
+        if (!group.members.includes(memberId)) {
+            group.members.push(memberId);
+            await group.save();
+        }
+
+        return res.status(200).json({ success: true, data: group });
+    } catch (err) {
+        console.error("🔴 addGroupMember Error:", err.message);
+        return res.status(500).json({ success: false, message: err.message });
+    }
+};
+
+exports.removeGroupMember = async (req, res) => {
+    try {
+        const { groupId, memberId } = req.body;
+        const { ChatGroups } = req.tenantModels || {};
+        
+        if (!ChatGroups) {
+            return res.status(400).json({ success: false, message: "Tenant models not initialized" });
+        }
+        
+        if (!groupId || !memberId) {
+            return res.status(400).json({ success: false, message: "Missing required fields" });
+        }
+
+        const group = await ChatGroups.findById(groupId);
+        if (!group) {
+            return res.status(404).json({ success: false, message: "Group not found" });
+        }
+
+        group.members = group.members.filter(id => String(id) !== String(memberId));
+        await group.save();
+
+        return res.status(200).json({ success: true, data: group });
+    } catch (err) {
+        console.error("🔴 removeGroupMember Error:", err.message);
         return res.status(500).json({ success: false, message: err.message });
     }
 };

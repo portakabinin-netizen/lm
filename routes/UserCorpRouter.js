@@ -105,10 +105,14 @@ router.delete("/staff/:id",      ctrl.manageStaff.delete);
 
 // --- 💬 CHAT ---
 router.post("/chat/send", chatCtrl.sendMessage);
+router.get("/chat/latest-request", chatCtrl.getLatestRequest);
+router.put("/chat/requests/status", chatCtrl.updateRequestStatus);
 router.get("/chat/messages", chatCtrl.getMessages);
 router.put("/chat/seen", chatCtrl.markAsSeen);
 router.post("/chat/groups", chatCtrl.createGroup);
 router.get("/chat/groups", chatCtrl.getGroups);
+router.put("/chat/groups/member", chatCtrl.addGroupMember);
+router.delete("/chat/groups/member", chatCtrl.removeGroupMember);
 
 // --- 🏢 CORPORATE PROFILE ---
 router.get("/profile",           ctrl.manageProfile.get);
