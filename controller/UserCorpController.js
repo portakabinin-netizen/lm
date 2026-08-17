@@ -2133,8 +2133,34 @@ exports.manageEmployees = {
           });
         }
 
-        // ── GEOFENCING: enforce site-radius for Employees when starting duty ──
-        if (leadId && !bypassGeofence) {
+        // ── GEOFENCING: enforce site-radius for Workers when doing self-attendance ──
+        const requesterRoleLower = (
+          (req.user && (req.user.userRole || req.user.role)) ||
+          ''
+        ).toLowerCase().trim();
+        const nonWorkerRoles = [
+          'corpadmin',
+          'useradmin',
+          'project',
+          'admin',
+          'staff',
+          'sales',
+          'finance',
+          'manager',
+          'supervisor',
+          'field officer',
+          'field_officer',
+          'fo',
+        ];
+        const isRequesterNonWorker =
+          !requesterRoleLower ||
+          nonWorkerRoles.includes(requesterRoleLower) ||
+          !['worker', 'guard', 'security'].includes(requesterRoleLower);
+        const isMarkingForOther =
+          req.user &&
+          String(req.user._id || req.user.userId || '') !== String(employeeId);
+
+        if (leadId && !bypassGeofence && !isRequesterNonWorker && !isMarkingForOther) {
           const _isWorkerForGeo = !!eDocFallback;
           const _workerLat = reqLat != null ? Number(reqLat)
             : (geoHistory && geoHistory.length > 0 ? Number(geoHistory[0].lat) : null);
@@ -3303,14 +3329,48 @@ exports.manageEmployees = {
         }
 
         let isSpecialAction = false;
-        const linkedRoleLower = (
-          emp.role ||
-          emp.userRole ||
-          (linkedUser && (linkedUser.role || linkedUser.userRole)) ||
+        const requesterRoleLower = (
           (req.user && (req.user.userRole || req.user.role)) ||
           ''
         ).toLowerCase().trim();
-        if (!linkedRoleLower || ['corpadmin', 'useradmin', 'project', 'admin', 'staff', 'sales', 'finance'].includes(linkedRoleLower)) {
+        const empRoleLower = (
+          emp.role ||
+          emp.userRole ||
+          (linkedUser && (linkedUser.role || linkedUser.userRole)) ||
+          ''
+        ).toLowerCase().trim();
+
+        const nonWorkerRoles = [
+          'corpadmin',
+          'useradmin',
+          'project',
+          'admin',
+          'staff',
+          'sales',
+          'finance',
+          'manager',
+          'supervisor',
+          'field officer',
+          'field_officer',
+          'fo',
+        ];
+
+        const isRequesterNonWorker =
+          !requesterRoleLower ||
+          nonWorkerRoles.includes(requesterRoleLower) ||
+          !['worker', 'guard', 'security'].includes(requesterRoleLower);
+
+        const isTargetNonWorker =
+          !empRoleLower ||
+          nonWorkerRoles.includes(empRoleLower) ||
+          !['worker', 'guard', 'security'].includes(empRoleLower);
+
+        const isMarkingForOther =
+          req.user &&
+          String(req.user._id || req.user.userId || '') !==
+            String(queryId || emp._id || emp.user_id || '');
+
+        if (isRequesterNonWorker || isTargetNonWorker || isMarkingForOther) {
           isSpecialAction = true;
         }
 
