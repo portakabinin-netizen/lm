@@ -2084,18 +2084,25 @@ exports.manageEmployees = {
       // Reject if this employee already has an open (active) duty session.
       // This prevents duplicate attendance records regardless of which site or
       // which UI surface triggered the create request.
+      // Hoist these so they remain accessible later in the function (e.g. existingRecordOnDate query)
+      const mongoose = require('mongoose');
+      let qId = employeeId && mongoose.isValidObjectId(employeeId)
+        ? new mongoose.Types.ObjectId(employeeId)
+        : employeeId;
+      let uDocCheck = null;
+      let uniqueCheckIds = employeeId
+        ? [qId].filter((id) => id && mongoose.isValidObjectId(id)).map((id) => new mongoose.Types.ObjectId(String(id)))
+        : [];
+
       if (employeeId && !dutyEnd) {
-        const mongoose = require('mongoose');
-        const qId = mongoose.isValidObjectId(employeeId)
-          ? new mongoose.Types.ObjectId(employeeId)
-          : employeeId;
         // Build all linked IDs (same as getActiveAttendance) to avoid missing open sessions
         // when employeeId sent is userMaster._id but attendance was saved under Employees._id
         const userMasterCheck = require('../models/userMaster');
-        const [uDocCheck, eDocCheck] = await Promise.all([
+        const [uDocCheckInner, eDocCheck] = await Promise.all([
           userMasterCheck.findById(qId).select('_id mobile email user_id').lean(),
           Employees.findById(qId).select('_id mobile email user_id').lean(),
         ]);
+        uDocCheck = uDocCheckInner;
         let eDocFallback = eDocCheck;
         if (uDocCheck && !eDocFallback) {
           eDocFallback = await Employees.findOne({
@@ -2112,7 +2119,7 @@ exports.manageEmployees = {
         if (eDocFallback?.user_id && mongoose.isValidObjectId(eDocFallback.user_id)) {
           checkLinkedIds.push(new mongoose.Types.ObjectId(eDocFallback.user_id));
         }
-        const uniqueCheckIds = Array.from(new Set(checkLinkedIds.map((id) => String(id))))
+        uniqueCheckIds = Array.from(new Set(checkLinkedIds.map((id) => String(id))))
           .filter((id) => mongoose.isValidObjectId(id))
           .map((id) => new mongoose.Types.ObjectId(id));
         const openSession = await Attendance.findOne({
