@@ -1973,22 +1973,54 @@ exports.getLedgerTransactions = async (req, res) => {
         }
 
         let ledger = null;
-        if (accountType === 'Staff') {
-            ledger = await Ledgers.findOne({ refId: accountId, refType: { $in: ["Staff", "User"] } });
-        } else if (accountType === 'Lead') {
-            ledger = await Ledgers.findOne({ refId: accountId, refType: { $in: ["Client", "Lead"] } });
-        }
+        const accObjId = mongoose.Types.ObjectId.isValid(accountId) ? new mongoose.Types.ObjectId(accountId) : accountId;
 
-        // Fallback to Category/ID match if not resolved
-        if (!ledger) {
-            if (mongoose.Types.ObjectId.isValid(accountId)) {
-                ledger = await Ledgers.findById(accountId);
+        if (accountType === 'Staff' || accountType === 'Employee') {
+            ledger = await Ledgers.findOne({
+                $or: [
+                    { refId: accObjId },
+                    { refId: String(accountId) },
+                    { _id: accObjId }
+                ],
+                refType: { $in: ["Staff", "Employee", "User", "Worker"] }
+            });
+
+            if (!ledger) {
+                ledger = await Ledgers.findOne({
+                    $or: [
+                        { refId: accObjId },
+                        { refId: String(accountId) }
+                    ]
+                });
             }
+        } else if (accountType === 'Lead' || accountType === 'Client') {
+            ledger = await Ledgers.findOne({
+                $or: [
+                    { refId: accObjId },
+                    { refId: String(accountId) },
+                    { _id: accObjId }
+                ],
+                refType: { $in: ["Client", "Lead", "Debtor"] }
+            });
+        }
+
+        // Fallback to ID match if not resolved
+        if (!ledger && mongoose.Types.ObjectId.isValid(accountId)) {
+            ledger = await Ledgers.findById(accountId);
         }
 
         if (!ledger) {
-            return res.json({ success: true, data: [] });
+            return res.json({ success: true, data: [], openingBalance: 0, opBal: 0 });
         }
+
+        const opBal = Number(
+            ledger.openingBalance ??
+            ledger.opening_balance ??
+            ledger.opBal ??
+            ledger.op_bal ??
+            ledger.openingBal ??
+            0
+        );
 
         const q = { "entries.ledgerId": ledger._id };
         
@@ -2023,7 +2055,18 @@ exports.getLedgerTransactions = async (req, res) => {
             };
         });
 
-        res.json({ success: true, data: formatted });
+        res.json({
+            success: true,
+            data: formatted,
+            ledger: formatted,
+            openingBalance: opBal,
+            opBal: opBal,
+            account: {
+                _id: ledger._id,
+                ledgerName: ledger.ledgerName,
+                openingBalance: opBal
+            }
+        });
     } catch (err) {
         res.status(500).json({ success: false, message: err.message });
     }

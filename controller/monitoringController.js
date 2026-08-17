@@ -38,34 +38,64 @@ function nextChallengeTime() {
  */
 exports.heartbeat = async (req, res) => {
   try {
-    const { StaffMonitoring } = req.tenantModels;
-    const { employeeId, batteryLevel, latitude, longitude } = req.body;
+    const { StaffMonitoring, Attendance } = req.tenantModels;
+    const { employeeId, batteryLevel, latitude, longitude, attendanceId } = req.body;
     const empId = employeeId || req.user?.userId;
 
     if (!empId) return res.status(400).json({ success: false, message: "employeeId required" });
 
     const now = new Date();
 
-    // Upsert monitoring record
+    // 1. Find or create active StaffMonitoring record
     let record = await StaffMonitoring.findOne({
       employeeId: empId,
-      monitoringEnabled: true,
     });
 
     if (!record) {
-      return res.status(404).json({
-        success: false,
-        message: "No active monitoring session found. Start duty first.",
+      record = new StaffMonitoring({
+        employeeId: empId,
+        employeeName: req.user?.userDisplayName || "Staff",
+        monitoringEnabled: true,
       });
     }
 
     record.lastSeen = now;
-    if (batteryLevel !== undefined) record.batteryLevel = batteryLevel;
-    if (latitude !== undefined)    record.lastLatitude  = latitude;
-    if (longitude !== undefined)   record.lastLongitude = longitude;
+    record.monitoringEnabled = true;
+    if (batteryLevel !== undefined && batteryLevel !== null) record.batteryLevel = batteryLevel;
+    if (latitude !== undefined && latitude !== null)    record.lastLatitude  = latitude;
+    if (longitude !== undefined && longitude !== null)   record.lastLongitude = longitude;
     record.onlineStatus = "ONLINE";
 
     await record.save();
+
+    // 2. Also update geoHistory and lastSeen in active Attendance document
+    let attQuery = {
+      employeeId: empId,
+      $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }, { dutyEnd: "" }]
+    };
+    if (attendanceId && mongoose.Types.ObjectId.isValid(attendanceId)) {
+      attQuery = { _id: attendanceId };
+    }
+
+    const setPayload = { lastSeen: now, markedByDevice: true };
+
+    if (latitude && longitude) {
+      const geoTick = {
+        lat: Number(latitude),
+        long: Number(longitude),
+        timestamp: now.toISOString(),
+        type: 'tick'
+      };
+
+      await Attendance.updateOne(attQuery, {
+        $push: { geoHistory: geoTick },
+        $set: setPayload
+      });
+    } else {
+      await Attendance.updateOne(attQuery, {
+        $set: setPayload
+      });
+    }
 
     return res.json({
       success: true,
@@ -302,23 +332,105 @@ exports.stopMonitoring = async (req, res) => {
  */
 exports.getStatus = async (req, res) => {
   try {
-    const { StaffMonitoring } = req.tenantModels;
+    const { StaffMonitoring, Attendance, Employees } = req.tenantModels;
     const { employeeId } = req.query;
 
-    let query = {};
+    let attQuery = {
+      $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }, { dutyEnd: "" }]
+    };
+
     if (employeeId) {
-      query.employeeId = employeeId;
+      attQuery.employeeId = employeeId;
     } else if (req.user?.userRole === "userEmployee" || req.user?.userRole === "Staff") {
-      query.employeeId = req.user.userId;
+      attQuery.employeeId = req.user.userId;
     }
 
-    const records = await StaffMonitoring.find(query).lean();
+    // 1. Fetch all active duty records from Attendance database (open dutyEnd)
+    const activeAttendances = await Attendance.find(attQuery).lean();
 
-    // Recalculate live onlineStatus based on lastSeen
-    const enriched = records.map((r) => ({
-      ...r,
-      onlineStatus: r.monitoringEnabled ? deriveOnlineStatus(r.lastSeen) : "OFFLINE",
-    }));
+    if (!activeAttendances || activeAttendances.length === 0) {
+      // 🚀 Anti-Garbage Cleanup: Deactivate lingering monitoring records if no duty is active
+      await StaffMonitoring.updateMany(
+        { monitoringEnabled: true },
+        { $set: { monitoringEnabled: false, onlineStatus: "OFFLINE" } }
+      ).catch(() => null);
+      return res.json({ success: true, data: [] });
+    }
+
+    const activeEmpIds = activeAttendances.map((a) => String(a.employeeId));
+
+    // 🚀 Anti-Garbage Cleanup: Deactivate monitoring records for workers NOT currently on active duty
+    await StaffMonitoring.updateMany(
+      { employeeId: { $nin: activeEmpIds }, monitoringEnabled: true },
+      { $set: { monitoringEnabled: false, onlineStatus: "OFFLINE" } }
+    ).catch(() => null);
+
+    // 2. Fetch corresponding StaffMonitoring records
+    const monRecords = await StaffMonitoring.find({
+      employeeId: { $in: activeEmpIds },
+    }).lean();
+
+    const monMap = new Map(monRecords.map((r) => [String(r.employeeId), r]));
+
+    // Fetch employee details if needed for display name
+    let empMap = new Map();
+    if (Employees) {
+      const validObjIds = activeEmpIds
+        .filter((id) => mongoose.Types.ObjectId.isValid(id))
+        .map((id) => new mongoose.Types.ObjectId(id));
+
+      if (validObjIds.length > 0) {
+        const emps = await Employees.find({ _id: { $in: validObjIds } })
+          .select("employeeName name mobile photo_url")
+          .lean();
+        emps.forEach((e) => empMap.set(String(e._id), e));
+      }
+    }
+
+    // 3. Build enriched monitoring list for all active workers in Attendance
+    const enriched = activeAttendances.map((att) => {
+      const empIdStr = String(att.employeeId);
+      const existingMon = monMap.get(empIdStr);
+      const empProfile = empMap.get(empIdStr);
+      const isOwnDevice = att.markedByDevice !== false;
+
+      const employeeName =
+        existingMon?.employeeName ||
+        att.userName ||
+        att.employeeName ||
+        empProfile?.employeeName ||
+        empProfile?.name ||
+        "Staff Member";
+
+      const siteName = att.site_name || existingMon?.siteName || "Duty Site";
+
+      if (existingMon) {
+        return {
+          ...existingMon,
+          employeeName,
+          siteName,
+          isOwnDevice,
+          markedByDevice: att.markedByDevice,
+          monitoringEnabled: true,
+          onlineStatus: existingMon.monitoringEnabled ? deriveOnlineStatus(existingMon.lastSeen) : "ONLINE",
+        };
+      }
+
+      return {
+        _id: att._id,
+        employeeId: empIdStr,
+        employeeName,
+        siteName,
+        isOwnDevice,
+        markedByDevice: att.markedByDevice,
+        onlineStatus: "ONLINE",
+        monitoringEnabled: true,
+        lastSeen: att.dutyStart || new Date().toISOString(),
+        challengeStatus: "NONE",
+        totalFailures: 0,
+        escalationLevel: 0,
+      };
+    });
 
     return res.json({ success: true, data: enriched });
   } catch (err) {

@@ -196,7 +196,7 @@ const attendanceSchema = new mongoose.Schema(
     employeeType: {
       type: String,
       required: true,
-      enum: ['Employees', 'userMaster'],
+      enum: ['Employees', 'userMaster', 'Staff'],
       default: 'Employees',
     },
     startLat: { type: Number },
@@ -264,7 +264,7 @@ const attendanceSchema = new mongoose.Schema(
         address: { type: String },
         accuracy: { type: Number },
         speed: { type: Number },
-        type: { type: String, enum: ['start', 'end', 'tick', 'siteVisit'] },
+        type: { type: String },
         timestamp: { type: Date, default: Date.now }, // Renamed from 'time' for clarity
       },
     ],
@@ -444,7 +444,7 @@ const messageSchema = new mongoose.Schema(
     senderName: { type: String, required: true },
     senderId: { type: String }, // ID of sender
     text: { type: String },
-    type: { type: String, enum: ['text', 'advance', 'leave', 'uniform', 'media'], default: 'text' },
+    type: { type: String, enum: ['text', 'advance', 'leave', 'uniform', 'media', 'late_duty_request'], default: 'text' },
     status: { type: String, enum: ['unseen', 'seen'], default: 'unseen' },
     mediaUrl: { type: String }, // URL (Cloudinary or Local)
     mediaType: { type: String }, // 'image', 'audio', 'video'
@@ -466,14 +466,15 @@ const messageSchema = new mongoose.Schema(
       mobile: { type: String },
       role: { type: String }
     },
-    // New fields for Leave & Advance Requests
-    requestStatus: { type: String, enum: ['pending', 'passed', 'rejected'], default: 'pending' },
-    requestType: { type: String }, // e.g. 'Periodical Leave', 'Cash Advance'
+    // New fields for Leave, Advance & Late Duty Requests
+    requestStatus: { type: String, enum: ['pending', 'passed', 'rejected', 'allowed', 'denied'], default: 'pending' },
+    requestType: { type: String }, // e.g. 'Periodical Leave', 'Cash Advance', 'Late Duty Start'
     fromDate: { type: Date },
     toDate: { type: Date },
     amount: { type: Number },
     approvedAmount: { type: Number },
-    remarks: { type: String }
+    remarks: { type: String },
+    attendancePayload: { type: Object }
   },
   { timestamps: true }
 );
@@ -499,6 +500,10 @@ const siteClientCheckSchema = new mongoose.Schema(
  * Factory function to bind models to a tenant connection
  */
 const getTenantModels = (connection) => {
+  const userMasterSchema = require('./userMaster').schema;
+  const userMasterModel = connection.models.userMaster || connection.model('userMaster', userMasterSchema);
+  const staffModel = connection.models.Staff || connection.model('Staff', userMasterSchema);
+
   return {
     ProfileMaster:
       connection.models.ProfileMaster || connection.model('ProfileMaster', profileMasterSchema),
@@ -506,6 +511,8 @@ const getTenantModels = (connection) => {
     Products: connection.models.Products || connection.model('Products', productSchema),
     Parties: connection.models.Parties || connection.model('Parties', partySchema),
     Employees: connection.models.Employees || connection.model('Employees', employeeSchema),
+    userMaster: userMasterModel,
+    Staff: staffModel,
     Leads: connection.models.Leads || connection.model('Leads', leadSchema),
     Attendance: connection.models.Attendance || connection.model('Attendance', attendanceSchema),
     Groups: connection.models.Groups || connection.model('Groups', groupSchema),

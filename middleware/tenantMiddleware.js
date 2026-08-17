@@ -9,11 +9,13 @@ const userMaster = require("../models/userMaster");
  */
 const tenantMiddleware = async (req, res, next) => {
     try {
-        // 1. Identification (Priority: Token > Header > Body > Query)
-        let dbName = req.user?.dbName 
-                  || req.headers['x-tenant-id']       // ← Frontend sends this explicitly
+        // 1. Identification (Priority: Header > Body > Query > Token)
+        // Explicit corporate selection (x-tenant-id header) MUST take precedence over the default dbName in the JWT token.
+        let dbName = req.headers['x-tenant-id'] 
+                  || req.headers['x-db-name']
                   || req.body?.dbName 
-                  || req.query?.dbName;
+                  || req.query?.dbName
+                  || req.user?.dbName;
         
         if (!dbName) {
             console.error("❌ [Middleware] No dbName found in request");

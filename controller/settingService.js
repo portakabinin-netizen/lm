@@ -102,26 +102,26 @@ const updateCorporate = {
 
       // 1. Update Authoritative Isolated Profile
       const profileUpdates = {
-        corporateName: clean(b.corporateName),
-        corporateTagName: clean(b.corporateTagName),
-        corporateEmail: clean(b.corporateEmail),
+        corporateName: clean(b.corporateName) || '',
+        corporateTagName: clean(b.corporateTagName) || '',
+        corporateEmail: clean(b.corporateEmail) || '',
         ownershipType: b.ownershipType || 'Proprietorship',
-        corporatePAN: clean(b.corporatePAN)?.toUpperCase(),
+        corporatePAN: clean(b.corporatePAN)?.toUpperCase() || '',
         corporateActive: typeof b.corporateActive === 'boolean' ? b.corporateActive : true,
-        CorpProfileImage: clean(b.CorpProfileImage),
+        CorpProfileImage: clean(b.CorpProfileImage) || '',
 
         centralRegistrations: {
-          cin: clean(b.centralRegistrations?.cin),
-          tan: clean(b.centralRegistrations?.tan),
-          iec: clean(b.centralRegistrations?.iec),
-          msme_udyam: clean(b.centralRegistrations?.msme_udyam),
-          fssai: clean(b.centralRegistrations?.fssai),
-          drug_license: clean(b.centralRegistrations?.drug_license),
-          import_export_code: clean(b.centralRegistrations?.import_export_code),
-          corporateMobile: clean(b.centralRegistrations?.corporateMobile),
-          corporateTelephone: clean(b.centralRegistrations?.corporateTelephone),
-          Quotation_TC: clean(b.centralRegistrations?.Quotation_TC),
-          TaxInvoiceTC: clean(b.centralRegistrations?.TaxInvoiceTC),
+          cin: clean(b.centralRegistrations?.cin) || '',
+          tan: clean(b.centralRegistrations?.tan) || '',
+          iec: clean(b.centralRegistrations?.iec) || '',
+          msme_udyam: clean(b.centralRegistrations?.msme_udyam) || '',
+          fssai: clean(b.centralRegistrations?.fssai) || '',
+          drug_license: clean(b.centralRegistrations?.drug_license) || '',
+          import_export_code: clean(b.centralRegistrations?.import_export_code) || '',
+          corporateMobile: clean(b.centralRegistrations?.corporateMobile) || '',
+          corporateTelephone: clean(b.centralRegistrations?.corporateTelephone) || '',
+          Quotation_TC: clean(b.centralRegistrations?.Quotation_TC) || '',
+          TaxInvoiceTC: clean(b.centralRegistrations?.TaxInvoiceTC) || '',
         },
 
         locations: Array.isArray(b.locations)
@@ -130,42 +130,44 @@ const updateCorporate = {
               console.log(JSON.stringify(b.locations, null, 2));
               return b.locations;
             })().map((loc) => ({
-              ...(loc._id ? { _id: new mongoose.Types.ObjectId(loc._id) } : {}),
+              ...(loc._id && mongoose.isValidObjectId(loc._id) ? { _id: new mongoose.Types.ObjectId(loc._id) } : {}),
               locationName: clean(loc.locationName) || 'Head Office',
               locationType: clean(loc.locationType) || 'HO',
-              ...(loc.parentId ? { parentId: new mongoose.Types.ObjectId(loc.parentId) } : {}),
+              ...(loc.parentId && mongoose.isValidObjectId(loc.parentId) ? { parentId: new mongoose.Types.ObjectId(loc.parentId) } : {}),
               isRegisteredOffice: !!loc.isRegisteredOffice,
               address: {
-                line1: clean(loc.address?.line1),
-                city: clean(loc.address?.city),
-                district: clean(loc.address?.district),
-                state: clean(loc.address?.state),
-                pincode: clean(loc.address?.pincode),
+                line1: clean(loc.address?.line1) || '',
+                city: clean(loc.address?.city) || '',
+                district: clean(loc.address?.district) || '',
+                state: clean(loc.address?.state) || '',
+                pincode: clean(loc.address?.pincode) || '',
                 country: clean(loc.address?.country) || 'India',
-                lat: loc.address?.lat ? Number(loc.address?.lat) : undefined,
-                long: loc.address?.long ? Number(loc.address?.long) : undefined,
+                lat: loc.address?.lat !== undefined && loc.address?.lat !== null && loc.address?.lat !== '' && !isNaN(Number(loc.address?.lat)) ? Number(loc.address?.lat) : undefined,
+                long: loc.address?.long !== undefined && loc.address?.long !== null && loc.address?.long !== '' && !isNaN(Number(loc.address?.long)) ? Number(loc.address?.long) : undefined,
               },
-              gstin: clean(loc.gstin)?.toUpperCase(),
+              gstin: clean(loc.gstin)?.toUpperCase() || '',
               bankDetails: {
-                bank_name: clean(loc.bankDetails?.bank_name),
-                branch: clean(loc.bankDetails?.branch),
-                account_number: clean(loc.bankDetails?.account_number),
-                ifsc_code: clean(loc.bankDetails?.ifsc_code)?.toUpperCase(),
+                bank_name: clean(loc.bankDetails?.bank_name) || '',
+                branch: clean(loc.bankDetails?.branch) || '',
+                account_number: clean(loc.bankDetails?.account_number) || '',
+                ifsc_code: clean(loc.bankDetails?.ifsc_code)?.toUpperCase() || '',
                 account_type: clean(loc.bankDetails?.account_type) || 'Current',
-                upi_id: clean(loc.bankDetails?.upi_id),
+                upi_id: clean(loc.bankDetails?.upi_id) || '',
               },
-              contactPerson: clean(loc.contactPerson),
-              contactMobile: clean(loc.contactMobile),
-              contactEmail: clean(loc.contactEmail),
+              contactPerson: clean(loc.contactPerson) || '',
+              contactMobile: clean(loc.contactMobile) || '',
+              contactEmail: clean(loc.contactEmail) || '',
               active: typeof loc.active === 'boolean' ? loc.active : true,
             }))
           : [],
 
         authorizedSignatory: {
-          name: clean(b.authorizedSignatory?.name),
-          designation: clean(b.authorizedSignatory?.designation),
-          aadhar: clean(b.authorizedSignatory?.aadhar),
+          name: clean(b.authorizedSignatory?.name) || '',
+          designation: clean(b.authorizedSignatory?.designation) || '',
+          aadhar: clean(b.authorizedSignatory?.aadhar) || '',
           signature_label: clean(b.authorizedSignatory?.signature_label) || 'Authorised Signatory',
+          signature_img: clean(b.authorizedSignatory?.signature_img) || '',
+          stamp_img: clean(b.authorizedSignatory?.stamp_img) || '',
         },
 
         apiUrls: b.apiUrls || {},
@@ -184,14 +186,32 @@ const updateCorporate = {
       const admin = await resolveCorpAdmin(req);
       const tDb = req.tenantDbName || req.user?.dbName;
 
-      if (tDb && (clean(b.corporateName) || clean(b.CorpProfileImage))) {
+      if (tDb) {
+        const dbRegex = new RegExp(`^${tDb}$`, 'i');
         const updateFields = {};
         if (clean(b.corporateName))
-          updateFields['accessCorporate.$.corporateName'] = clean(b.corporateName);
+          updateFields['accessCorporate.$[elem].corporateName'] = clean(b.corporateName);
+        if (clean(b.corporatePAN))
+          updateFields['accessCorporate.$[elem].corporatePAN'] = clean(b.corporatePAN).toUpperCase();
         if (clean(b.CorpProfileImage))
-          updateFields['accessCorporate.$.CorpProfileImage'] = clean(b.CorpProfileImage);
+          updateFields['accessCorporate.$[elem].CorpProfileImage'] = clean(b.CorpProfileImage);
 
-        await userMaster.updateMany({ 'accessCorporate.dbName': tDb }, { $set: updateFields });
+        if (Object.keys(updateFields).length > 0) {
+          await userMaster.updateMany(
+            { 'accessCorporate.dbName': dbRegex },
+            { $set: updateFields },
+            { arrayFilters: [{ 'elem.dbName': dbRegex }] }
+          );
+        }
+
+        if (admin && admin._id) {
+          const userUpdates = {};
+          if (clean(b.corporateEmail)) userUpdates.userEmail = clean(b.corporateEmail).toLowerCase();
+          if (clean(b.CorpProfileImage)) userUpdates.userProfileImage = clean(b.CorpProfileImage);
+          if (Object.keys(userUpdates).length > 0) {
+            await userMaster.findByIdAndUpdate(admin._id, { $set: userUpdates });
+          }
+        }
       }
 
       // 🚀 REAL-TIME: Notify all clients in the tenant room

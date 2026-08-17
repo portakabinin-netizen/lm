@@ -12,10 +12,11 @@ async function check() {
   
   await mongoose.connect(uri);
   const connection = mongoose.connection;
-  
-  const userMaster = connection.collection('userMaster');
-  const user = await userMaster.findOne({ _id: new mongoose.Types.ObjectId("69f84083db5c152ec67c55e8") });
-  console.log(JSON.stringify(user, null, 2));
+  const tDb = connection.useDb('41444c50503539303542');
+  console.log(`Connected to: ${tDb.name}`);
+  const collections = await tDb.db.listCollections().toArray();
+  console.log("Collections:");
+  collections.forEach(c => console.log(` - ${c.name}`));
   
   process.exit(0);
 }

@@ -56,6 +56,108 @@ io.on("connection", (socket) => {
     }
   });
 
+  // 🚀 INSTANT DB READ OVER SOCKET FOR ACTIVE ATTENDANCE
+  socket.on("attendance:get_active", async (data, ack) => {
+    try {
+      const { employeeId, dbName } = data || {};
+      if (!employeeId || !dbName) {
+        const errRes = { success: false, message: "employeeId and dbName required" };
+        if (typeof ack === "function") ack(errRes);
+        return socket.emit("attendance:active_response", errRes);
+      }
+
+      const tenantConnection = await dbConnector.getTenantConnection(dbName);
+      const { Attendance, Employees } = require("./models/TenantModels").getTenantModels(tenantConnection);
+
+      const queryId = mongoose.Types.ObjectId.isValid(employeeId)
+        ? new mongoose.Types.ObjectId(employeeId)
+        : employeeId;
+
+      const userMaster = require("./models/userMaster");
+      let userDoc = await userMaster.findById(queryId).lean().catch(() => null);
+      let employeeDoc = await Employees.findById(queryId).lean().catch(() => null);
+
+      if (userDoc && !employeeDoc) {
+        const mob = (userDoc.mobile || userDoc.userMobile || userDoc.username || "").replace(/\D/g, "").slice(-10);
+        const searchOr = [];
+        if (userDoc._id) searchOr.push({ user_id: userDoc._id });
+        if (userDoc.employee_id && mongoose.Types.ObjectId.isValid(String(userDoc.employee_id))) searchOr.push({ _id: userDoc.employee_id });
+        if (mob && mob.length === 10) searchOr.push({ mobile: new RegExp(mob + "$") });
+        if (userDoc.email || userDoc.userEmail) searchOr.push({ email: userDoc.email || userDoc.userEmail });
+        if (searchOr.length > 0) {
+          employeeDoc = await Employees.findOne({ $or: searchOr }).lean().catch(() => null);
+        }
+      } else if (employeeDoc && !userDoc) {
+        const mob = (employeeDoc.mobile || "").replace(/\D/g, "").slice(-10);
+        const searchOr = [];
+        if (employeeDoc.user_id && mongoose.Types.ObjectId.isValid(String(employeeDoc.user_id))) searchOr.push({ _id: employeeDoc.user_id });
+        if (employeeDoc._id) searchOr.push({ employee_id: employeeDoc._id });
+        if (mob && mob.length === 10) searchOr.push({ userMobile: new RegExp(mob + "$") });
+        if (employeeDoc.email) searchOr.push({ userEmail: employeeDoc.email });
+        if (searchOr.length > 0) {
+          userDoc = await userMaster.findOne({ $or: searchOr }).lean().catch(() => null);
+        }
+      }
+
+      const linkedIds = [queryId];
+      if (userDoc?._id) linkedIds.push(userDoc._id);
+      if (employeeDoc?._id) linkedIds.push(employeeDoc._id);
+      if (employeeDoc?.user_id && mongoose.Types.ObjectId.isValid(String(employeeDoc.user_id))) {
+        linkedIds.push(new mongoose.Types.ObjectId(employeeDoc.user_id));
+      }
+      if (userDoc?.employee_id && mongoose.Types.ObjectId.isValid(String(userDoc.employee_id))) {
+        linkedIds.push(new mongoose.Types.ObjectId(userDoc.employee_id));
+      }
+      const uniqueLinkedIds = Array.from(new Set(linkedIds.map((id) => String(id))))
+        .filter((id) => mongoose.Types.ObjectId.isValid(id))
+        .map((id) => new mongoose.Types.ObjectId(id));
+
+      const active = await Attendance.findOne({
+        employeeId: { $in: uniqueLinkedIds },
+        status: "Present",
+        $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }],
+      })
+        .sort({ dutyStart: -1 })
+        .lean();
+
+      const result = { success: true, employeeId, data: active || null };
+      if (typeof ack === "function") ack(result);
+      socket.emit("attendance:active_response", result);
+    } catch (err) {
+      console.error("❌ Socket attendance:get_active error:", err.message);
+      const errRes = { success: false, message: err.message };
+      if (typeof ack === "function") ack(errRes);
+      socket.emit("attendance:active_response", errRes);
+    }
+  });
+
+  socket.on("attendance:get_active_staff", async (data, ack) => {
+    try {
+      const { dbName } = data || {};
+      if (!dbName) {
+        const errRes = { success: false, message: "dbName required" };
+        if (typeof ack === "function") ack(errRes);
+        return socket.emit("attendance:active_staff_response", errRes);
+      }
+
+      const tenantConnection = await dbConnector.getTenantConnection(dbName);
+      const { Attendance } = require("./models/TenantModels").getTenantModels(tenantConnection);
+
+      const active = await Attendance.find({
+        $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }],
+      }).lean();
+
+      const result = { success: true, data: active || [] };
+      if (typeof ack === "function") ack(result);
+      socket.emit("attendance:active_staff_response", result);
+    } catch (err) {
+      console.error("❌ Socket attendance:get_active_staff error:", err.message);
+      const errRes = { success: false, message: err.message };
+      if (typeof ack === "function") ack(errRes);
+      socket.emit("attendance:active_staff_response", errRes);
+    }
+  });
+
   socket.on("disconnect", () => { });
 });
 

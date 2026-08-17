@@ -329,7 +329,103 @@ exports.updateRequestStatus = async (req, res) => {
             return res.status(404).json({ success: false, message: "Message not found" });
         }
 
-        // Optionally, we could emit a socket event here if we want real-time updates of the status
+        // If this is a Late Start Duty request, handle Attendance record creation or denial broadcast
+        const isLateDutyRequest = updatedMessage.type === 'late_duty_request' || updatedMessage.requestType === 'Late Duty Start';
+        const isApproved = status === 'passed' || status === 'allowed' || status === 'approved';
+        const isDenied = status === 'rejected' || status === 'denied';
+
+        if (isLateDutyRequest && isApproved && updatedMessage.attendancePayload) {
+            const { Attendance, Employees } = req.tenantModels || {};
+            if (Attendance) {
+                const mongoose = require('mongoose');
+                const p = updatedMessage.attendancePayload;
+                const rawEmpId = p.employeeId || updatedMessage.senderId;
+
+                let targetEmpId = (typeof rawEmpId === 'string' && mongoose.Types.ObjectId.isValid(rawEmpId))
+                    ? new mongoose.Types.ObjectId(rawEmpId)
+                    : rawEmpId;
+                let targetEmpType = 'Staff';
+
+                // Look up matching Employees record in this tenant DB
+                if (Employees && rawEmpId) {
+                    const empDoc = await Employees.findOne({
+                        $or: [
+                            { _id: mongoose.Types.ObjectId.isValid(rawEmpId) ? new mongoose.Types.ObjectId(rawEmpId) : null },
+                            { user_id: mongoose.Types.ObjectId.isValid(rawEmpId) ? new mongoose.Types.ObjectId(rawEmpId) : null },
+                        ].filter((q) => q._id || q.user_id),
+                    }).lean().catch(() => null);
+
+                    if (empDoc) {
+                        targetEmpId = empDoc._id;
+                        targetEmpType = 'Employees';
+                    }
+                }
+
+                const rawLeadId = p.leadId;
+                const leadObjectId = (rawLeadId && typeof rawLeadId === 'string' && mongoose.Types.ObjectId.isValid(rawLeadId))
+                    ? new mongoose.Types.ObjectId(rawLeadId)
+                    : (rawLeadId || null);
+
+                // Auto-close ANY open active attendance session for this employee to prevent index collision
+                const allMatchingIds = [targetEmpId, rawEmpId, String(targetEmpId), String(rawEmpId)].filter(Boolean);
+                await Attendance.updateMany(
+                    {
+                        employeeId: { $in: allMatchingIds },
+                        $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }]
+                    },
+                    { $set: { dutyEnd: new Date(), status: 'Closed' } }
+                );
+
+                const startOfToday = new Date();
+                startOfToday.setHours(0, 0, 0, 0);
+
+                const record = new Attendance({
+                    employeeId: targetEmpId,
+                    employeeType: targetEmpType,
+                    date: startOfToday,
+                    dutyStart: new Date(),
+                    dutyEnd: null,
+                    startLat: p.lat ?? null,
+                    startLong: p.long ?? null,
+                    lat: p.lat ?? null,
+                    long: p.long ?? null,
+                    address: p.address ?? null,
+                    shiftCode: p.shiftCode || 'G',
+                    shiftType: p.shiftType,
+                    shiftPeriod: p.shiftPeriod,
+                    shiftLockHours: p.shiftLockHours || 8,
+                    site_name: p.site_name || 'Field Duty',
+                    leadId: leadObjectId,
+                    role: p.role || 'Staff',
+                    status: 'Present',
+                    remarks: 'Late Duty Start Approved by Admin via Chat',
+                    createdBy: req.user?._id || targetEmpId,
+                });
+
+                await record.save();
+
+                // Broadcast real-time duty_on socket event to corporate tenant room
+                if (req.io && req.tenantDbName) {
+                    req.io.to(req.tenantDbName).emit('attendance:duty_on', {
+                        employeeId: targetEmpId,
+                        activeDuty: record,
+                        attendanceId: record._id,
+                    });
+                    req.io.to(req.tenantDbName).emit('attendance:permission_approved', {
+                        employeeId: targetEmpId,
+                        activeDuty: record,
+                        message: 'Late duty start request was approved by Admin.',
+                    });
+                }
+            }
+        } else if (isLateDutyRequest && isDenied) {
+            if (req.io && req.tenantDbName) {
+                req.io.to(req.tenantDbName).emit('attendance:permission_denied', {
+                    employeeId: updatedMessage.attendancePayload?.employeeId || updatedMessage.senderId,
+                    message: 'Late duty start request was denied by Admin.',
+                });
+            }
+        }
 
         return res.status(200).json({ success: true, data: updatedMessage });
     } catch (err) {

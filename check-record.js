@@ -12,10 +12,12 @@ async function check() {
   
   await mongoose.connect(uri);
   const connection = mongoose.connection;
+  const tDb = connection.useDb('41444c50503539303542');
+  const tProfile = tDb.collection('profileMaster');
   
-  const userMaster = connection.collection('userMaster');
-  const user = await userMaster.findOne({ _id: new mongoose.Types.ObjectId("69f84083db5c152ec67c55e8") });
-  console.log(JSON.stringify(user, null, 2));
+  const doc = await tProfile.findOne({});
+  console.log("=== PROFILE MASTER DOC ===");
+  console.log(JSON.stringify(doc, null, 2));
   
   process.exit(0);
 }
