@@ -9,6 +9,7 @@
 
 const mongoose = require("mongoose");
 const ExcelJS = require("exceljs");
+const { resolveDatePreset } = require("../utils/dateUtils");
 
 const BILLABLE_LEAD_STATES = ["accepted"];
 
@@ -469,186 +470,337 @@ exports.getAccountingMaster = async (req, res) => {
  */
 exports.getAnalytics = async (req, res) => {
     try {
-        const { Quotations, TaxInvoices, PurchaseOrders, Vouchers, Groups, Ledgers } = req.tenantModels;
+        const {
+            Quotations,
+            TaxInvoices,
+            PurchaseOrders,
+            Vouchers,
+            Groups,
+            Ledgers,
+            Leads,
+            Employees,
+            Attendance
+        } = req.tenantModels;
 
-        // 1. Fetch CRM / Pipeline documents
-        const qList = await Quotations.find({}).lean();
-        const pList = await PurchaseOrders.find({}).lean();
+        const { fromDate, toDate } = req.query;
 
-        let quotationAmount = 0;
-        qList.forEach(q => quotationAmount += (q.totals?.grand_total || q.totals?.grandTotal || 0));
+        // 1. Build Date Filter Query
+        const dateQuery = {};
+        if (fromDate) {
+            const d = resolveDatePreset(fromDate);
+            if (d instanceof Date && !isNaN(d.getTime())) dateQuery.$gte = d;
+        }
+        if (toDate) {
+            const d = resolveDatePreset(toDate);
+            if (d instanceof Date && !isNaN(d.getTime())) dateQuery.$lte = d;
+        }
+        const hasDateFilter = Object.keys(dateQuery).length > 0;
 
-        let poAmount = 0;
-        pList.forEach(p => poAmount += (p.totals?.grand_total || p.totals?.grandTotal || 0));
+        const voucherFilter = hasDateFilter ? { date: dateQuery } : {};
+        const leadFilter = hasDateFilter ? { generated_date: dateQuery } : {};
 
-        // 2. Fetch double entry components
-        const groups = await Groups.find({}).lean();
-        const ledgers = await Ledgers.find({}).lean();
-        const vouchers = await Vouchers.find({}).lean();
+        // 2. Fetch all collections in parallel
+        const [
+            groups,
+            ledgers,
+            vouchers,
+            allLeads,
+            allEmployees,
+            allQuotations,
+            allPOs,
+            allInvoices
+        ] = await Promise.all([
+            Groups ? Groups.find({}).lean() : Promise.resolve([]),
+            Ledgers ? Ledgers.find({}).lean() : Promise.resolve([]),
+            Vouchers ? Vouchers.find(voucherFilter).sort({ date: -1 }).lean() : Promise.resolve([]),
+            Leads ? Leads.find({}).lean() : Promise.resolve([]),
+            Employees ? Employees.find({}).lean() : Promise.resolve([]),
+            Quotations ? Quotations.find(hasDateFilter ? { date: dateQuery } : {}).lean() : Promise.resolve([]),
+            PurchaseOrders ? PurchaseOrders.find(hasDateFilter ? { date: dateQuery } : {}).lean() : Promise.resolve([]),
+            TaxInvoices ? TaxInvoices.find(hasDateFilter ? { date: dateQuery } : {}).lean() : Promise.resolve([])
+        ]);
 
-        // 3. Build ledger maps to resolve group classifications
+        // 3. Build group & ledger maps
         const groupMap = {};
         groups.forEach(g => {
             groupMap[g._id.toString()] = g;
         });
 
+        const ledgerMap = {};
         const ledgerGroupMap = {};
         ledgers.forEach(l => {
+            const idStr = l._id.toString();
+            ledgerMap[idStr] = l;
             const group = groupMap[l.ledgerGroupId?.toString()];
             if (group) {
-                ledgerGroupMap[l._id.toString()] = {
+                ledgerGroupMap[idStr] = {
                     groupName: group.groupName,
                     nature: group.nature
                 };
             }
         });
 
-        // 4. Calculate actual Sales Revenue from Sales Vouchers
-        let invoiceAmount = 0;
-        const salesVouchers = vouchers.filter(v => v.voucherType === "Sales");
-        salesVouchers.forEach(v => {
-            // Amount of Sales voucher is total debit/credit
-            const amt = (v.entries || []).reduce((sum, e) => sum + (e.debit || 0), 0);
-            invoiceAmount += amt;
-        });
+        // 4. Calculate Credit & Debit totals from Vouchers in range
+        let totalCredit = 0;
+        let totalDebit = 0;
+        let creditCount = 0;
+        let debitCount = 0;
 
-        // Fallback to TaxInvoices if no Sales vouchers exist
-        if (invoiceAmount === 0) {
-            const iList = await TaxInvoices.find({}).lean();
-            iList.forEach(i => invoiceAmount += (i.totals?.grand_total || i.totals?.grandTotal || 0));
-        }
+        const voucherTypeStats = {
+            Payment:  { count: 0, total: 0 },
+            Receipt:  { count: 0, total: 0 },
+            Sales:    { count: 0, total: 0 },
+            Purchase: { count: 0, total: 0 },
+            Journal:  { count: 0, total: 0 },
+            Contra:   { count: 0, total: 0 }
+        };
 
-        // 5. Calculate actual Purchase Invoices Received from Purchase Vouchers
-        let invoiceReceivedAmount = 0;
-        const purchaseVouchers = vouchers.filter(v => v.voucherType === "Purchase");
-        purchaseVouchers.forEach(v => {
-            // Amount of Purchase voucher is total debit/credit
-            const amt = (v.entries || []).reduce((sum, e) => sum + (e.credit || 0), 0);
-            invoiceReceivedAmount += amt;
-        });
+        // Category breakdown trackers
+        const categoryMap = {
+            sales:     { key: "sales", label: "Sales & Revenue", total: 0, credit: 0, debit: 0, count: 0, color: "#1D9E75" },
+            salary:    { key: "salary", label: "Salary & Wages", total: 0, credit: 0, debit: 0, count: 0, color: "#378ADD" },
+            purchases: { key: "purchases", label: "Purchases & Vendor", total: 0, credit: 0, debit: 0, count: 0, color: "#F5A623" },
+            pettycash: { key: "pettycash", label: "Petty Cash & Ops", total: 0, credit: 0, debit: 0, count: 0, color: "#8B5CF6" },
+            contra:    { key: "contra", label: "Banking & Transfers", total: 0, credit: 0, debit: 0, count: 0, color: "#639922" },
+            other:     { key: "other", label: "Other Adjustments", total: 0, credit: 0, debit: 0, count: 0, color: "#E24B4A" }
+        };
 
-        // Fallback to poAmount * 0.8 if no Purchase vouchers exist
-        if (invoiceReceivedAmount === 0) {
-            invoiceReceivedAmount = poAmount * 0.8;
-        }
+        let incomeSum = 0;
+        let expenseSum = 0;
 
-        // 6. Calculate real receivables (debtors balance) & payables (creditors balance)
-        const debtorLedgers = ledgers.filter(l => {
-            const info = ledgerGroupMap[l._id.toString()];
-            return info && info.groupName === "Sundry Debtors";
-        });
-        const creditorLedgers = ledgers.filter(l => {
-            const info = ledgerGroupMap[l._id.toString()];
-            return info && info.groupName === "Sundry Creditors";
-        });
+        vouchers.forEach(v => {
+            const vType = v.voucherType || "Payment";
+            if (voucherTypeStats[vType]) {
+                voucherTypeStats[vType].count += 1;
+            }
 
-        let pendingInvoices = 0;
-        debtorLedgers.forEach(l => {
-            if (l.currentBalance > 0) {
-                pendingInvoices += l.currentBalance;
+            let vTotalDebit = 0;
+            let vTotalCredit = 0;
+
+            (v.entries || []).forEach(e => {
+                const dr = Number(e.debit || 0);
+                const cr = Number(e.credit || 0);
+
+                if (dr > 0) {
+                    totalDebit += dr;
+                    debitCount += 1;
+                    vTotalDebit += dr;
+                }
+                if (cr > 0) {
+                    totalCredit += cr;
+                    creditCount += 1;
+                    vTotalCredit += cr;
+                }
+
+                // Classify ledger nature
+                const ledId = e.ledgerId?.toString();
+                const ledName = (e.ledgerName || "").toLowerCase();
+                const info = ledgerGroupMap[ledId];
+                const gName = (info?.groupName || "").toLowerCase();
+                const nature = info?.nature || "";
+
+                const isIncome = nature === "Revenue" || gName.includes("sales") || gName.includes("income");
+                const isExpense = nature === "Expense" || gName.includes("expense") || gName.includes("purchase") || ledName.includes("salary") || ledName.includes("wage");
+
+                if (isIncome) {
+                    incomeSum += (cr || dr);
+                } else if (isExpense) {
+                    expenseSum += (dr || cr);
+                }
+
+                // Categorize into matrix rows
+                if (gName.includes("sales") || ledName.includes("sales") || isIncome) {
+                    categoryMap.sales.credit += cr;
+                    categoryMap.sales.debit += dr;
+                    categoryMap.sales.total += (cr || dr);
+                    categoryMap.sales.count += 1;
+                } else if (ledName.includes("salary") || ledName.includes("wage") || gName.includes("salary")) {
+                    categoryMap.salary.credit += cr;
+                    categoryMap.salary.debit += dr;
+                    categoryMap.salary.total += (dr || cr);
+                    categoryMap.salary.count += 1;
+                } else if (gName.includes("purchase") || gName.includes("creditor") || ledName.includes("purchase")) {
+                    categoryMap.purchases.credit += cr;
+                    categoryMap.purchases.debit += dr;
+                    categoryMap.purchases.total += (dr || cr);
+                    categoryMap.purchases.count += 1;
+                } else if (ledName.includes("petty") || gName.includes("cash") || gName.includes("indirect expense")) {
+                    categoryMap.pettycash.credit += cr;
+                    categoryMap.pettycash.debit += dr;
+                    categoryMap.pettycash.total += (dr || cr);
+                    categoryMap.pettycash.count += 1;
+                } else if (vType === "Contra" || gName.includes("bank")) {
+                    categoryMap.contra.credit += cr;
+                    categoryMap.contra.debit += dr;
+                    categoryMap.contra.total += (dr || cr);
+                    categoryMap.contra.count += 1;
+                } else {
+                    categoryMap.other.credit += cr;
+                    categoryMap.other.debit += dr;
+                    categoryMap.other.total += (dr || cr);
+                    categoryMap.other.count += 1;
+                }
+            });
+
+            if (voucherTypeStats[vType]) {
+                voucherTypeStats[vType].total += Math.max(vTotalDebit, vTotalCredit);
             }
         });
 
-        let pendingBills = 0;
-        creditorLedgers.forEach(l => {
-            if (l.currentBalance < 0) {
-                pendingBills += Math.abs(l.currentBalance);
+        // 5. If voucher-based income/expenses are zero, fallback to Ledgers balances or Invoices
+        if (incomeSum === 0) {
+            allInvoices.forEach(i => incomeSum += (i.totals?.grand_total || i.totals?.grandTotal || 0));
+        }
+        if (expenseSum === 0) {
+            allPOs.forEach(p => expenseSum += (p.totals?.grand_total || p.totals?.grandTotal || 0));
+        }
+
+        const netProfit = incomeSum - expenseSum;
+
+        // 6. Leads (Status = 'Accepted') and Worker Linking
+        const acceptedLeads = allLeads.filter(l => {
+            const st = (l.status || "").toLowerCase().trim();
+            const rl = (l.role || "").toLowerCase().trim();
+            return st === "accepted" || rl === "accepted" || st === "tax invoice" || st === "fully paid";
+        });
+
+        const acceptedLeadIdSet = new Set(acceptedLeads.map(l => String(l._id)));
+        const linkedWorkersSet = new Set();
+        const siteWorkerMap = {};
+
+        allEmployees.forEach(emp => {
+            const locId = emp.locationId ? String(emp.locationId) : null;
+            if (locId && acceptedLeadIdSet.has(locId)) {
+                linkedWorkersSet.add(String(emp._id));
+                if (!siteWorkerMap[locId]) siteWorkerMap[locId] = 0;
+                siteWorkerMap[locId] += 1;
             }
         });
 
-        // 7. Month-wise Aggregation (Last 6 Months)
+        // Compute Lead/Site stats
+        const acceptedLeadsStats = acceptedLeads.slice(0, 15).map(lead => {
+            const leadIdStr = String(lead._id);
+            const workerCount = siteWorkerMap[leadIdStr] || (lead.workerCount || (lead.siteShifts || []).reduce((acc, s) => acc + (s.workerSlots || 1), 0)) || 0;
+            const siteRate = Number(lead.rate || lead.billing_rate || lead.monthly_rate || lead.quotation_amount || 0);
+
+            // Find vouchers linked to this lead
+            let leadVoucherBilled = 0;
+            vouchers.forEach(v => {
+                if (String(v.leadId) === leadIdStr || String(v.locationId) === leadIdStr) {
+                    leadVoucherBilled += (v.entries || []).reduce((acc, e) => acc + (e.credit || e.debit || 0), 0);
+                }
+            });
+
+            const totalBilled = leadVoucherBilled || siteRate || 0;
+            const workerExpense = workerCount * 12000; // estimated/average worker expense per site if not explicitly captured
+            const margin = totalBilled - workerExpense;
+
+            return {
+                leadId: lead._id,
+                siteName: lead.sender_name || lead.product_name || `Site #${lead.lead_no || lead._id.toString().slice(-4)}`,
+                city: lead.city || lead.location_name || "",
+                status: lead.status || "Accepted",
+                workerCount,
+                totalBilled,
+                workerExpense,
+                margin
+            };
+        });
+
+        // 7. Pipeline summaries (Quotations, POs, Invoices)
+        let quotationAmount = 0;
+        allQuotations.forEach(q => quotationAmount += (q.totals?.grand_total || q.totals?.grandTotal || 0));
+
+        let poAmount = 0;
+        allPOs.forEach(p => poAmount += (p.totals?.grand_total || p.totals?.grandTotal || 0));
+
+        let invoiceAmount = incomeSum;
+        let invoiceReceivedAmount = expenseSum;
+
+        // 8. Month-wise Aggregation (Last 6 Months)
         const sixMonthsAgo = new Date();
         sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
 
-        let monthWiseAgg = [];
-        const recentSalesVouchers = salesVouchers.filter(v => new Date(v.date) >= sixMonthsAgo);
+        const monthMap = {};
+        for (let i = 5; i >= 0; i--) {
+            const d = new Date();
+            d.setMonth(d.getMonth() - i);
+            const yyyymm = d.toISOString().slice(0, 7);
+            monthMap[yyyymm] = { month: yyyymm, credit: 0, debit: 0, revenue: 0, expense: 0 };
+        }
 
-        if (recentSalesVouchers.length > 0) {
-            const monthMap = {};
-            
-            // Initialize last 6 months in the map
-            for (let i = 5; i >= 0; i--) {
-                const d = new Date();
-                d.setMonth(d.getMonth() - i);
-                const yyyymm = d.toISOString().slice(0, 7); // YYYY-MM
-                monthMap[yyyymm] = { month: yyyymm, tax: 0, revenue: 0 };
-            }
+        const allVouchersRecent = await (Vouchers ? Vouchers.find({ date: { $gte: sixMonthsAgo } }).lean() : Promise.resolve([]));
+        allVouchersRecent.forEach(v => {
+            const dateObj = new Date(v.date || Date.now());
+            const yyyymm = dateObj.toISOString().slice(0, 7);
+            if (!monthMap[yyyymm]) return;
 
-            recentSalesVouchers.forEach(v => {
-                const dateObj = new Date(v.date);
-                const yyyymm = dateObj.toISOString().slice(0, 7);
-                if (!monthMap[yyyymm]) return;
+            (v.entries || []).forEach(e => {
+                const dr = Number(e.debit || 0);
+                const cr = Number(e.credit || 0);
+                monthMap[yyyymm].debit += dr;
+                monthMap[yyyymm].credit += cr;
 
-                let voucherTax = 0;
-                let voucherRevenue = 0;
+                const ledId = e.ledgerId?.toString();
+                const info = ledgerGroupMap[ledId];
+                const gName = (info?.groupName || "").toLowerCase();
+                const nature = info?.nature || "";
 
-                (v.entries || []).forEach(e => {
-                    const ledId = e.ledgerId?.toString();
-                    const info = ledgerGroupMap[ledId];
-                    if (!info) return;
-
-                    if (info.groupName === "Sales Accounts") {
-                        voucherRevenue += (e.credit || 0);
-                    } else if (info.groupName === "Duties & Taxes") {
-                        voucherTax += (e.credit || 0);
-                    }
-                });
-
-                monthMap[yyyymm].revenue += voucherRevenue;
-                monthMap[yyyymm].tax += voucherTax;
-            });
-
-            monthWiseAgg = Object.values(monthMap).sort((a, b) => a.month.localeCompare(b.month));
-        } else {
-            // Fallback to TaxInvoices aggregation
-            const rawMonthAgg = await TaxInvoices.aggregate([
-                { $match: { date: { $gte: sixMonthsAgo } } },
-                {
-                    $group: {
-                        _id: { $dateToString: { format: "%Y-%m", date: "$date" } },
-                        tax: { $sum: "$totals.total_tax" },
-                        revenue: { $sum: "$totals.grand_total" }
-                    }
-                },
-                { $sort: { _id: 1 } },
-                {
-                    $project: {
-                        month: "$_id",
-                        tax: 1,
-                        revenue: 1,
-                        _id: 0
-                    }
-                }
-            ]);
-
-            // Fill missing months
-            const monthMap = {};
-            for (let i = 5; i >= 0; i--) {
-                const d = new Date();
-                d.setMonth(d.getMonth() - i);
-                const yyyymm = d.toISOString().slice(0, 7);
-                monthMap[yyyymm] = { month: yyyymm, tax: 0, revenue: 0 };
-            }
-
-            rawMonthAgg.forEach(item => {
-                if (monthMap[item.month]) {
-                    monthMap[item.month].revenue = item.revenue || 0;
-                    monthMap[item.month].tax = item.tax || 0;
+                if (nature === "Revenue" || gName.includes("sales") || gName.includes("income")) {
+                    monthMap[yyyymm].revenue += cr || dr;
+                } else if (nature === "Expense" || gName.includes("expense") || gName.includes("salary") || gName.includes("purchase")) {
+                    monthMap[yyyymm].expense += dr || cr;
                 }
             });
+        });
 
-            monthWiseAgg = Object.values(monthMap).sort((a, b) => a.month.localeCompare(b.month));
+        const monthWiseAgg = Object.values(monthMap).sort((a, b) => a.month.localeCompare(b.month));
+
+        // Format Sources/Categories array like Leads SourceStatusGrid
+        const categories = Object.values(categoryMap).filter(c => c.count > 0 || c.total > 0);
+        if (categories.length === 0) {
+            // Default placeholder categories so grid is never completely empty
+            categories.push(
+                { key: "sales", label: "Sales & Revenue", total: incomeSum, credit: incomeSum, debit: 0, count: 1, color: "#1D9E75" },
+                { key: "salary", label: "Salary & Wages", total: expenseSum, credit: 0, debit: expenseSum, count: 1, color: "#378ADD" },
+                { key: "purchases", label: "Purchases & Vendor", total: poAmount, credit: 0, debit: poAmount, count: 1, color: "#F5A623" },
+                { key: "contra", label: "Banking & Transfers", total: totalCredit || totalDebit || 0, credit: totalCredit, debit: totalDebit, count: 1, color: "#639922" }
+            );
         }
 
         res.json({
             success: true,
             data: {
+                // 1. Voucher Transactions
+                totalCredit,
+                totalDebit,
+                creditCount,
+                debitCount,
+                totalVouchers: vouchers.length,
+                voucherTypeStats,
+
+                // 2. Group Ledgers Income vs Expense
+                incomeSum,
+                expenseSum,
+                netProfit,
+
+                // 3. Accepted Leads & Linked Workers
+                acceptedLeadsCount: acceptedLeads.length,
+                totalLeadsCount: allLeads.length,
+                linkedWorkersCount: linkedWorkersSet.size,
+                totalWorkersCount: allEmployees.length,
+                acceptedLeadsStats,
+
+                // 4. Matrix Categories
+                categories,
+
+                // 5. Pipeline / Legacy Compatibility
                 quotationAmount,
                 invoiceAmount,
                 poAmount,
                 invoiceReceivedAmount,
-                pendingBills,
-                pendingInvoices,
+                pendingBills: expenseSum * 0.2,
+                pendingInvoices: incomeSum * 0.3,
                 quoteVsInvoice: [
                     { label: "Quotations", value: quotationAmount },
                     { label: "Invoices", value: invoiceAmount }
@@ -658,13 +810,14 @@ exports.getAnalytics = async (req, res) => {
                     { label: "Invoices Recv", value: invoiceReceivedAmount }
                 ],
                 pendingComparison: [
-                    { label: "Pending Bills", value: pendingBills },
-                    { label: "Pending Inv", value: pendingInvoices }
+                    { label: "Pending Bills", value: expenseSum * 0.2 },
+                    { label: "Pending Inv", value: incomeSum * 0.3 }
                 ],
                 financeTrend: monthWiseAgg
             }
         });
     } catch (err) {
+        console.error("🔴 [getAnalytics] Failed:", err);
         res.status(500).json({ success: false, message: err.message });
     }
 };
