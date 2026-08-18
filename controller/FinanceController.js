@@ -540,43 +540,31 @@ exports.getAnalytics = async (req, res) => {
             }
         });
 
-        // 4. Calculate Credit & Debit totals from Vouchers in range
+        // 4. Calculate the 4 Accounting Pairs & Category Breakdowns
+        let directIncome = 0;
+        let directExpense = 0;
+        let indirectIncome = 0;
+        let indirectExpense = 0;
+        let cashReceipts = 0;
+        let cashPayments = 0;
+        let bankReceipts = 0;
+        let bankPayments = 0;
+
         let totalCredit = 0;
         let totalDebit = 0;
         let creditCount = 0;
         let debitCount = 0;
 
-        const voucherTypeStats = {
-            Payment:  { count: 0, total: 0 },
-            Receipt:  { count: 0, total: 0 },
-            Sales:    { count: 0, total: 0 },
-            Purchase: { count: 0, total: 0 },
-            Journal:  { count: 0, total: 0 },
-            Contra:   { count: 0, total: 0 }
-        };
-
-        // Category breakdown trackers
         const categoryMap = {
-            sales:     { key: "sales", label: "Sales & Revenue", total: 0, credit: 0, debit: 0, count: 0, color: "#1D9E75" },
-            salary:    { key: "salary", label: "Salary & Wages", total: 0, credit: 0, debit: 0, count: 0, color: "#378ADD" },
-            purchases: { key: "purchases", label: "Purchases & Vendor", total: 0, credit: 0, debit: 0, count: 0, color: "#F5A623" },
-            pettycash: { key: "pettycash", label: "Petty Cash & Ops", total: 0, credit: 0, debit: 0, count: 0, color: "#8B5CF6" },
-            contra:    { key: "contra", label: "Banking & Transfers", total: 0, credit: 0, debit: 0, count: 0, color: "#639922" },
-            other:     { key: "other", label: "Other Adjustments", total: 0, credit: 0, debit: 0, count: 0, color: "#E24B4A" }
+            direct_income:    { key: "direct_income", label: "Direct Income & Sales", total: 0, credit: 0, debit: 0, count: 0, color: "#1D9E75" },
+            direct_expense:   { key: "direct_expense", label: "Direct Expenses & Salary", total: 0, credit: 0, debit: 0, count: 0, color: "#E24B4A" },
+            indirect_income:  { key: "indirect_income", label: "Indirect Income", total: 0, credit: 0, debit: 0, count: 0, color: "#378ADD" },
+            indirect_expense: { key: "indirect_expense", label: "Indirect Expenses & Ops", total: 0, credit: 0, debit: 0, count: 0, color: "#F5A623" },
+            cash:             { key: "cash", label: "Cash Book (In/Out)", total: 0, credit: 0, debit: 0, count: 0, color: "#10B981" },
+            bank:             { key: "bank", label: "Bank Accounts (In/Out)", total: 0, credit: 0, debit: 0, count: 0, color: "#6366F1" }
         };
-
-        let incomeSum = 0;
-        let expenseSum = 0;
 
         vouchers.forEach(v => {
-            const vType = v.voucherType || "Payment";
-            if (voucherTypeStats[vType]) {
-                voucherTypeStats[vType].count += 1;
-            }
-
-            let vTotalDebit = 0;
-            let vTotalCredit = 0;
-
             (v.entries || []).forEach(e => {
                 const dr = Number(e.debit || 0);
                 const cr = Number(e.credit || 0);
@@ -584,106 +572,111 @@ exports.getAnalytics = async (req, res) => {
                 if (dr > 0) {
                     totalDebit += dr;
                     debitCount += 1;
-                    vTotalDebit += dr;
                 }
                 if (cr > 0) {
                     totalCredit += cr;
                     creditCount += 1;
-                    vTotalCredit += cr;
                 }
 
-                // Classify ledger nature
                 const ledId = e.ledgerId?.toString();
                 const ledName = (e.ledgerName || "").toLowerCase();
                 const info = ledgerGroupMap[ledId];
                 const gName = (info?.groupName || "").toLowerCase();
-                const nature = info?.nature || "";
 
-                const isIncome = nature === "Revenue" || gName.includes("sales") || gName.includes("income");
-                const isExpense = nature === "Expense" || gName.includes("expense") || gName.includes("purchase") || ledName.includes("salary") || ledName.includes("wage");
-
-                if (isIncome) {
-                    incomeSum += (cr || dr);
-                } else if (isExpense) {
-                    expenseSum += (dr || cr);
+                // ── Pair 1: Direct Income vs Direct Expense ──
+                if (gName.includes("direct income") || gName.includes("sales") || ledName.includes("sales") || ledName.includes("revenue")) {
+                    const amt = cr || dr;
+                    directIncome += amt;
+                    categoryMap.direct_income.credit += cr;
+                    categoryMap.direct_income.debit += dr;
+                    categoryMap.direct_income.total += amt;
+                    categoryMap.direct_income.count += 1;
+                } else if (gName.includes("direct expense") || gName.includes("purchase") || ledName.includes("salary") || ledName.includes("wage") || ledName.includes("purchase")) {
+                    const amt = dr || cr;
+                    directExpense += amt;
+                    categoryMap.direct_expense.credit += cr;
+                    categoryMap.direct_expense.debit += dr;
+                    categoryMap.direct_expense.total += amt;
+                    categoryMap.direct_expense.count += 1;
+                }
+                // ── Pair 2: Indirect Income vs Indirect Expense ──
+                else if (gName.includes("indirect income") || ledName.includes("discount rcv") || ledName.includes("interest rcv")) {
+                    const amt = cr || dr;
+                    indirectIncome += amt;
+                    categoryMap.indirect_income.credit += cr;
+                    categoryMap.indirect_income.debit += dr;
+                    categoryMap.indirect_income.total += amt;
+                    categoryMap.indirect_income.count += 1;
+                } else if (gName.includes("indirect expense") || ledName.includes("rent") || ledName.includes("tea") || ledName.includes("travel") || ledName.includes("office") || ledName.includes("repair")) {
+                    const amt = dr || cr;
+                    indirectExpense += amt;
+                    categoryMap.indirect_expense.credit += cr;
+                    categoryMap.indirect_expense.debit += dr;
+                    categoryMap.indirect_expense.total += amt;
+                    categoryMap.indirect_expense.count += 1;
                 }
 
-                // Categorize into matrix rows
-                if (gName.includes("sales") || ledName.includes("sales") || isIncome) {
-                    categoryMap.sales.credit += cr;
-                    categoryMap.sales.debit += dr;
-                    categoryMap.sales.total += (cr || dr);
-                    categoryMap.sales.count += 1;
-                } else if (ledName.includes("salary") || ledName.includes("wage") || gName.includes("salary")) {
-                    categoryMap.salary.credit += cr;
-                    categoryMap.salary.debit += dr;
-                    categoryMap.salary.total += (dr || cr);
-                    categoryMap.salary.count += 1;
-                } else if (gName.includes("purchase") || gName.includes("creditor") || ledName.includes("purchase")) {
-                    categoryMap.purchases.credit += cr;
-                    categoryMap.purchases.debit += dr;
-                    categoryMap.purchases.total += (dr || cr);
-                    categoryMap.purchases.count += 1;
-                } else if (ledName.includes("petty") || gName.includes("cash") || gName.includes("indirect expense")) {
-                    categoryMap.pettycash.credit += cr;
-                    categoryMap.pettycash.debit += dr;
-                    categoryMap.pettycash.total += (dr || cr);
-                    categoryMap.pettycash.count += 1;
-                } else if (vType === "Contra" || gName.includes("bank")) {
-                    categoryMap.contra.credit += cr;
-                    categoryMap.contra.debit += dr;
-                    categoryMap.contra.total += (dr || cr);
-                    categoryMap.contra.count += 1;
-                } else {
-                    categoryMap.other.credit += cr;
-                    categoryMap.other.debit += dr;
-                    categoryMap.other.total += (dr || cr);
-                    categoryMap.other.count += 1;
+                // ── Pair 3: Cash In vs Cash Out (Cash-in-hand group) ──
+                if (gName.includes("cash") || ledName.includes("cash") || ledName.includes("petty")) {
+                    if (dr > 0) cashReceipts += dr;
+                    if (cr > 0) cashPayments += cr;
+                    categoryMap.cash.credit += cr;
+                    categoryMap.cash.debit += dr;
+                    categoryMap.cash.total += (dr + cr);
+                    categoryMap.cash.count += 1;
+                }
+
+                // ── Pair 4: Bank In vs Bank Out (Bank Accounts group) ──
+                if (gName.includes("bank") || ledName.includes("bank") || ledName.includes("hdfc") || ledName.includes("sbi") || ledName.includes("icici")) {
+                    if (dr > 0) bankReceipts += dr;
+                    if (cr > 0) bankPayments += cr;
+                    categoryMap.bank.credit += cr;
+                    categoryMap.bank.debit += dr;
+                    categoryMap.bank.total += (dr + cr);
+                    categoryMap.bank.count += 1;
                 }
             });
-
-            if (voucherTypeStats[vType]) {
-                voucherTypeStats[vType].total += Math.max(vTotalDebit, vTotalCredit);
-            }
         });
 
-        // 5. If voucher-based income/expenses are zero, fallback to Ledgers balances or Invoices
-        if (incomeSum === 0) {
-            allInvoices.forEach(i => incomeSum += (i.totals?.grand_total || i.totals?.grandTotal || 0));
+        // Fallbacks from pipeline documents if voucher transactions are empty
+        if (directIncome === 0) {
+            allInvoices.forEach(i => directIncome += (i.totals?.grand_total || i.totals?.grandTotal || 0));
         }
-        if (expenseSum === 0) {
-            allPOs.forEach(p => expenseSum += (p.totals?.grand_total || p.totals?.grandTotal || 0));
+        if (directExpense === 0) {
+            allPOs.forEach(p => directExpense += (p.totals?.grand_total || p.totals?.grandTotal || 0));
         }
 
-        const netProfit = incomeSum - expenseSum;
+        const totalIncome = directIncome + indirectIncome;
+        const totalExpense = directExpense + indirectExpense;
+        const netProfit = totalIncome - totalExpense;
 
-        // 6. Leads (Status = 'Accepted') and Worker Linking
+        // 5. Leads (Status = 'Accepted') and Active Workers (active === true)
         const acceptedLeads = allLeads.filter(l => {
             const st = (l.status || "").toLowerCase().trim();
             const rl = (l.role || "").toLowerCase().trim();
             return st === "accepted" || rl === "accepted" || st === "tax invoice" || st === "fully paid";
         });
 
+        const activeEmployees = allEmployees.filter(emp => emp.active !== false);
         const acceptedLeadIdSet = new Set(acceptedLeads.map(l => String(l._id)));
-        const linkedWorkersSet = new Set();
+        const linkedActiveWorkersSet = new Set();
         const siteWorkerMap = {};
 
-        allEmployees.forEach(emp => {
+        activeEmployees.forEach(emp => {
             const locId = emp.locationId ? String(emp.locationId) : null;
             if (locId && acceptedLeadIdSet.has(locId)) {
-                linkedWorkersSet.add(String(emp._id));
+                linkedActiveWorkersSet.add(String(emp._id));
                 if (!siteWorkerMap[locId]) siteWorkerMap[locId] = 0;
                 siteWorkerMap[locId] += 1;
             }
         });
 
-        // Compute Lead/Site stats
+        // Compute Accepted Leads / Sites stats
         const acceptedLeadsStats = acceptedLeads.slice(0, 15).map(lead => {
             const leadIdStr = String(lead._id);
-            const workerCount = siteWorkerMap[leadIdStr] || (lead.workerCount || (lead.siteShifts || []).reduce((acc, s) => acc + (s.workerSlots || 1), 0)) || 0;
+            const activeWorkerCount = siteWorkerMap[leadIdStr] || (lead.workerCount || (lead.siteShifts || []).reduce((acc, s) => acc + (s.workerSlots || 1), 0)) || 0;
             const siteRate = Number(lead.rate || lead.billing_rate || lead.monthly_rate || lead.quotation_amount || 0);
 
-            // Find vouchers linked to this lead
             let leadVoucherBilled = 0;
             vouchers.forEach(v => {
                 if (String(v.leadId) === leadIdStr || String(v.locationId) === leadIdStr) {
@@ -692,7 +685,7 @@ exports.getAnalytics = async (req, res) => {
             });
 
             const totalBilled = leadVoucherBilled || siteRate || 0;
-            const workerExpense = workerCount * 12000; // estimated/average worker expense per site if not explicitly captured
+            const workerExpense = activeWorkerCount * 12000;
             const margin = totalBilled - workerExpense;
 
             return {
@@ -700,24 +693,21 @@ exports.getAnalytics = async (req, res) => {
                 siteName: lead.sender_name || lead.product_name || `Site #${lead.lead_no || lead._id.toString().slice(-4)}`,
                 city: lead.city || lead.location_name || "",
                 status: lead.status || "Accepted",
-                workerCount,
+                workerCount: activeWorkerCount,
                 totalBilled,
                 workerExpense,
                 margin
             };
         });
 
-        // 7. Pipeline summaries (Quotations, POs, Invoices)
+        // 6. Pipeline summaries (Quotations, POs, Invoices)
         let quotationAmount = 0;
         allQuotations.forEach(q => quotationAmount += (q.totals?.grand_total || q.totals?.grandTotal || 0));
 
         let poAmount = 0;
         allPOs.forEach(p => poAmount += (p.totals?.grand_total || p.totals?.grandTotal || 0));
 
-        let invoiceAmount = incomeSum;
-        let invoiceReceivedAmount = expenseSum;
-
-        // 8. Month-wise Aggregation (Last 6 Months)
+        // 7. Month-wise Aggregation (Last 6 Months)
         const sixMonthsAgo = new Date();
         sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
 
@@ -756,62 +746,80 @@ exports.getAnalytics = async (req, res) => {
 
         const monthWiseAgg = Object.values(monthMap).sort((a, b) => a.month.localeCompare(b.month));
 
-        // Format Sources/Categories array like Leads SourceStatusGrid
+        // Format Categories array for Matrix Grid
         const categories = Object.values(categoryMap).filter(c => c.count > 0 || c.total > 0);
         if (categories.length === 0) {
-            // Default placeholder categories so grid is never completely empty
             categories.push(
-                { key: "sales", label: "Sales & Revenue", total: incomeSum, credit: incomeSum, debit: 0, count: 1, color: "#1D9E75" },
-                { key: "salary", label: "Salary & Wages", total: expenseSum, credit: 0, debit: expenseSum, count: 1, color: "#378ADD" },
-                { key: "purchases", label: "Purchases & Vendor", total: poAmount, credit: 0, debit: poAmount, count: 1, color: "#F5A623" },
-                { key: "contra", label: "Banking & Transfers", total: totalCredit || totalDebit || 0, credit: totalCredit, debit: totalDebit, count: 1, color: "#639922" }
+                { key: "direct_income", label: "Direct Income & Sales", total: directIncome, credit: directIncome, debit: 0, count: 1, color: "#1D9E75" },
+                { key: "direct_expense", label: "Direct Expenses & Salary", total: directExpense, credit: 0, debit: directExpense, count: 1, color: "#E24B4A" },
+                { key: "cash", label: "Cash Book (In/Out)", total: cashReceipts + cashPayments, credit: cashPayments, debit: cashReceipts, count: 1, color: "#10B981" },
+                { key: "bank", label: "Bank Accounts (In/Out)", total: bankReceipts + bankPayments, credit: bankPayments, debit: bankReceipts, count: 1, color: "#6366F1" }
             );
         }
 
         res.json({
             success: true,
             data: {
-                // 1. Voucher Transactions
+                // ── 4 Accounting Pairs ──
+                // Pair 1: Direct Income vs Direct Expense
+                directIncome,
+                directExpense,
+                directMargin: directIncome - directExpense,
+
+                // Pair 2: Indirect Income vs Indirect Expense
+                indirectIncome,
+                indirectExpense,
+                indirectMargin: indirectIncome - indirectExpense,
+
+                // Pair 3: Cash Receipts vs Cash Payments (Cash Only)
+                cashReceipts,
+                cashPayments,
+                netCashFlow: cashReceipts - cashPayments,
+
+                // Pair 4: Bank Receipts vs Bank Payments (Bank Only)
+                bankReceipts,
+                bankPayments,
+                netBankFlow: bankReceipts - bankPayments,
+
+                // ── Overall Totals ──
+                incomeSum: totalIncome,
+                expenseSum: totalExpense,
+                netProfit,
                 totalCredit,
                 totalDebit,
                 creditCount,
                 debitCount,
                 totalVouchers: vouchers.length,
-                voucherTypeStats,
 
-                // 2. Group Ledgers Income vs Expense
-                incomeSum,
-                expenseSum,
-                netProfit,
-
-                // 3. Accepted Leads & Linked Workers
+                // ── Accepted Sites & Active Workers (active === true) ──
                 acceptedLeadsCount: acceptedLeads.length,
                 totalLeadsCount: allLeads.length,
-                linkedWorkersCount: linkedWorkersSet.size,
+                linkedWorkersCount: linkedActiveWorkersSet.size,
                 totalWorkersCount: allEmployees.length,
+                activeWorkersCount: activeEmployees.length,
                 acceptedLeadsStats,
 
-                // 4. Matrix Categories
+                // ── Matrix Categories ──
                 categories,
 
-                // 5. Pipeline / Legacy Compatibility
+                // ── Pipeline / Legacy Compatibility ──
                 quotationAmount,
-                invoiceAmount,
+                invoiceAmount: totalIncome,
                 poAmount,
-                invoiceReceivedAmount,
-                pendingBills: expenseSum * 0.2,
-                pendingInvoices: incomeSum * 0.3,
+                invoiceReceivedAmount: totalExpense,
+                pendingBills: totalExpense * 0.2,
+                pendingInvoices: totalIncome * 0.3,
                 quoteVsInvoice: [
                     { label: "Quotations", value: quotationAmount },
-                    { label: "Invoices", value: invoiceAmount }
+                    { label: "Invoices", value: totalIncome }
                 ],
                 poVsInvoiceReceived: [
                     { label: "POs Issued", value: poAmount },
-                    { label: "Invoices Recv", value: invoiceReceivedAmount }
+                    { label: "Invoices Recv", value: totalExpense }
                 ],
                 pendingComparison: [
-                    { label: "Pending Bills", value: expenseSum * 0.2 },
-                    { label: "Pending Inv", value: incomeSum * 0.3 }
+                    { label: "Pending Bills", value: totalExpense * 0.2 },
+                    { label: "Pending Inv", value: totalIncome * 0.3 }
                 ],
                 financeTrend: monthWiseAgg
             }
