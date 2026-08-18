@@ -2259,32 +2259,50 @@ exports.manageEmployees = {
       // ─────────────────────────────────────────────────────────────────────
 
       const userMaster = require('../models/userMaster');
-      let userDoc = await userMaster.findById(employeeId).lean();
-      let employeeDoc = await Employees.findById(employeeId);
+      // Fix: use pre-resolved qId (ObjectId) so findById works for both worker and non-worker
+      let [userDoc, employeeDoc] = await Promise.all([
+        userMaster.findById(qId).lean().catch(() => null),
+        Employees.findById(qId).catch(() => null),
+      ]);
 
       if (userDoc && !employeeDoc) {
-        employeeDoc = await Employees.findOne({
-          $or: [
-            { user_id: userDoc._id },
-            { mobile: userDoc.mobile || userDoc.userMobile || userDoc.username },
-            { email: userDoc.email },
-          ].filter((q) => q.user_id || q.mobile || q.email),
-        });
+        // Non-worker (userMaster): cross-link to Employees collection
+        const mob = (userDoc.mobile || userDoc.userMobile || userDoc.username || '').replace(/\D/g, '').slice(-10);
+        const orConds = [];
+        if (userDoc._id) orConds.push({ user_id: userDoc._id });
+        if (userDoc.employee_id && mongoose.isValidObjectId(userDoc.employee_id)) orConds.push({ _id: userDoc.employee_id });
+        if (mob && mob.length >= 8) orConds.push({ mobile: new RegExp(mob + '$') });
+        if (userDoc.email) orConds.push({ email: userDoc.email });
+        if (orConds.length > 0) {
+          employeeDoc = await Employees.findOne({ $or: orConds }).catch(() => null);
+        }
       } else if (employeeDoc && !userDoc) {
-        userDoc = await userMaster
-          .findOne({
-            $or: [
-              { _id: employeeDoc.user_id },
-              { mobile: employeeDoc.mobile },
-              { email: employeeDoc.email },
-            ].filter((q) => q._id || q.mobile || q.email),
-          })
-          .lean();
+        // Worker (Employees): cross-link to userMaster collection
+        const mob = (employeeDoc.mobile || '').replace(/\D/g, '').slice(-10);
+        const orConds = [];
+        if (employeeDoc.user_id && mongoose.isValidObjectId(employeeDoc.user_id)) orConds.push({ _id: employeeDoc.user_id });
+        if (mob && mob.length >= 8) orConds.push({ userMobile: new RegExp(mob + '$') }, { mobile: new RegExp(mob + '$') });
+        if (employeeDoc.email) orConds.push({ email: employeeDoc.email }, { userEmail: employeeDoc.email });
+        if (orConds.length > 0) {
+          userDoc = await userMaster.findOne({ $or: orConds }).lean().catch(() => null);
+        }
+      }
+
+      // Backfill uniqueCheckIds with all resolved IDs so duplicate-session and
+      // existingRecordOnDate queries cover both collections for this person
+      {
+        const extraIds = [];
+        if (userDoc?._id) extraIds.push(userDoc._id);
+        if (employeeDoc?._id) extraIds.push(employeeDoc instanceof require('mongoose').Document ? employeeDoc._id : employeeDoc._id);
+        if (employeeDoc?.user_id && mongoose.isValidObjectId(employeeDoc.user_id)) extraIds.push(new mongoose.Types.ObjectId(String(employeeDoc.user_id)));
+        if (userDoc?.employee_id && mongoose.isValidObjectId(userDoc.employee_id)) extraIds.push(new mongoose.Types.ObjectId(String(userDoc.employee_id)));
+        const allStr = Array.from(new Set([...uniqueCheckIds.map(String), ...extraIds.map(String)])).filter(id => mongoose.isValidObjectId(id));
+        uniqueCheckIds = allStr.map(id => new mongoose.Types.ObjectId(id));
       }
 
       let emp = null;
       if (employeeDoc) {
-        emp = employeeDoc.toObject();
+        emp = typeof employeeDoc.toObject === 'function' ? employeeDoc.toObject() : { ...employeeDoc };
       }
       if (userDoc) {
         emp = { ...emp, ...userDoc };
@@ -2296,7 +2314,7 @@ exports.manageEmployees = {
       } else if (emp) {
         role = emp.role || 'project';
       }
-      if (employeeDoc && emp && !emp.shiftGroupName) {
+      if (employeeDoc && typeof employeeDoc.save === 'function' && emp && !emp.shiftGroupName) {
         const targetGroupName =
           shiftType === '12hr' || ['Day', 'Night12'].includes(shiftPeriod) ? 'DaNi' : 'MANG';
         const targetSelectedShift = shiftCode || (targetGroupName === 'DaNi' ? 'D' : 'G');
@@ -4135,8 +4153,9 @@ exports.manageEmployees = {
 
         record.dutyEnd = now;
         if (req.tenantModels?.StaffMonitoring) {
+          const _offEmpId = employeeDoc?._id || queryId;
           req.tenantModels.StaffMonitoring.updateMany(
-            { employeeId: String(targetEmpId) },
+            { employeeId: String(_offEmpId) },
             { $set: { monitoringEnabled: false, onlineStatus: "OFFLINE" } }
           ).catch(() => null);
         }
