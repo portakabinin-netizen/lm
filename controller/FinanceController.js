@@ -1114,7 +1114,8 @@ const resolveAndValidateVoucher = async (req, voucherType, entries, leadId, lega
         // A. Placeholders
         if (ledgerId === "cash_in_hand" || ledgerId === "main_bank" || ledgerId === "office_rent" ||
             ledgerId === "electricity_bill" || ledgerId === "stationary_expense" ||
-            ledgerId === "interest_income" || ledgerId === "uniform_equipment") {
+            ledgerId === "interest_income" || ledgerId === "uniform_equipment" ||
+            ledgerId === "sales_account" || ledgerId === "service_revenue") {
 
             let targetName = "Cash Book";
             let targetGroup = "Cash-in-hand";
@@ -1146,6 +1147,14 @@ const resolveAndValidateVoucher = async (req, voucherType, entries, leadId, lega
             } else if (ledgerId === "uniform_equipment") {
                 targetName = "Uniform & Equipment";
                 targetGroup = "Direct Expenses";
+            } else if (ledgerId === "sales_account") {
+                targetName = "Sales Account";
+                targetGroup = "Sales Accounts";
+                nature = "Cr";
+            } else if (ledgerId === "service_revenue") {
+                targetName = "Service Revenue";
+                targetGroup = "Sales Accounts";
+                nature = "Cr";
             }
 
             const resolvedLedger = await exports.ensureLedgerFolioInternal(req.tenantModels, {
@@ -1333,11 +1342,6 @@ const resolveAndValidateVoucher = async (req, voucherType, entries, leadId, lega
         }
 
         const effectiveLeadId = entry.leadId || leadId;
-        if (entryRequiresLead && voucherType !== "Journal") {
-            if (!effectiveLeadId || !mongoose.Types.ObjectId.isValid(effectiveLeadId)) {
-                return { error: `Project/Enquiry linkage (leadId) is required for Sales, Purchase, Salary, and Expense entry (${entry.ledgerName}).` };
-            }
-        }
         if (effectiveLeadId && mongoose.Types.ObjectId.isValid(effectiveLeadId)) {
             entry.leadId = effectiveLeadId;
         }
