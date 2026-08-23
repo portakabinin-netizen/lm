@@ -4822,7 +4822,7 @@ exports.manageEmployees = {
       let emps = [];
       try {
         emps = await Employees.find({ _id: { $in: employeeIds } })
-          .select('name photo_url role user_id mobile phone')
+          .select('name photo_url photo userProfileImage employeePhoto avatar role user_id mobile phone')
           .lean();
       } catch (empErr) {
         // Non-fatal
@@ -4847,7 +4847,7 @@ exports.manageEmployees = {
         if (queryIds.length > 0) {
           users = await userMaster
             .find({ _id: { $in: queryIds } })
-            .select('userDisplayName userProfileImage userRole userMobile')
+            .select('userDisplayName userProfileImage photo photo_url userRole userMobile')
             .lean()
             .maxTimeMS(5000);
         }
@@ -4882,8 +4882,21 @@ exports.manageEmployees = {
         const user = users.find(
           (u) => String(u._id) === String(emp?.user_id) || String(u._id) === targetId
         );
-        const displayName = emp?.name || user?.userDisplayName || 'User';
-        const resolvedRole = emp?.role || user?.userRole || 'Staff';
+        const displayName = emp?.name || user?.userDisplayName || a.displayName || a.markedByUserName || 'User';
+        const resolvedRole = emp?.role || user?.userRole || a.role || 'Staff';
+
+        const resolvedPhoto =
+          emp?.photo_url ||
+          emp?.photo ||
+          emp?.userProfileImage ||
+          emp?.avatar ||
+          user?.userProfileImage ||
+          user?.photo ||
+          user?.photo_url ||
+          a.photo ||
+          a.selfie_url ||
+          a.selfieUrl ||
+          null;
 
         // An attendance record is for a real employee if:
         //  (a) The employeeId was found in the Employees collection, OR
@@ -4897,9 +4910,11 @@ exports.manageEmployees = {
           ...a,
           location: { lat: currentLat, long: currentLong },
           displayName,
-          photo: emp?.photo_url || user?.userProfileImage || null,
+          photo: resolvedPhoto,
+          photo_url: resolvedPhoto,
+          userProfileImage: resolvedPhoto,
           role: resolvedRole,
-          mobile: emp?.mobile || emp?.phone || user?.userMobile || null,
+          mobile: emp?.mobile || emp?.phone || user?.userMobile || a.mobile || null,
           isEmployee,
         };
       });
