@@ -760,14 +760,33 @@ exports.manageLeads = {
         ? { 'act._id': new mongoose.Types.ObjectId(activityId) }
         : { 'act.meetingCode': activityId };
 
-      const item = await Leads.findOneAndUpdate(
-        { _id: leadId },
+      let query = {};
+      if (leadId && leadId !== 'unknown' && leadId !== 'undefined' && mongoose.Types.ObjectId.isValid(leadId)) {
+        query = { _id: leadId };
+      } else {
+        query = isObjectId ? { 'activity._id': new mongoose.Types.ObjectId(activityId) } : { 'activity.meetingCode': activityId };
+      }
+
+      let item = await Leads.findOneAndUpdate(
+        query,
         { $set: setUpdates },
         {
           arrayFilters: [arrayFilter],
           new: true,
         }
       );
+
+      if (!item) {
+        // Fallback by meetingCode
+        item = await Leads.findOneAndUpdate(
+          { 'activity.meetingCode': activityId },
+          { $set: setUpdates },
+          {
+            arrayFilters: [{ 'act.meetingCode': activityId }],
+            new: true,
+          }
+        );
+      }
 
       if (!item) return res.status(404).json({ success: false, message: 'Lead or meeting activity not found' });
       req.io.to(req.tenantDbName).emit('lead:updated', { data: item });
@@ -787,13 +806,31 @@ exports.manageLeads = {
         ? { _id: new mongoose.Types.ObjectId(activityId) }
         : { meetingCode: activityId };
 
-      const item = await Leads.findByIdAndUpdate(
-        leadId,
+      let query = {};
+      if (leadId && leadId !== 'unknown' && leadId !== 'undefined' && mongoose.Types.ObjectId.isValid(leadId)) {
+        query = { _id: leadId };
+      } else {
+        query = isObjectId ? { 'activity._id': new mongoose.Types.ObjectId(activityId) } : { 'activity.meetingCode': activityId };
+      }
+
+      let item = await Leads.findOneAndUpdate(
+        query,
         {
           $pull: { activity: pullFilter },
         },
         { new: true }
       );
+
+      if (!item) {
+        // Fallback by meetingCode
+        item = await Leads.findOneAndUpdate(
+          { 'activity.meetingCode': activityId },
+          {
+            $pull: { activity: { meetingCode: activityId } },
+          },
+          { new: true }
+        );
+      }
 
       if (!item) return res.status(404).json({ success: false, message: 'Lead not found' });
       req.io.to(req.tenantDbName).emit('lead:updated', { data: item });
