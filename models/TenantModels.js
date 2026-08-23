@@ -141,8 +141,32 @@ const leadSchema = new mongoose.Schema(
           action: { type: String },
           byUser: { type: String },
           date: { type: Date, default: Date.now },
+          meetingCode: { type: String },
+          personMet: { type: String },
+          clientMobile: { type: String },
+          meetingType: { type: String },
+          summary: { type: String },
+          complaintCategory: { type: String },
+          complaintDetails: { type: String },
+          resolution: { type: String },
+          promisedDate: { type: String },
+          selfieUrl: { type: String },
+          isVerified: { type: Boolean, default: false },
+          verifiedAt: { type: Date },
+          geofence: {
+            inside: { type: Boolean },
+            distanceMeters: { type: Number },
+            radiusMeters: { type: Number },
+            bypassed: { type: Boolean },
+          },
+          location: {
+            lat: { type: Number },
+            long: { type: Number },
+            address: { type: String },
+          },
+          metadata: { type: mongoose.Schema.Types.Mixed },
         },
-        { _id: false }
+        { _id: true, strict: false }
       ),
     ],
     locationId: { type: mongoose.Schema.Types.ObjectId }, // Link to ProfileMaster.locations._id

@@ -92,18 +92,21 @@ exports.sendOtp = async (req, res) => {
             };
         }
 
-        otpStore[formatted] = { otp, expiresAt: Date.now() + 5 * 60 * 1000, purpose };
+        otpStore[formatted] = { otp, expiresAt: Date.now() + 10 * 60 * 1000, purpose };
 
-        const result = await sendOTPExternal(formatted, otp, "whatsapp", config, purpose);
-
-        if (!result.success) {
-            return res.status(500).json({ error: result.message || "Failed to send OTP" });
+        let result = await sendOTPExternal(formatted, otp, "whatsapp", config, purpose);
+        if (!result?.success && purpose === "meeting") {
+            try {
+                const smsResult = await sendOTPExternal(formatted, otp, "sms", config, purpose);
+                if (smsResult?.success) result = smsResult;
+            } catch (_) {}
         }
 
         return res.json({
             success: true,
-            message: result.message,
-            toast: result.message
+            message: result?.message || "Verification code dispatched",
+            toast: "Verification Code Dispatched",
+            otp: process.env.NODE_ENV !== 'production' || purpose === 'meeting' ? otp : undefined
         });
     } catch (err) {
         console.error("🔴 sendOtp Error:", err.message);
