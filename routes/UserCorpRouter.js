@@ -44,6 +44,8 @@ router.post("/leads/create",    ctrl.manageLeads.create);
 router.put("/leads/:id",        ctrl.manageLeads.update);
 router.delete("/leads/:id",     ctrl.manageLeads.delete);
 router.post("/leads/:id/activity", ctrl.manageLeads.addActivity);
+router.put("/leads/:leadId/activity/:activityId", ctrl.manageLeads.updateActivity);
+router.delete("/leads/:leadId/activity/:activityId", ctrl.manageLeads.deleteActivity);
 router.post("/leads/:id/site-client-check", ctrl.manageLeads.addSiteClientCheck);
 router.post("/leads/:id/site-visit", ctrl.manageLeads.logSiteVisit);
 router.get("/leads/export/excel",  ctrl.manageLeads.download);

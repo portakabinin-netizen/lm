@@ -740,6 +740,69 @@ exports.manageLeads = {
     }
   },
 
+  updateActivity: async (req, res) => {
+    try {
+      const { Leads } = req.tenantModels;
+      const { leadId, activityId } = req.params;
+      const updateFields = req.body;
+
+      const setUpdates = {};
+      for (const [key, val] of Object.entries(updateFields)) {
+        if (key !== '_id') {
+          setUpdates[`activity.$[act].${key}`] = val;
+        }
+      }
+      setUpdates[`activity.$[act].updatedAt`] = new Date();
+      setUpdates[`activity.$[act].updatedBy`] = req.user?.userDisplayName || 'Admin';
+
+      const isObjectId = mongoose.Types.ObjectId.isValid(activityId);
+      const arrayFilter = isObjectId
+        ? { 'act._id': new mongoose.Types.ObjectId(activityId) }
+        : { 'act.meetingCode': activityId };
+
+      const item = await Leads.findOneAndUpdate(
+        { _id: leadId },
+        { $set: setUpdates },
+        {
+          arrayFilters: [arrayFilter],
+          new: true,
+        }
+      );
+
+      if (!item) return res.status(404).json({ success: false, message: 'Lead or meeting activity not found' });
+      req.io.to(req.tenantDbName).emit('lead:updated', { data: item });
+      res.json({ success: true, data: item });
+    } catch (err) {
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  deleteActivity: async (req, res) => {
+    try {
+      const { Leads } = req.tenantModels;
+      const { leadId, activityId } = req.params;
+
+      const isObjectId = mongoose.Types.ObjectId.isValid(activityId);
+      const pullFilter = isObjectId
+        ? { _id: new mongoose.Types.ObjectId(activityId) }
+        : { meetingCode: activityId };
+
+      const item = await Leads.findByIdAndUpdate(
+        leadId,
+        {
+          $pull: { activity: pullFilter },
+        },
+        { new: true }
+      );
+
+      if (!item) return res.status(404).json({ success: false, message: 'Lead not found' });
+      req.io.to(req.tenantDbName).emit('lead:updated', { data: item });
+      res.json({ success: true, data: item });
+    } catch (err) {
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
   logSiteVisit: async (req, res) => {
     try {
       const { Leads, Attendance } = req.tenantModels;
