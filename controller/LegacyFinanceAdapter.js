@@ -364,7 +364,7 @@ const inferReceiptTxnType = (ledgerName, groupName) => {
 };
 
 const mapVoucherToLegacy = (v, ledgerGroupMap, leadMap) => {
-    if (v.legacyMetadata) {
+    if (v.legacyMetadata && v.legacyMetadata.txn_type) {
         return {
             ...v.legacyMetadata,
             _id: v._id,
@@ -562,7 +562,7 @@ exports.getPaymentSummary = async (req, res) => {
         let indirectIncome = 0;
 
         vouchers.forEach(v => {
-            if (v.legacyMetadata) {
+            if (v.legacyMetadata && v.legacyMetadata.txn_type) {
                 const amt = parseFloat(v.legacyMetadata.amount) || 0;
                 const type = v.legacyMetadata.txn_type;
                 const status = v.legacyMetadata.status;
@@ -724,7 +724,7 @@ exports.getLeadLedger = async (req, res) => {
         }).sort({ date: 1 }).lean();
         
         const ledger = vouchers.map(v => {
-            if (v.legacyMetadata) {
+            if (v.legacyMetadata && v.legacyMetadata.direction) {
                 const isPayment = v.legacyMetadata.direction === "PAYMENT";
                 return {
                     _id: v._id,
@@ -789,7 +789,7 @@ exports.getLeadLedger = async (req, res) => {
         let totalCost = 0;
         let totalRevenue = 0;
         vouchers.forEach(v => {
-            if (v.legacyMetadata) {
+            if (v.legacyMetadata && v.legacyMetadata.direction) {
                 if (v.legacyMetadata.direction === "PAYMENT") totalCost += v.legacyMetadata.amount || 0;
                 if (v.legacyMetadata.direction === "RECEIPT") totalRevenue += v.legacyMetadata.amount || 0;
             } else {
