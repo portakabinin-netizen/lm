@@ -634,52 +634,56 @@ exports.getPaymentSummary = async (req, res) => {
 
         const recentTransactions = [...txns].sort((a, b) => new Date(b.txn_date) - new Date(a.txn_date)).slice(0, 10);
 
-        // Calculate ledger breakdown
-        const ledgerBreakdown = {
-            sales: [],
-            purchases: [],
-            directIncome: [],
-            directExpenses: [],
-            indirectIncome: [],
-            indirectExpenses: []
-        };
-
-        const ledgerBreakdownMap = {};
+        // Calculate ledger breakdown: array of group objects with nested ledger names and balances
+        const groupLedgersMap = {};
         ledgers.forEach(l => {
-            ledgerBreakdownMap[l._id.toString()] = {
-                name: l.ledgerName,
-                amount: 0,
-                ledgerGroupId: l.ledgerGroupId?.toString()
-            };
-        });
+            const gId = l.ledgerGroupId?.toString();
+            if (!gId) return;
 
-        if (!startDate && !endDate) {
-            ledgers.forEach(l => {
-                const groupInfo = ledgerGroupMap[l._id.toString()];
-                if (!groupInfo) return;
+            const groupObj = groupMap[gId];
+            if (!groupObj) return;
 
-                const category = getCategoryByGroupName(groupInfo.groupName);
+            const category = getCategoryByGroupName(groupObj.groupName);
+            if (!category || category === "CashBank") return;
+
+            if (!groupLedgersMap[gId]) {
+                groupLedgersMap[gId] = {
+                    groupName: groupObj.groupName,
+                    category: category,
+                    ledgersMap: {}
+                };
+            }
+
+            // Find default balance if no date range is queried
+            let amt = 0;
+            if (!startDate && !endDate) {
                 const bal = l.currentBalance || 0;
-                let amt = 0;
-
                 if (category === "Sales" || category === "Direct Income" || category === "Indirect Income") {
                     amt = -bal;
                 } else if (category === "Purchases" || category === "Direct Expenses" || category === "Indirect Expenses") {
                     amt = bal;
                 }
+            }
 
-                if (amt !== 0) {
-                    ledgerBreakdownMap[l._id.toString()].amount = amt;
-                }
-            });
-        } else {
+            groupLedgersMap[gId].ledgersMap[l._id.toString()] = {
+                name: l.ledgerName,
+                amount: amt
+            };
+        });
+
+        // Scan vouchers if date range filter is active
+        if (startDate || endDate) {
             vouchers.forEach(v => {
                 if (v.legacyMetadata && v.legacyMetadata.txn_type) {
                     // flat legacy
                 } else {
                     v.entries.forEach(entry => {
                         const ledId = entry.ledgerId?.toString();
-                        if (!ledgerBreakdownMap[ledId]) return;
+                        const ledger = ledgers.find(l => l._id.toString() === ledId);
+                        if (!ledger) return;
+
+                        const gId = ledger.ledgerGroupId?.toString();
+                        if (!gId || !groupLedgersMap[gId] || !groupLedgersMap[gId].ledgersMap[ledId]) return;
 
                         const info = ledgerGroupMap[ledId];
                         if (!info) return;
@@ -691,33 +695,35 @@ exports.getPaymentSummary = async (req, res) => {
                         } else if (category === "Purchases" || category === "Direct Expenses" || category === "Indirect Expenses") {
                             amt = (entry.debit || 0) - (entry.credit || 0);
                         }
-                        ledgerBreakdownMap[ledId].amount += amt;
+
+                        groupLedgersMap[gId].ledgersMap[ledId].amount += amt;
                     });
                 }
             });
         }
 
-        Object.values(ledgerBreakdownMap).forEach(item => {
-            if (item.amount === 0) return;
+        const ledgerBreakdown = [];
+        Object.values(groupLedgersMap).forEach(groupObj => {
+            const activeLedgers = Object.values(groupObj.ledgersMap).filter(l => l.amount !== 0);
+            if (activeLedgers.length === 0) return;
 
-            const info = ledgerGroupMap[item.ledgerGroupId];
-            const category = info ? getCategoryByGroupName(info.groupName) : null;
+            const total = activeLedgers.reduce((sum, l) => sum + l.amount, 0);
 
-            if (category === "Sales") ledgerBreakdown.sales.push(item);
-            else if (category === "Purchases") ledgerBreakdown.purchases.push(item);
-            else if (category === "Direct Income") ledgerBreakdown.directIncome.push(item);
-            else if (category === "Direct Expenses") ledgerBreakdown.directExpenses.push(item);
-            else if (category === "Indirect Income") ledgerBreakdown.indirectIncome.push(item);
-            else if (category === "Indirect Expenses") ledgerBreakdown.indirectExpenses.push(item);
+            ledgerBreakdown.push({
+                groupName: groupObj.groupName,
+                category: groupObj.category,
+                total: total,
+                ledgers: activeLedgers.map(l => ({ name: l.name, amount: l.amount }))
+            });
         });
 
         // Recalculate category totals directly from the ledger breakdown amounts to ensure 100% mathematical consistency
-        sales = ledgerBreakdown.sales.reduce((sum, item) => sum + item.amount, 0);
-        purchases = ledgerBreakdown.purchases.reduce((sum, item) => sum + item.amount, 0);
-        directIncome = ledgerBreakdown.directIncome.reduce((sum, item) => sum + item.amount, 0);
-        directExpenses = ledgerBreakdown.directExpenses.reduce((sum, item) => sum + item.amount, 0);
-        indirectIncome = ledgerBreakdown.indirectIncome.reduce((sum, item) => sum + item.amount, 0);
-        indirectExpenses = ledgerBreakdown.indirectExpenses.reduce((sum, item) => sum + item.amount, 0);
+        sales = ledgerBreakdown.find(g => g.category === "Sales")?.total || 0;
+        purchases = ledgerBreakdown.find(g => g.category === "Purchases")?.total || 0;
+        directIncome = ledgerBreakdown.find(g => g.category === "Direct Income")?.total || 0;
+        directExpenses = ledgerBreakdown.find(g => g.category === "Direct Expenses")?.total || 0;
+        indirectIncome = ledgerBreakdown.find(g => g.category === "Indirect Income")?.total || 0;
+        indirectExpenses = ledgerBreakdown.find(g => g.category === "Indirect Expenses")?.total || 0;
 
         grossMargin = (sales + directIncome) - (purchases + directExpenses);
         netProfit = grossMargin + indirectIncome - indirectExpenses;
