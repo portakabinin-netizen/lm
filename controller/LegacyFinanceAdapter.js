@@ -516,15 +516,8 @@ exports.getPaymentSummary = async (req, res) => {
     try {
         const { Vouchers, Ledgers, Groups, Leads } = req.tenantModels;
         
-        // 1. Sync Ledger Balances
-        const ledgersForSync = await Ledgers.find({}).lean();
-        const allLedgerIds = ledgersForSync.map(l => l._id);
-        if (allLedgerIds.length > 0) {
-            await recalculateLedgerBalances(req.tenantModels, allLedgerIds);
-        }
-
         const groups = await Groups.find({}).lean();
-        const ledgers = await Ledgers.find({}).lean(); // Fetch synced ledger balances
+        const ledgers = await Ledgers.find({}).lean();
         const leadsList = await Leads.find({}).lean();
 
         const groupMap = {};
@@ -551,10 +544,10 @@ exports.getPaymentSummary = async (req, res) => {
         // 2. Query Vouchers with Date Filters
         const { startDate, endDate } = req.query;
         const voucherQuery = {};
-        if (startDate || endDate) {
+        if ((startDate && startDate !== "") || (endDate && endDate !== "")) {
             voucherQuery.date = {};
-            if (startDate) voucherQuery.date.$gte = new Date(startDate);
-            if (endDate) voucherQuery.date.$lte = new Date(endDate);
+            if (startDate && startDate !== "") voucherQuery.date.$gte = new Date(startDate);
+            if (endDate && endDate !== "") voucherQuery.date.$lte = new Date(endDate);
         }
 
         const vouchers = await Vouchers.find(voucherQuery).lean();
