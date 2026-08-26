@@ -711,6 +711,26 @@ exports.getPaymentSummary = async (req, res) => {
             else if (category === "Indirect Expenses") ledgerBreakdown.indirectExpenses.push(item);
         });
 
+        // Dynamic group names mapping resolved from the Groups collection
+        const groupNames = {
+            sales: "Sales Accounts",
+            purchases: "Purchase Accounts",
+            directIncome: "Direct Incomes",
+            directExpenses: "Direct Expenses",
+            indirectIncome: "Indirect Incomes",
+            indirectExpenses: "Indirect Expenses"
+        };
+
+        groups.forEach(g => {
+            const cat = getCategoryByGroupName(g.groupName);
+            if (cat === "Sales") groupNames.sales = g.groupName;
+            else if (cat === "Purchases") groupNames.purchases = g.groupName;
+            else if (cat === "Direct Income") groupNames.directIncome = g.groupName;
+            else if (cat === "Direct Expenses") groupNames.directExpenses = g.groupName;
+            else if (cat === "Indirect Income") groupNames.indirectIncome = g.groupName;
+            else if (cat === "Indirect Expenses") groupNames.indirectExpenses = g.groupName;
+        });
+
         // Calculate pending salary and bills collections
         let pendingSalary = 0;
         let pendingBillsCollections = 0;
@@ -740,7 +760,8 @@ exports.getPaymentSummary = async (req, res) => {
                 purchases, sales, directExpenses, directIncome, indirectExpenses, indirectIncome, grossMargin, netProfit,
                 byType, paymentBreakdown, receiptBreakdown, recentTransactions,
                 pendingSalary, pendingBillsCollections,
-                ledgerBreakdown
+                ledgerBreakdown,
+                groupNames
             },
         });
     } catch (err) {
