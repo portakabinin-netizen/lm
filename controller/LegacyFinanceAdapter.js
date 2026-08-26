@@ -634,6 +634,83 @@ exports.getPaymentSummary = async (req, res) => {
 
         const recentTransactions = [...txns].sort((a, b) => new Date(b.txn_date) - new Date(a.txn_date)).slice(0, 10);
 
+        // Calculate ledger breakdown
+        const ledgerBreakdown = {
+            sales: [],
+            purchases: [],
+            directIncome: [],
+            directExpenses: [],
+            indirectIncome: [],
+            indirectExpenses: []
+        };
+
+        const ledgerBreakdownMap = {};
+        ledgers.forEach(l => {
+            ledgerBreakdownMap[l._id.toString()] = {
+                name: l.ledgerName,
+                amount: 0,
+                ledgerGroupId: l.ledgerGroupId?.toString()
+            };
+        });
+
+        if (!startDate && !endDate) {
+            ledgers.forEach(l => {
+                const groupInfo = ledgerGroupMap[l._id.toString()];
+                if (!groupInfo) return;
+
+                const category = getCategoryByGroupName(groupInfo.groupName);
+                const bal = l.currentBalance || 0;
+                let amt = 0;
+
+                if (category === "Sales" || category === "Direct Income" || category === "Indirect Income") {
+                    amt = -bal;
+                } else if (category === "Purchases" || category === "Direct Expenses" || category === "Indirect Expenses") {
+                    amt = bal;
+                }
+
+                if (amt !== 0) {
+                    ledgerBreakdownMap[l._id.toString()].amount = amt;
+                }
+            });
+        } else {
+            vouchers.forEach(v => {
+                if (v.legacyMetadata && v.legacyMetadata.txn_type) {
+                    // flat legacy
+                } else {
+                    v.entries.forEach(entry => {
+                        const ledId = entry.ledgerId?.toString();
+                        if (!ledgerBreakdownMap[ledId]) return;
+
+                        const info = ledgerGroupMap[ledId];
+                        if (!info) return;
+
+                        const category = getCategoryByGroupName(info.groupName);
+                        let amt = 0;
+                        if (category === "Sales" || category === "Direct Income" || category === "Indirect Income") {
+                            amt = (entry.credit || 0) - (entry.debit || 0);
+                        } else if (category === "Purchases" || category === "Direct Expenses" || category === "Indirect Expenses") {
+                            amt = (entry.debit || 0) - (entry.credit || 0);
+                        }
+                        ledgerBreakdownMap[ledId].amount += amt;
+                    });
+                }
+            });
+        }
+
+        Object.values(ledgerBreakdownMap).forEach(item => {
+            if (item.amount === 0) return;
+
+            const info = ledgerGroupMap[item.ledgerGroupId];
+            const category = info ? getCategoryByGroupName(info.groupName) : null;
+
+            if (category === "Sales") ledgerBreakdown.sales.push(item);
+            else if (category === "Purchases") ledgerBreakdown.purchases.push(item);
+            else if (category === "Direct Income") ledgerBreakdown.directIncome.push(item);
+            else if (category === "Direct Expenses") ledgerBreakdown.directExpenses.push(item);
+            else if (category === "Indirect Income") ledgerBreakdown.indirectIncome.push(item);
+            else if (category === "Indirect Expenses") ledgerBreakdown.indirectExpenses.push(item);
+        });
+
         // Calculate pending salary and bills collections
         let pendingSalary = 0;
         let pendingBillsCollections = 0;
@@ -662,7 +739,8 @@ exports.getPaymentSummary = async (req, res) => {
                 leadLinkedPayments, leadLinkedReceipts,
                 purchases, sales, directExpenses, directIncome, indirectExpenses, indirectIncome, grossMargin, netProfit,
                 byType, paymentBreakdown, receiptBreakdown, recentTransactions,
-                pendingSalary, pendingBillsCollections
+                pendingSalary, pendingBillsCollections,
+                ledgerBreakdown
             },
         });
     } catch (err) {
