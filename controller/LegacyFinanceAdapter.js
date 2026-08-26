@@ -629,8 +629,8 @@ exports.getPaymentSummary = async (req, res) => {
         const paymentBreakdown = Object.entries(PAYMENT_LABELS).map(([k, l]) => ({ label: l, value: byType[k] || 0 })).filter(i => i.value > 0);
         const receiptBreakdown = Object.entries(RECEIPT_LABELS).map(([k, l]) => ({ label: l, value: byType[k] || 0 })).filter(i => i.value > 0);
 
-        const grossMargin = (sales + directIncome) - (purchases + directExpenses);
-        const netProfit = grossMargin + indirectIncome - indirectExpenses;
+        let grossMargin = (sales + directIncome) - (purchases + directExpenses);
+        let netProfit = grossMargin + indirectIncome - indirectExpenses;
 
         const recentTransactions = [...txns].sort((a, b) => new Date(b.txn_date) - new Date(a.txn_date)).slice(0, 10);
 
@@ -710,6 +710,17 @@ exports.getPaymentSummary = async (req, res) => {
             else if (category === "Indirect Income") ledgerBreakdown.indirectIncome.push(item);
             else if (category === "Indirect Expenses") ledgerBreakdown.indirectExpenses.push(item);
         });
+
+        // Recalculate category totals directly from the ledger breakdown amounts to ensure 100% mathematical consistency
+        sales = ledgerBreakdown.sales.reduce((sum, item) => sum + item.amount, 0);
+        purchases = ledgerBreakdown.purchases.reduce((sum, item) => sum + item.amount, 0);
+        directIncome = ledgerBreakdown.directIncome.reduce((sum, item) => sum + item.amount, 0);
+        directExpenses = ledgerBreakdown.directExpenses.reduce((sum, item) => sum + item.amount, 0);
+        indirectIncome = ledgerBreakdown.indirectIncome.reduce((sum, item) => sum + item.amount, 0);
+        indirectExpenses = ledgerBreakdown.indirectExpenses.reduce((sum, item) => sum + item.amount, 0);
+
+        grossMargin = (sales + directIncome) - (purchases + directExpenses);
+        netProfit = grossMargin + indirectIncome - indirectExpenses;
 
         // Dynamic group names mapping resolved from the Groups collection
         const groupNames = {
