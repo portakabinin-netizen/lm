@@ -721,11 +721,69 @@ exports.manageLeads = {
   addActivity: async (req, res) => {
     try {
       const { Leads } = req.tenantModels;
+      const {
+        action,
+        summary,
+        complaintDetails,
+        complaintCategory,
+        personMet,
+        remarks,
+        resolution,
+        meetingCode,
+        selfieUrl,
+        location,
+        metadata,
+      } = req.body || {};
+
+      const hasAction = typeof action === 'string' && action.trim().length > 0;
+      const hasSummary = typeof summary === 'string' && summary.trim().length > 0;
+      const hasComplaint =
+        (typeof complaintDetails === 'string' && complaintDetails.trim().length > 0) ||
+        (typeof complaintCategory === 'string' && complaintCategory.trim().length > 0);
+      const hasPersonMet = typeof personMet === 'string' && personMet.trim().length > 0;
+      const hasRemarks = typeof remarks === 'string' && remarks.trim().length > 0;
+      const hasResolution = typeof resolution === 'string' && resolution.trim().length > 0;
+      const hasMeetingCode = typeof meetingCode === 'string' && meetingCode.trim().length > 0;
+      const hasSelfie = typeof selfieUrl === 'string' && selfieUrl.trim().length > 0;
+      const hasLocation =
+        location &&
+        (location.lat != null ||
+          location.latitude != null ||
+          (typeof location.address === 'string' && location.address.trim().length > 0));
+      const hasMetadata =
+        metadata && typeof metadata === 'object' && Object.keys(metadata).length > 0;
+
+      if (
+        !hasAction &&
+        !hasSummary &&
+        !hasComplaint &&
+        !hasPersonMet &&
+        !hasRemarks &&
+        !hasResolution &&
+        !hasMeetingCode &&
+        !hasSelfie &&
+        !hasLocation &&
+        !hasMetadata
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: 'Cannot save blank activity. Please provide activity details.',
+        });
+      }
+
       const byUser = req.user?.userDisplayName || req.body.byUser || 'System';
+      const cleanBody = { ...req.body };
+      if (typeof cleanBody.action === 'string') cleanBody.action = cleanBody.action.trim();
+      if (typeof cleanBody.summary === 'string') cleanBody.summary = cleanBody.summary.trim();
+      if (typeof cleanBody.remarks === 'string') cleanBody.remarks = cleanBody.remarks.trim();
+      if (typeof cleanBody.personMet === 'string') cleanBody.personMet = cleanBody.personMet.trim();
+      if (typeof cleanBody.complaintDetails === 'string') cleanBody.complaintDetails = cleanBody.complaintDetails.trim();
+      if (typeof cleanBody.resolution === 'string') cleanBody.resolution = cleanBody.resolution.trim();
+
       const item = await Leads.findByIdAndUpdate(
         req.params.id,
         {
-          $push: { activity: { ...req.body, date: new Date(), byUser } },
+          $push: { activity: { ...cleanBody, date: new Date(), byUser } },
         },
         { new: true }
       );
