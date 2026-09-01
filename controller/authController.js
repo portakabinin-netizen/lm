@@ -9,7 +9,29 @@ const mongoProvisioner = require("../utils/mongoProvisioner");
 const messagingService = require("../utils/messagingService");
 const emailService = require("../utils/emailService");
 
+const dbConnector = require("../utils/dbConnector");
+const { getTenantModels } = require("../models/TenantModels");
+
 const otpStore = {};
+
+async function enrichAccessCorporateWithImages(list) {
+    if (!Array.isArray(list) || list.length === 0) return list;
+    const enriched = [...list];
+    for (let i = 0; i < enriched.length; i++) {
+        const item = enriched[i];
+        if (!item.CorpProfileImage && item.dbName) {
+            try {
+                const conn = await dbConnector.getTenantConnection(item.dbName);
+                const models = getTenantModels(conn);
+                const prof = await models.ProfileMaster.findOne({}).lean();
+                if (prof?.CorpProfileImage) {
+                    item.CorpProfileImage = prof.CorpProfileImage;
+                }
+            } catch {}
+        }
+    }
+    return enriched;
+}
 
 function generateOtp(length = 6) {
     return Math.floor(Math.pow(10, length - 1) + Math.random() * 9 * Math.pow(10, length - 1)).toString();
@@ -351,7 +373,7 @@ exports.login = async (req, res) => {
         const isMatch = await bcrypt.compare(password, user.userPassword);
         if (!isMatch) return res.status(401).json({ success: false, message: "Invalid credentials" });
 
-        const list = user.accessCorporate || [];
+        const list = await enrichAccessCorporateWithImages(user.accessCorporate || []);
         if (list.length === 0) return res.status(403).json({ success: false, message: "User not linked with any corporate" });
 
         // If targetCorpId is provided, try to find it, else default to first
@@ -627,7 +649,7 @@ exports.switchCorporate = async (req, res) => {
             return res.status(404).json({ success: false, message: "User not found" });
         }
 
-        const list = user.accessCorporate || [];
+        const list = await enrichAccessCorporateWithImages(user.accessCorporate || []);
         const activeLink = list.find(l => String(l._id) === String(corporateId) || l.dbName === corporateId);
 
         if (!activeLink) {
