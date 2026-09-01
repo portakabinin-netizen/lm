@@ -965,10 +965,15 @@ exports.updateProfileImage = async (req, res) => {
         if (fieldToUpdate === "userProfileImage") {
             await userMaster.findByIdAndUpdate(userId, { userProfileImage: finalUrl });
         } else if (fieldToUpdate === "CorpProfileImage") {
+            const { ProfileMaster } = req.tenantModels || {};
+            if (ProfileMaster) {
+                await ProfileMaster.findOneAndUpdate({}, { $set: { CorpProfileImage: finalUrl } }, { upsert: true });
+            }
+            const dbRegex = new RegExp(`^${dbName}$`, 'i');
             await userMaster.updateMany(
-                { "accessCorporate.dbName": dbName },
+                { "accessCorporate.dbName": dbRegex },
                 { $set: { "accessCorporate.$[elem].CorpProfileImage": finalUrl } },
-                { arrayFilters: [{ "elem.dbName": dbName }] }
+                { arrayFilters: [{ "elem.dbName": dbRegex }] }
             );
         }
 
