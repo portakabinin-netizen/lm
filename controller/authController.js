@@ -1048,6 +1048,15 @@ exports.getProfileHistory = async (req, res) => {
             }
         }
 
+        if (type === "corp" && !activeUrl && ProfileMaster) {
+            const profile = await ProfileMaster.findOne({}).lean();
+            activeUrl = profile?.CorpProfileImage || profile?.corporateLogo || profile?.logo || null;
+        }
+
+        if (!activeUrl && mergedResources.length > 0) {
+            activeUrl = mergedResources[0].url;
+        }
+
         res.json({ success: true, resources: mergedResources, activeUrl });
 
     } catch (err) {
