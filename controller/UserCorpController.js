@@ -2132,6 +2132,10 @@ exports.manageEmployees = {
         }
         if (item.leadId) {
           leadIds.push(item.leadId);
+        } else if (item.siteId) {
+          leadIds.push(item.siteId);
+        } else if (item.clientId) {
+          leadIds.push(item.clientId);
         }
       }
 
@@ -2194,9 +2198,17 @@ exports.manageEmployees = {
           }
         }
 
-        const lIdStr = item.leadId?.toString();
+        const lIdStr = (item.leadId || item.siteId || item.clientId)?.toString();
         if (lIdStr && leadsMap[lIdStr]) {
           item.leadId = leadsMap[lIdStr];
+          const actualLeadName = leadsMap[lIdStr].sender_name ||
+                                 leadsMap[lIdStr].displayName ||
+                                 leadsMap[lIdStr].client_name ||
+                                 leadsMap[lIdStr].product_name ||
+                                 leadsMap[lIdStr].name;
+          if (actualLeadName && (!item.site_name || item.site_name === 'Field Duty' || item.site_name === 'New Site')) {
+            item.site_name = actualLeadName;
+          }
         }
       }
 

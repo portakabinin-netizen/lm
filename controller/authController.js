@@ -24,8 +24,9 @@ async function enrichAccessCorporateWithImages(list) {
                 const conn = await dbConnector.getTenantConnection(item.dbName);
                 const models = getTenantModels(conn);
                 const prof = await models.ProfileMaster.findOne({}).lean();
-                if (prof?.CorpProfileImage) {
-                    item.CorpProfileImage = prof.CorpProfileImage;
+                const profImg = prof?.CorpProfileImage || prof?.corporateLogo || prof?.logo || prof?.image || prof?.profileImage;
+                if (profImg) {
+                    item.CorpProfileImage = profImg;
                 }
             } catch {}
         }
