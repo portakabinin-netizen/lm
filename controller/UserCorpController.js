@@ -1432,7 +1432,8 @@ exports.manageEmployees = {
           matchedUser.aadhar_no = emp.aadhar_no || matchedUser.aadhar_no;
           matchedUser.enrollment_no = emp.enrollment_no || matchedUser.enrollment_no;
           matchedUser.dob = emp.dob || matchedUser.dob;
-          if (emp.photo_url) matchedUser.photo_url = emp.photo_url;
+          matchedUser.photo_url = emp.photo_url || matchedUser.photo_url;
+          matchedUser.userProfileImage = matchedUser.photo_url || matchedUser.userProfileImage;
           matchedUser.employmentHistory = emp.employmentHistory || matchedUser.employmentHistory;
           matchedUser.selectedShift = emp.selectedShift || matchedUser.selectedShift;
           matchedUser.shiftGroupName = emp.shiftGroupName || matchedUser.shiftGroupName;
@@ -1446,6 +1447,7 @@ exports.manageEmployees = {
           matchedUser.dutyShift = emp.dutyShift || matchedUser.dutyShift;
           if (emp.active !== undefined) matchedUser.active = emp.active;
           processedUserIds.add(String(matchedUser._id));
+          mergedList.push(matchedUser);
         } else {
           mergedList.push(emp);
         }
@@ -4916,9 +4918,17 @@ exports.manageEmployees = {
         mongoose.Types.ObjectId.isValid(String(id))
       );
 
+      const userMasterAttendanceIds = active
+        .filter((a) => a.employeeType === 'userMaster' || a.employeeType === 'Staff')
+        .map((a) => String(a.employeeId?._id || a.employeeId))
+        .filter((id) => mongoose.Types.ObjectId.isValid(id));
+
       const allUserQueryIds = [
-        ...linkedUserIds.map(String),
-        ...directUserIds.map(String),
+        ...new Set([
+          ...linkedUserIds.map(String),
+          ...directUserIds.map(String),
+          ...userMasterAttendanceIds,
+        ]),
       ];
 
       let users = [];
@@ -4988,12 +4998,15 @@ exports.manageEmployees = {
 
         const targetId = String(a.employeeId?._id || a.employeeId);
         const emp = emps.find((e) => String(e._id) === targetId);
+        const empMobile = String(emp?.mobile || emp?.phone || a.mobile || '').replace(/\D/g, '').slice(-10);
 
-        // Match user by: employee's user_id FK, OR direct targetId match (attendance was by userMaster _id)
+        // Match user by: employee's user_id FK, direct targetId match, employeeType === userMaster, or matching phone/mobile
         const user = users.find(
           (u) =>
             (emp?.user_id && String(u._id) === String(emp.user_id)) ||
-            String(u._id) === targetId
+            String(u._id) === targetId ||
+            (a.employeeType === 'userMaster' && String(u._id) === targetId) ||
+            (empMobile.length === 10 && u.userMobile && String(u.userMobile).replace(/\D/g, '').slice(-10) === empMobile)
         );
 
         const displayName =
