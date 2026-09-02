@@ -4892,37 +4892,76 @@ exports.manageEmployees = {
       let emps = [];
       try {
         emps = await Employees.find({ _id: { $in: employeeIds } })
-          .select('name photo_url photo userProfileImage employeePhoto avatar role user_id mobile phone')
+          .select('name photo_url role user_id mobile phone email')
           .lean();
       } catch (empErr) {
         // Non-fatal
       }
 
-      // Find missing IDs (potentially direct users)
+      // ─── Always cross-join Employee → userMaster for profile images ──────────
+      // The Employees collection only stores photo_url; the richer userProfileImage
+      // lives in userMaster. We fetch ALL linked userMaster docs in one batch.
+
       const foundEmpIds = emps.map((e) => String(e._id));
       const missingIds = employeeIds.filter((id) => !foundEmpIds.includes(String(id)));
 
+      // Collect all userMaster IDs to fetch:
+      //   a) user_id FK on each found employee
+      //   b) missingIds that might BE userMaster _ids directly
+      const linkedUserIds = emps
+        .map((e) => e.user_id)
+        .filter((id) => id && mongoose.Types.ObjectId.isValid(String(id)));
+
+      const directUserIds = missingIds.filter((id) =>
+        mongoose.Types.ObjectId.isValid(String(id))
+      );
+
+      const allUserQueryIds = [
+        ...linkedUserIds.map(String),
+        ...directUserIds.map(String),
+      ];
+
       let users = [];
-      try {
-        const userIds = emps
-          .map((e) => e.user_id)
-          .filter((id) => id && mongoose.Types.ObjectId.isValid(String(id)));
-
-        // Add missing IDs to the query if they are valid ObjectIds
-        const queryIds = [
-          ...userIds,
-          ...missingIds.filter((id) => mongoose.Types.ObjectId.isValid(String(id))),
-        ];
-
-        if (queryIds.length > 0) {
+      if (allUserQueryIds.length > 0) {
+        try {
           users = await userMaster
-            .find({ _id: { $in: queryIds } })
-            .select('userDisplayName userProfileImage photo photo_url userRole userMobile')
+            .find({ _id: { $in: allUserQueryIds } })
+            .select('userDisplayName userProfileImage photo photo_url userRole userMobile employee_id')
             .lean()
             .maxTimeMS(5000);
+        } catch (userErr) {
+          // Non-fatal
         }
-      } catch (userErr) {
-        // Non-fatal
+      }
+
+      // Reverse: for missingIds that matched a userMaster doc,
+      // try to find their linked employee record for photo_url
+      const userDocsForMissingIds = users.filter((u) =>
+        directUserIds.includes(String(u._id))
+      );
+      if (userDocsForMissingIds.length > 0) {
+        const extraEmpIds = userDocsForMissingIds
+          .map((u) => u.employee_id)
+          .filter((id) => id && mongoose.Types.ObjectId.isValid(String(id)));
+        const extraEmpMobiles = userDocsForMissingIds
+          .map((u) => (u.userMobile || '').replace(/\D/g, '').slice(-10))
+          .filter((m) => m.length === 10);
+
+        try {
+          const extraEmpQuery = [];
+          if (extraEmpIds.length) extraEmpQuery.push({ _id: { $in: extraEmpIds } });
+          if (extraEmpMobiles.length) {
+            extraEmpQuery.push({ mobile: { $in: extraEmpMobiles.map((m) => new RegExp(m + '$')) } });
+          }
+          if (extraEmpQuery.length) {
+            const extraEmps = await Employees.find({ $or: extraEmpQuery })
+              .select('name photo_url role user_id mobile phone email')
+              .lean();
+            emps = [...emps, ...extraEmps.filter((e) => !foundEmpIds.includes(String(e._id)))];
+          }
+        } catch (_) {
+          // Non-fatal
+        }
       }
 
       // ─── Employee-only role whitelist ───────────────────────────────────────
@@ -4949,21 +4988,26 @@ exports.manageEmployees = {
 
         const targetId = String(a.employeeId?._id || a.employeeId);
         const emp = emps.find((e) => String(e._id) === targetId);
+
+        // Match user by: employee's user_id FK, OR direct targetId match (attendance was by userMaster _id)
         const user = users.find(
-          (u) => String(u._id) === String(emp?.user_id) || String(u._id) === targetId
+          (u) =>
+            (emp?.user_id && String(u._id) === String(emp.user_id)) ||
+            String(u._id) === targetId
         );
-        const displayName = emp?.name || user?.userDisplayName || a.displayName || a.markedByUserName || 'User';
+
+        const displayName =
+          emp?.name || user?.userDisplayName || a.displayName || a.markedByUserName || 'User';
         const resolvedRole = emp?.role || user?.userRole || a.role || 'Staff';
 
+        // Employees schema: only photo_url (no photo/avatar/userProfileImage)
+        // userMaster schema: only userProfileImage
         const resolvedPhoto =
-          emp?.photo_url ||
-          emp?.photo ||
-          emp?.userProfileImage ||
-          emp?.avatar ||
-          user?.userProfileImage ||
-          user?.photo ||
-          user?.photo_url ||
-          a.photo ||
+          emp?.photo_url ||          // Employees.photo_url  ✅
+          user?.userProfileImage ||  // userMaster.userProfileImage  ✅
+          user?.photo_url ||         // userMaster.photo_url (fallback)
+          user?.photo ||             // userMaster.photo (fallback)
+          a.photo ||                 // attendance record direct
           a.selfie_url ||
           a.selfieUrl ||
           null;
@@ -4990,9 +5034,14 @@ exports.manageEmployees = {
       });
 
 
+
       // ─── Filter: only show actual employees in live tracking ───────────────
       // Always exclude Clients, Guests, Vendors regardless of requester role.
       const employeeData = data.filter((item) => item.isEmployee);
+
+      // Diagnostic: log photo resolution summary
+      const withPhoto = employeeData.filter((d) => d.photo).length;
+      console.log(`📸 listActiveStaff: ${employeeData.length} staff, ${withPhoto} with photos`);
 
       // Project managers only see non-admin staff (already handled in marquee),
       // but the base exclusion of non-employees applies to everyone.
