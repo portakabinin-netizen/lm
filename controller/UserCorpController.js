@@ -1383,9 +1383,11 @@ exports.manageEmployees = {
           userActive: u.userActive,
           active: u.userActive,
           photo_url: u.userProfileImage || u.photo_url,
-          daily_rate: 0,
-          monthly_rate: 0,
-          employmentHistory: [],
+          daily_rate: u.daily_rate || u.dailyRate || 0,
+          monthly_rate: u.monthly_rate || u.monthlyRate || u.salary || u.rate || 0,
+          monthlyRate: u.monthlyRate || u.monthly_rate || u.salary || u.rate || 0,
+          rate: u.rate || u.monthly_rate || u.salary || 0,
+          employmentHistory: u.employmentHistory || [],
           selectedShift: 'G',
           shiftGroupName: 'MANG',
         };
@@ -2181,10 +2183,31 @@ exports.manageEmployees = {
         empsMap[emp._id.toString()] = emp;
       }
 
+      // Also enrich employees with userMaster photo if missing
+      const empUserIds = empsList
+        .filter((e) => !e.photo_url && (e.user_id || e._id))
+        .map((e) => (e.user_id || e._id).toString());
+
+      if (empUserIds.length > 0) {
+        try {
+          const matchingUsers = await userMaster.find({ _id: { $in: empUserIds } }).lean();
+          matchingUsers.forEach((u) => {
+            const uPhoto = u.userProfileImage || u.photo_url;
+            if (uPhoto && empsMap[u._id.toString()]) {
+              empsMap[u._id.toString()].photo_url = uPhoto;
+            }
+          });
+        } catch (enrichErr) {
+          console.warn('Could not enrich user photos in listAttendance:', enrichErr.message);
+        }
+      }
+
       const leadsMap = {};
       for (const lead of leadsList) {
         leadsMap[lead._id.toString()] = lead;
       }
+
+      const corpFallbackName = req.user?.corporateName || req.user?.companyName || 'Corporate Office';
 
       for (let item of data) {
         const idStr = item.employeeId?.toString();
@@ -2203,14 +2226,30 @@ exports.manageEmployees = {
         const lIdStr = (item.leadId || item.siteId || item.clientId)?.toString();
         if (lIdStr && leadsMap[lIdStr]) {
           item.leadId = leadsMap[lIdStr];
-          const actualLeadName = leadsMap[lIdStr].sender_name ||
-                                 leadsMap[lIdStr].displayName ||
-                                 leadsMap[lIdStr].client_name ||
-                                 leadsMap[lIdStr].product_name ||
-                                 leadsMap[lIdStr].name;
-          if (actualLeadName && (!item.site_name || item.site_name === 'Field Duty' || item.site_name === 'New Site')) {
+          const actualLeadName =
+            leadsMap[lIdStr].sender_name ||
+            leadsMap[lIdStr].displayName ||
+            leadsMap[lIdStr].client_name ||
+            leadsMap[lIdStr].product_name ||
+            leadsMap[lIdStr].name;
+          if (
+            actualLeadName &&
+            (!item.site_name || item.site_name === 'Field Duty' || item.site_name === 'New Site')
+          ) {
             item.site_name = actualLeadName;
           }
+        }
+
+        // Replace 'New Site' or unassigned corporate staff duties with Corporate Name
+        if (!item.site_name || item.site_name === 'New Site') {
+          const isRegisteredUser =
+            item.employeeType === 'userMaster' ||
+            item.employeeId?.employeeType === 'userMaster' ||
+            item.employeeId?.user_id ||
+            ['CorpAdmin', 'userAdmin', 'Admin', 'Supervisor', 'Project', 'Finance', 'Sales'].includes(
+              item.role || item.employeeId?.role || ''
+            );
+          item.site_name = isRegisteredUser ? corpFallbackName : 'Field Duty';
         }
       }
 

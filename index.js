@@ -19,6 +19,7 @@ const uploadRouter = require("./routes/uploadRouter");
 const UserCorpRouter = require("./routes/UserCorpRouter");
 const FinanceRouter = require("./routes/FinanceRouter");
 const dbConnector = require("./utils/dbConnector");
+const WorkerLocation = require("./models/WorkerLocation");
 const path = require("path");
 
 const app = express();
@@ -155,6 +156,107 @@ io.on("connection", (socket) => {
       const errRes = { success: false, message: err.message };
       if (typeof ack === "function") ack(errRes);
       socket.emit("attendance:active_staff_response", errRes);
+    }
+  });
+
+  // 🚀 HIGH-PERFORMANCE REAL-TIME WORKER LOCATION TRACKING
+  socket.on("update_location", async (data, ack) => {
+    try {
+      const {
+        workerId,
+        latitude,
+        longitude,
+        batteryLevel = null,
+        speed = null,
+        heading = null,
+        accuracy = null,
+        timestamp,
+      } = data || {};
+
+      if (!workerId || latitude === undefined || longitude === undefined || isNaN(Number(latitude)) || isNaN(Number(longitude))) {
+        const errRes = { success: false, message: "Valid workerId, latitude, and longitude are required" };
+        if (typeof ack === "function") ack(errRes);
+        return;
+      }
+
+      const numLat = Number(latitude);
+      const numLng = Number(longitude);
+
+      // Upsert worker coordinates in MongoDB with 2dsphere index
+      const updated = await WorkerLocation.findOneAndUpdate(
+        { workerId: String(workerId) },
+        {
+          location: {
+            type: "Point",
+            coordinates: [numLng, numLat], // [Longitude, Latitude]
+          },
+          batteryLevel: batteryLevel !== null && !isNaN(Number(batteryLevel)) ? Number(batteryLevel) : null,
+          speed: speed !== null && !isNaN(Number(speed)) ? Number(speed) : null,
+          heading: heading !== null && !isNaN(Number(heading)) ? Number(heading) : null,
+          accuracy: accuracy !== null && !isNaN(Number(accuracy)) ? Number(accuracy) : null,
+          lastUpdated: timestamp ? new Date(timestamp) : new Date(),
+        },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      );
+
+      const payload = {
+        workerId: String(workerId),
+        latitude: numLat,
+        longitude: numLng,
+        batteryLevel: updated.batteryLevel,
+        speed: updated.speed,
+        heading: updated.heading,
+        accuracy: updated.accuracy,
+        lastUpdated: updated.lastUpdated,
+      };
+
+      // Broadcast update to dashboard and all other connected clients
+      socket.broadcast.emit("live_location_update", payload);
+
+      if (typeof ack === "function") {
+        ack({ success: true, data: payload });
+      }
+    } catch (err) {
+      console.error("❌ Database update_location error:", err.message);
+      if (typeof ack === "function") {
+        ack({ success: false, message: err.message });
+      }
+    }
+  });
+
+  // 🛡️ ULTRA-FAST GEOFENCE VERIFICATION (using 2dsphere $geoWithin / $near)
+  socket.on("check_geofence", async (data, ack) => {
+    try {
+      const { workerId, siteLongitude, siteLatitude, radiusMeters = 200 } = data || {};
+
+      if (!workerId || siteLongitude === undefined || siteLatitude === undefined) {
+        const errRes = { success: false, message: "workerId, siteLongitude, and siteLatitude required" };
+        if (typeof ack === "function") ack(errRes);
+        return socket.emit("geofence_status", errRes);
+      }
+
+      const isInside = await WorkerLocation.isWorkerInsideCircle(
+        workerId,
+        siteLongitude,
+        siteLatitude,
+        Number(radiusMeters)
+      );
+
+      const result = {
+        success: true,
+        workerId: String(workerId),
+        inside: isInside,
+        radiusMeters: Number(radiusMeters),
+        checkedAt: new Date(),
+      };
+
+      if (typeof ack === "function") ack(result);
+      socket.emit("geofence_status", result);
+    } catch (err) {
+      console.error("❌ Geofence check error:", err.message);
+      const errRes = { success: false, message: err.message };
+      if (typeof ack === "function") ack(errRes);
+      socket.emit("geofence_status", errRes);
     }
   });
 
