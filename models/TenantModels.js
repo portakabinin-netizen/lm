@@ -81,6 +81,7 @@ const employmentEntrySchema = new mongoose.Schema(
       default: null,
     },
     active: { type: Boolean, default: true }, // true = currently active employment period
+    exemptDays: { type: [String], default: ['Sun'] },
     endDate: { type: Date }, // Populated when this period ends
     notes: { type: String, trim: true }, // Optional reason / remark for change
     locationId: { type: mongoose.Schema.Types.ObjectId },
@@ -113,6 +114,7 @@ const employeeSchema = new mongoose.Schema(
     shiftGroupName: { type: String, enum: ['MANG', 'DaNi', null], default: null },
     selectedShift: { type: String, trim: true },
     monthlyRate: { type: Number, default: 0 },
+    exemptDays: { type: [String], default: ['Sun'] },
     locationId: { type: mongoose.Schema.Types.ObjectId },
   },
   { timestamps: true }
@@ -192,6 +194,7 @@ const leadSchema = new mongoose.Schema(
           billRate: { type: Number, default: 0 }, // Amount charged to client per worker per shift
           salaryRate: { type: Number, default: 0 }, // Amount paid to worker per shift
           active: { type: Boolean, default: true },
+          exemptDays: { type: [String], default: ['Sun'] }, // e.g. ['Sun'] or ['Sun', 'Sat']
         },
         { _id: true }
       ),
@@ -229,7 +232,11 @@ const attendanceSchema = new mongoose.Schema(
     siteLong: { type: Number },
     role: { type: String, trim: true },
     date: { type: Date, required: true },
-    status: { type: String, enum: ['Present', 'Absent', 'Leave'], default: 'Present' },
+    status: {
+      type: String,
+      enum: ['Present', 'Absent', 'Leave', 'Paid Leave', 'Weekly Off', 'P', 'W', 'L', 'A'],
+      default: 'Present',
+    },
     dutyLevel: { type: Number, default: 1 },
     rate: { type: Number, default: 0 },
     site_name: { type: String, trim: true },
@@ -261,6 +268,8 @@ const attendanceSchema = new mongoose.Schema(
     isDoubleShift: { type: Boolean, default: false }, // true if worker continued into next shift
     previousShiftId: { type: mongoose.Schema.Types.ObjectId, ref: 'Attendance', default: null }, // links to prior shift record
     doubleShiftNotified: { type: Boolean, default: false }, // notification sent to supervisors?
+    isExemptDay: { type: Boolean, default: false }, // true if marked on scheduled weekly off / exempt day
+    assignedExemptDays: { type: [String], default: [] }, // snapshot of assigned weekly off days (e.g. ['Sun'])
 
     // ── Device & Marked By ──
     markedByDevice: { type: Boolean, default: true }, // true if user marked themselves

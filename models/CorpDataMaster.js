@@ -217,10 +217,16 @@ const attendanceSchema = new mongoose.Schema({
     siteLong: { type: Number },
     role: { type: String, trim: true },
     date: { type: Date, required: true },
-    status: { type: String, enum: ["Present", "Absent", "Leave"], default: "Present" },
+    status: {
+      type: String,
+      enum: ["Present", "Absent", "Leave", "Paid Leave", "Weekly Off", "P", "W", "L", "A"],
+      default: "Present"
+    },
     dutyStart: { type: Date },
     dutyEnd: { type: Date },
     hoursWorked: { type: Number, default: 0 },
+    isExemptDay: { type: Boolean, default: false },
+    assignedExemptDays: { type: [String], default: [] },
     markedByDevice: { type: Boolean, default: true },
     markedByUserName: { type: String, trim: true },
     location: {

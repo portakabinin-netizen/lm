@@ -83,6 +83,7 @@ router.post("/hr/broadcast",                         ctrl.manageEmployees.sendBr
 router.post("/hr/attendance/lock-worker", ctrl.manageEmployees.lockWorkerAttendance);
 router.post("/hr/attendance",    ctrl.manageEmployees.markAttendance);
 router.post("/hr/attendance/mark-paid", ctrl.manageEmployees.markPaid);
+router.post("/hr/attendance/clean-reconcile", ctrl.manageEmployees.cleanAndReconcileAttendance);
 router.put("/hr/attendance/:id", ctrl.manageEmployees.updateAttendance);
 router.delete("/hr/attendance/:id", ctrl.manageEmployees.deleteAttendance);
 router.get("/hr/rate-lookup",   ctrl.manageEmployees.getRateLookup);

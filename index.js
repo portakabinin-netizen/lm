@@ -284,7 +284,9 @@ app.use((req, res, next) => {
 app.use("/api/auth", authRouter);
 app.use("/api/setting", setting);
 app.use("/api/service", UserCorpRouter);
+app.use("/service", UserCorpRouter); // 🚀 Smooth alias for direct /service route calls
 app.use("/api/finance", FinanceRouter);
+app.use("/finance", FinanceRouter);
 
 // 🚀 LEGACY DASHBOARD ADAPTER ROUTES
 app.use("/api/payment", require("./routes/paymentRouter"));

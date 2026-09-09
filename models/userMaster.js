@@ -49,7 +49,8 @@ const userMasterSchema = new mongoose.Schema({
         durationHrs: { type: Number, default: 8 },
         endOn: { type: String, default: "17:00" }, // HH:mm
         groupName: { type: String, enum: ["MANG", "DaNi"], default: "MANG" },
-        shiftName: { type: String, default: "General" }
+        shiftName: { type: String, default: "General" },
+        exemptDays: { type: [String], default: ["Sun"] }
     },
 
     allowCashFlow: { type: Boolean, default: false },

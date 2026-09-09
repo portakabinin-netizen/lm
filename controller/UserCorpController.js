@@ -1321,6 +1321,269 @@ exports.manageEmployees = {
       res.status(500).json({ success: false, message: 'Server error marking as paid.' });
     }
   },
+  cleanAndReconcileAttendance: async (req, res) => {
+    try {
+      const mongoose = require('mongoose');
+      const { Attendance, Leads } = req.tenantModels;
+      const { month, year, siteId } = req.body;
+
+      const targetMonth = month !== undefined ? parseInt(month) : new Date().getMonth();
+      const targetYear = year !== undefined ? parseInt(year) : new Date().getFullYear();
+
+      const startOfMonth = new Date(targetYear, targetMonth, 1, 0, 0, 0, 0);
+      const endOfMonth = new Date(targetYear, targetMonth + 1, 0, 23, 59, 59, 999);
+
+      const query = {
+        $or: [
+          { date: { $gte: startOfMonth, $lte: endOfMonth } },
+          { dutyStart: { $gte: startOfMonth, $lte: endOfMonth } },
+        ],
+      };
+      if (siteId && mongoose.isValidObjectId(siteId)) {
+        query.leadId = new mongoose.Types.ObjectId(siteId);
+      }
+
+      const allLogs = await Attendance.find(query).sort({ dutyStart: 1, date: 1 });
+
+      // Cache Leads for site shift duration / capping lookup
+      const leadMap = new Map();
+      const allLeads = await Leads.find({}).lean();
+      allLeads.forEach((lead) => leadMap.set(String(lead._id), lead));
+
+      let mergedCount = 0;
+      let deletedFragmentsCount = 0;
+      let halfDutyAdjustedCount = 0;
+      let normalizedStatusCount = 0;
+
+      // Group by Date string (YYYY-MM-DD)
+      const logsByDate = new Map();
+      allLogs.forEach((log) => {
+        const d = new Date(log.date || log.dutyStart);
+        const dateKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        if (!logsByDate.has(dateKey)) logsByDate.set(dateKey, []);
+        logsByDate.get(dateKey).push(log);
+      });
+
+      for (const [dateKey, dayLogs] of logsByDate.entries()) {
+        // ─────────────────────────────────────────────────────────────────
+        // 1. RULE 1: Merge Fragmented Logs (Same Worker + Same Site + Same Shift)
+        // ─────────────────────────────────────────────────────────────────
+        const workerSiteShiftMap = new Map();
+        dayLogs.forEach((log) => {
+          const empIdStr = String(log.employeeId?._id || log.employeeId || '');
+          const leadIdStr = String(log.leadId?._id || log.leadId || 'none');
+          const shiftStr = log.shiftCode || 'G';
+          const groupKey = `${empIdStr}_${leadIdStr}_${shiftStr}`;
+
+          if (!workerSiteShiftMap.has(groupKey)) workerSiteShiftMap.set(groupKey, []);
+          workerSiteShiftMap.get(groupKey).push(log);
+        });
+
+        for (const [groupKey, frags] of workerSiteShiftMap.entries()) {
+          if (frags.length > 1) {
+            frags.sort((a, b) => new Date(a.dutyStart || a.date).getTime() - new Date(b.dutyStart || b.date).getTime());
+            const primary = frags[0];
+            const toDelete = frags.slice(1);
+
+            // Determine max shift duration capping from Leads database
+            let shiftCap = primary.shiftLockHours || (primary.shiftType === '12hr' ? 12 : 8);
+            const leadDoc = primary.leadId ? leadMap.get(String(primary.leadId)) : null;
+            if (leadDoc?.siteShifts?.length) {
+              const matchedSiteShift = leadDoc.siteShifts.find((s) => s.shiftCode === primary.shiftCode);
+              if (matchedSiteShift?.durationHrs) {
+                shiftCap = matchedSiteShift.durationHrs;
+              }
+            }
+
+            let earliestStart = primary.dutyStart ? new Date(primary.dutyStart) : new Date(primary.date);
+            let latestEnd = primary.dutyEnd ? new Date(primary.dutyEnd) : null;
+            let totalHours = 0;
+            const combinedGeo = [...(primary.geoHistory || [])];
+
+            frags.forEach((f) => {
+              if (f.dutyStart && new Date(f.dutyStart) < earliestStart) {
+                earliestStart = new Date(f.dutyStart);
+              }
+              if (f.dutyEnd) {
+                if (!latestEnd || new Date(f.dutyEnd) > latestEnd) {
+                  latestEnd = new Date(f.dutyEnd);
+                }
+              }
+              let hrs = f.hoursWorked || 0;
+              if (!hrs && f.dutyStart && f.dutyEnd) {
+                hrs = (new Date(f.dutyEnd).getTime() - new Date(f.dutyStart).getTime()) / 3600000;
+              }
+              totalHours += hrs;
+
+              if (String(f._id) !== String(primary._id) && f.geoHistory?.length) {
+                combinedGeo.push(...f.geoHistory);
+              }
+            });
+
+            // Cap hours worked at lead shift duration
+            const cappedHours = Math.min(Math.round(totalHours * 100) / 100, shiftCap);
+            const rate = primary.dailyRate || primary.rate || 0;
+            const dailyEarn = shiftCap > 0 ? (rate * (cappedHours / shiftCap)) : rate;
+
+            combinedGeo.sort((a, b) => new Date(a.timestamp || 0).getTime() - new Date(b.timestamp || 0).getTime());
+
+            await Attendance.updateOne(
+              { _id: primary._id },
+              {
+                $set: {
+                  dutyStart: earliestStart,
+                  dutyEnd: latestEnd,
+                  hoursWorked: cappedHours,
+                  dailyEarn: Math.round(dailyEarn * 100) / 100,
+                  dutyCount: 1,
+                  dutyLevel: 1,
+                  geoHistory: combinedGeo,
+                  remarks: (primary.remarks || '') + (primary.remarks ? ' | ' : '') + `[Consolidated ${frags.length} logs, capped at ${shiftCap}h]`,
+                }
+              }
+            );
+
+            const deleteIds = toDelete.map((f) => f._id);
+            await Attendance.deleteMany({ _id: { $in: deleteIds } });
+
+            mergedCount++;
+            deletedFragmentsCount += deleteIds.length;
+
+            primary.hoursWorked = cappedHours;
+            primary.dutyStart = earliestStart;
+            primary.dutyEnd = latestEnd;
+            const delSet = new Set(deleteIds.map(String));
+            for (let i = dayLogs.length - 1; i >= 0; i--) {
+              if (delSet.has(String(dayLogs[i]._id))) {
+                dayLogs.splice(i, 1);
+              }
+            }
+          }
+        }
+
+        // ─────────────────────────────────────────────────────────────────
+        // 2. RULE 2: Shared Site-Shift by Different Workers (> half shift hours -> 2 Half Duties)
+        // ─────────────────────────────────────────────────────────────────
+        const siteShiftSlots = new Map();
+        dayLogs.forEach((log) => {
+          const leadIdStr = String(log.leadId?._id || log.leadId || '');
+          if (!leadIdStr || leadIdStr === 'none') return;
+          const shiftStr = log.shiftCode || 'G';
+          const slotKey = `${leadIdStr}_${shiftStr}`;
+
+          if (!siteShiftSlots.has(slotKey)) siteShiftSlots.set(slotKey, []);
+          siteShiftSlots.get(slotKey).push(log);
+        });
+
+        for (const [slotKey, slotLogs] of siteShiftSlots.entries()) {
+          const byWorker = new Map();
+          slotLogs.forEach((l) => {
+            const wId = String(l.employeeId?._id || l.employeeId || '');
+            if (!byWorker.has(wId)) byWorker.set(wId, []);
+            byWorker.get(wId).push(l);
+          });
+
+          if (byWorker.size >= 2) {
+            const firstLog = slotLogs[0];
+            let shiftCap = firstLog.shiftLockHours || (firstLog.shiftType === '12hr' ? 12 : 8);
+            const leadDoc = firstLog.leadId ? leadMap.get(String(firstLog.leadId)) : null;
+            if (leadDoc?.siteShifts?.length) {
+              const matchedSiteShift = leadDoc.siteShifts.find((s) => s.shiftCode === firstLog.shiftCode);
+              if (matchedSiteShift?.durationHrs) shiftCap = matchedSiteShift.durationHrs;
+            }
+
+            const halfThreshold = shiftCap / 2;
+            const qualifyingWorkers = [];
+
+            for (const [wId, wLogs] of byWorker.entries()) {
+              const wTotalHours = wLogs.reduce((acc, cur) => acc + (cur.hoursWorked || 0), 0);
+              if (wTotalHours >= halfThreshold) {
+                qualifyingWorkers.push({ wId, wLogs, wTotalHours });
+              }
+            }
+
+            if (qualifyingWorkers.length >= 2) {
+              for (const qw of qualifyingWorkers) {
+                for (const l of qw.wLogs) {
+                  if (l.dutyLevel !== 0.5) {
+                    const halfEarn = Math.round(((l.dailyRate || l.rate || 0) * 0.5) * 100) / 100;
+                    await Attendance.updateOne(
+                      { _id: l._id },
+                      {
+                        $set: {
+                          dutyLevel: 0.5,
+                          dutyCount: 0.5,
+                          dailyEarn: halfEarn,
+                          remarks: (l.remarks || '') + (l.remarks ? ' | ' : '') + `[Half Duty - Shared Slot (${qw.wTotalHours.toFixed(1)}h)]`,
+                        }
+                      }
+                    );
+                    l.dutyLevel = 0.5;
+                    l.dutyCount = 0.5;
+                    halfDutyAdjustedCount++;
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        // ─────────────────────────────────────────────────────────────────
+        // 3. RULE 4: Normalize Schema Statuses (P, W, L, A) & Sync Assigned Exempt Days
+        // ─────────────────────────────────────────────────────────────────
+        for (const log of dayLogs) {
+          let normalized = log.status;
+          if (log.status === 'P') normalized = 'Present';
+          else if (log.status === 'W') normalized = 'Weekly Off';
+          else if (log.status === 'L') normalized = 'Paid Leave';
+          else if (log.status === 'A') normalized = 'Absent';
+
+          // Resolve assignedExemptDays for this log (from log snapshot, site shift, or employee)
+          let logExemptDays = (log.assignedExemptDays && log.assignedExemptDays.length > 0) ? log.assignedExemptDays : null;
+          if (!logExemptDays) {
+            const leadDoc = log.leadId ? leadMap.get(String(log.leadId)) : null;
+            const matchedSiteShift = leadDoc?.siteShifts?.find((s) => s.shiftCode === log.shiftCode);
+            logExemptDays = (matchedSiteShift?.exemptDays && matchedSiteShift.exemptDays.length > 0)
+              ? matchedSiteShift.exemptDays
+              : ['Sun'];
+          }
+
+          const logD = new Date(log.date || log.dutyStart);
+          const dayName = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][logD.getDay()];
+          const isExempt = logExemptDays.includes(dayName);
+
+          const updateFields = {};
+          if (normalized !== log.status) {
+            updateFields.status = normalized;
+            normalizedStatusCount++;
+          }
+          if (!log.assignedExemptDays || log.assignedExemptDays.length === 0 || log.isExemptDay !== isExempt) {
+            updateFields.assignedExemptDays = logExemptDays;
+            updateFields.isExemptDay = isExempt;
+          }
+
+          if (Object.keys(updateFields).length > 0) {
+            await Attendance.updateOne({ _id: log._id }, { $set: updateFields });
+          }
+        }
+      }
+
+      res.status(200).json({
+        success: true,
+        message: 'Attendance logs cleaned and reconciled successfully.',
+        data: {
+          mergedCount,
+          deletedFragmentsCount,
+          halfDutyAdjustedCount,
+          normalizedStatusCount,
+          totalRecordsProcessed: allLogs.length,
+        }
+      });
+    } catch (error) {
+      console.error('[cleanAndReconcileAttendance] Error:', error);
+      res.status(500).json({ success: false, message: error.message || 'Server error reconciling attendance' });
+    }
+  },
   list: async (req, res) => {
     try {
       const { Employees } = req.tenantModels;
@@ -2442,6 +2705,7 @@ exports.manageEmployees = {
             groupName: matchedShift.groupName || 'MANG',
             billRate: matchedShift.billRate || 0,
             salaryRate: matchedShift.salaryRate || 0,
+            exemptDays: (matchedShift.exemptDays && matchedShift.exemptDays.length > 0) ? matchedShift.exemptDays : ['Sun'],
           };
 
           // Per-slot capacity check
@@ -2734,13 +2998,41 @@ exports.manageEmployees = {
       const endOfDay = new Date(targetDate);
       endOfDay.setHours(23, 59, 59, 999);
 
-      const existingRecordOnDate = await Attendance.findOne({
+      // 🚀 CHECK IF ATTENDANCE RECORD EXISTS FOR THE SAME DATE, SHIFT, AND SITE
+      // Matching shiftCode & leadId ensures distinct shifts (e.g. D vs N2 / N12 or extra duty on another site)
+      // are created as separate valid duty records rather than overwriting prior shifts!
+      const existingRecordQuery = {
         employeeId: { $in: uniqueCheckIds },
+        shiftCode: finalShiftCode,
         $or: [
           { date: { $gte: startOfDay, $lte: endOfDay } },
           { dutyStart: { $gte: startOfDay, $lte: endOfDay } },
         ],
-      }).sort({ createdAt: -1 });
+      };
+      if (leadId && mongoose.isValidObjectId(leadId)) {
+        existingRecordQuery.leadId = new mongoose.Types.ObjectId(leadId);
+      }
+
+      // 🚀 ASSIGNED EXEMPT DAYS RESOLUTION & WEEKLY OFF IDENTIFICATION
+      let resolvedExemptDays = ['Sun'];
+      if (siteShiftOverride?.exemptDays && Array.isArray(siteShiftOverride.exemptDays) && siteShiftOverride.exemptDays.length > 0) {
+        resolvedExemptDays = siteShiftOverride.exemptDays;
+      } else if (req.body.assignedExemptDays && Array.isArray(req.body.assignedExemptDays) && req.body.assignedExemptDays.length > 0) {
+        resolvedExemptDays = req.body.assignedExemptDays;
+      } else if (req.body.exemptDays && Array.isArray(req.body.exemptDays) && req.body.exemptDays.length > 0) {
+        resolvedExemptDays = req.body.exemptDays;
+      } else if (emp?.exemptDays && Array.isArray(emp.exemptDays) && emp.exemptDays.length > 0) {
+        resolvedExemptDays = emp.exemptDays;
+      } else if (userDoc?.dutyShift?.exemptDays && Array.isArray(userDoc.dutyShift.exemptDays) && userDoc.dutyShift.exemptDays.length > 0) {
+        resolvedExemptDays = userDoc.dutyShift.exemptDays;
+      }
+
+      const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+      const targetDayOfWeek = dayNames[new Date(targetDate).getDay()];
+      const isTargetDayExempt = resolvedExemptDays.includes(targetDayOfWeek);
+      const finalIsExemptDay = req.body.isExemptDay !== undefined ? !!req.body.isExemptDay : isTargetDayExempt;
+
+      const existingRecordOnDate = await Attendance.findOne(existingRecordQuery).sort({ createdAt: -1 });
 
       let record;
       if (existingRecordOnDate) {
@@ -2753,6 +3045,8 @@ exports.manageEmployees = {
         if (clientId) record.clientId = clientId;
         if (status) record.status = status;
         if (dutyLevel !== undefined) record.dutyLevel = dutyLevel;
+        record.assignedExemptDays = resolvedExemptDays;
+        record.isExemptDay = finalIsExemptDay;
         if (rate || siteShiftOverride?.billRate) record.rate = rate || siteShiftOverride?.billRate;
         if (site_name && site_name !== 'New Site') record.site_name = site_name;
         if (remarks !== undefined) record.remarks = remarks;
@@ -2780,16 +3074,29 @@ exports.manageEmployees = {
           record.geoHistory = [...(record.geoHistory || []), ...finalGeoHistory];
         }
       } else {
+        // 🚀 Overtime / Consecutive Shift: Check if worker already had an earlier shift on this date
+        const priorShiftToday = await Attendance.findOne({
+          employeeId: { $in: uniqueCheckIds },
+          $or: [
+            { date: { $gte: startOfDay, $lte: endOfDay } },
+            { dutyStart: { $gte: startOfDay, $lte: endOfDay } },
+          ],
+        }).sort({ dutyStart: -1 });
+
         record = new Attendance({
           employeeId: targetEmpId,
           employeeType: targetEmpType,
           role,
+          isDoubleShift: !!priorShiftToday,
+          previousShiftId: priorShiftToday ? priorShiftToday._id : null,
           leadId: (leadId && mongoose.isValidObjectId(leadId)) ? leadId : (hoLocationId || null),
           locationId: hoLocationId || null,
           clientId: clientId || null,
           status: status || 'Present',
           customCreated: true, // Tag it so we know it was manually marked/handled
           dutyLevel: dutyLevel ?? 1,
+          assignedExemptDays: resolvedExemptDays,
+          isExemptDay: finalIsExemptDay,
           rate: rate || siteShiftOverride?.billRate || 0,
           date: targetDate,
           site_name: (finalSiteName === 'New Site' || !finalSiteName) ? 'Field Duty' : finalSiteName,
@@ -2951,11 +3258,29 @@ exports.manageEmployees = {
         'dailyRate',
         'dailyEarn',
         'isLocked',
+        'dutyLevel',
+        'dutyCount',
+        'assignedExemptDays',
+        'isExemptDay',
+        'remarks',
+        'dutyStart',
+        'date',
       ];
       const update = {};
       allowed.forEach((k) => {
         if (req.body[k] !== undefined) update[k] = req.body[k];
       });
+
+      if (update.dutyLevel !== undefined && update.dutyCount === undefined) {
+        update.dutyCount = update.dutyLevel;
+      }
+      if (update.assignedExemptDays && Array.isArray(update.assignedExemptDays)) {
+        const recDate = new Date(update.date || record.date || record.dutyStart || Date.now());
+        const dName = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][recDate.getDay()];
+        if (update.isExemptDay === undefined) {
+          update.isExemptDay = update.assignedExemptDays.includes(dName);
+        }
+      }
 
       // Filter geoHistory out of update and push if exempt
       if (isExemptUser) {
@@ -3490,6 +3815,7 @@ exports.manageEmployees = {
               groupName: 'MANG',
               billRate: 0,
               salaryRate: 0,
+              exemptDays: ['Sun'],
             };
           }
 
@@ -3531,6 +3857,7 @@ exports.manageEmployees = {
                 groupName: matchedShift.groupName || 'MANG',
                 billRate: matchedShift.billRate || 0,
                 salaryRate: matchedShift.salaryRate || 0,
+                exemptDays: (matchedShift.exemptDays && matchedShift.exemptDays.length > 0) ? matchedShift.exemptDays : ['Sun'],
               };
 
               // Per-slot capacity check
@@ -4095,6 +4422,19 @@ exports.manageEmployees = {
         startOfToday.setHours(0, 0, 0, 0);
         const endOfToday = new Date(startOfToday.getTime() + 24 * 60 * 60 * 1000);
 
+        // 🚀 RESOLVE ASSIGNED EXEMPT DAYS FOR TOGGLE SESSION
+        let toggleExemptDays = ['Sun'];
+        if (toggleSiteShiftOverride?.exemptDays && Array.isArray(toggleSiteShiftOverride.exemptDays) && toggleSiteShiftOverride.exemptDays.length > 0) {
+          toggleExemptDays = toggleSiteShiftOverride.exemptDays;
+        } else if (emp?.exemptDays && Array.isArray(emp.exemptDays) && emp.exemptDays.length > 0) {
+          toggleExemptDays = emp.exemptDays;
+        } else if (userDoc?.dutyShift?.exemptDays && Array.isArray(userDoc.dutyShift.exemptDays) && userDoc.dutyShift.exemptDays.length > 0) {
+          toggleExemptDays = userDoc.dutyShift.exemptDays;
+        }
+        const toggleDayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+        const toggleDayOfWeek = toggleDayNames[new Date(now).getDay()];
+        const isToggleExemptDay = toggleExemptDays.includes(toggleDayOfWeek);
+
         const existingOffRecord = await Attendance.findOne({
           employeeId: { $in: uniqueLinkedIds },
           dutyEnd: { $ne: null },
@@ -4119,6 +4459,8 @@ exports.manageEmployees = {
           record.shiftGroupName = toggleFinalGroupName;
           record.shiftHours = toggleFinalLockHrs;
           record.shiftLockHours = toggleFinalLockHrs;
+          record.assignedExemptDays = toggleExemptDays;
+          record.isExemptDay = isToggleExemptDay;
           if (startLat) record.startLat = startLat;
           if (startLong) record.startLong = startLong;
           if (siteLat) record.siteLat = siteLat;
@@ -4171,6 +4513,8 @@ exports.manageEmployees = {
             rate: toggleSiteShiftOverride?.salaryRate || fetchedDailyRate || currentRate || 0,
             dutyCount: 1,
             dutyLevel: 1,
+            assignedExemptDays: toggleExemptDays,
+            isExemptDay: isToggleExemptDay,
             isPaid: false,
             isLocked: false,
             isDoubleShift: false,
