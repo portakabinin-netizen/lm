@@ -1543,9 +1543,9 @@ exports.manageEmployees = {
           if (!logExemptDays) {
             const leadDoc = log.leadId ? leadMap.get(String(log.leadId)) : null;
             const matchedSiteShift = leadDoc?.siteShifts?.find((s) => s.shiftCode === log.shiftCode);
-            logExemptDays = (matchedSiteShift?.exemptDays && matchedSiteShift.exemptDays.length > 0)
+            logExemptDays = (matchedSiteShift?.exemptDays && Array.isArray(matchedSiteShift.exemptDays))
               ? matchedSiteShift.exemptDays
-              : ['Sun'];
+              : [];
           }
 
           const logD = new Date(log.date || log.dutyStart);
@@ -2705,7 +2705,7 @@ exports.manageEmployees = {
             groupName: matchedShift.groupName || 'MANG',
             billRate: matchedShift.billRate || 0,
             salaryRate: matchedShift.salaryRate || 0,
-            exemptDays: (matchedShift.exemptDays && matchedShift.exemptDays.length > 0) ? matchedShift.exemptDays : ['Sun'],
+            exemptDays: (matchedShift.exemptDays && Array.isArray(matchedShift.exemptDays)) ? matchedShift.exemptDays : [],
           };
 
           // Per-slot capacity check
@@ -3014,17 +3014,13 @@ exports.manageEmployees = {
       }
 
       // 🚀 ASSIGNED EXEMPT DAYS RESOLUTION & WEEKLY OFF IDENTIFICATION
-      let resolvedExemptDays = ['Sun'];
-      if (siteShiftOverride?.exemptDays && Array.isArray(siteShiftOverride.exemptDays) && siteShiftOverride.exemptDays.length > 0) {
+      let resolvedExemptDays = [];
+      if (siteShiftOverride?.exemptDays && Array.isArray(siteShiftOverride.exemptDays)) {
         resolvedExemptDays = siteShiftOverride.exemptDays;
-      } else if (req.body.assignedExemptDays && Array.isArray(req.body.assignedExemptDays) && req.body.assignedExemptDays.length > 0) {
+      } else if (req.body.assignedExemptDays && Array.isArray(req.body.assignedExemptDays)) {
         resolvedExemptDays = req.body.assignedExemptDays;
-      } else if (req.body.exemptDays && Array.isArray(req.body.exemptDays) && req.body.exemptDays.length > 0) {
+      } else if (req.body.exemptDays && Array.isArray(req.body.exemptDays)) {
         resolvedExemptDays = req.body.exemptDays;
-      } else if (emp?.exemptDays && Array.isArray(emp.exemptDays) && emp.exemptDays.length > 0) {
-        resolvedExemptDays = emp.exemptDays;
-      } else if (userDoc?.dutyShift?.exemptDays && Array.isArray(userDoc.dutyShift.exemptDays) && userDoc.dutyShift.exemptDays.length > 0) {
-        resolvedExemptDays = userDoc.dutyShift.exemptDays;
       }
 
       const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
