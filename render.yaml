@@ -1,0 +1,46 @@
+# Exported from Render on 2026-09-11T15:20:10Z
+version: "1"
+projects:
+- name: My project
+  environments:
+  - name: Production
+    services:
+    - type: web
+      name: hipk
+      runtime: node
+      repo: https://github.com/portakabinin-netizen/lm
+      plan: free
+      envVars:
+      - key: WHATSAPP_SANDBOX_OVERRIDE
+        sync: false
+      - key: WHATSAPP_URL
+        sync: false
+      - key: WhatsApp_Business_Account_ID
+        sync: false
+      - key: PHONE_NUMBER_ID
+        sync: false
+      - key: WHATSAPP_TOKEN
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_UR2L
+        sync: false
+      - key: CLOUDINARY_URL
+        sync: false
+      - key: JWT_EXPIRE
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: MONGO_URI
+        sync: false
+      - key: PORT
+        sync: false
+      region: oregon
+      buildCommand: npm install
+      startCommand: node index.js
+      autoDeployTrigger: commit
+      rootDir: ./
