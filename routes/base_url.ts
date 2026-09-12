@@ -23,7 +23,10 @@ const expoHost = getDevHost();
 // 2. Local/LAN backend URL.
 // Set EXPO_PUBLIC_API_URL to a full URL (for example http://192.168.1.25:5001/api)
 // or EXPO_PUBLIC_API_HOST to just the host/IP for standalone builds on local devices.
-const configuredApiUrl = process.env.EXPO_PUBLIC_API_URL;
+const configuredApiUrl =
+  process.env.EXPO_PUBLIC_ONRENDER_DBC1 ||
+  process.env.EXPO_PUBLIC_ONRENDER_DBC2 ||
+  process.env.EXPO_PUBLIC_RAILWAY_DBC3;
 const configuredApiHost = process.env.EXPO_PUBLIC_API_HOST;
 const configuredApiPort = process.env.EXPO_PUBLIC_API_PORT || '5001';
 const webHost =
