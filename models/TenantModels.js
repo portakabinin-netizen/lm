@@ -234,7 +234,7 @@ const attendanceSchema = new mongoose.Schema(
     date: { type: Date, required: true },
     status: {
       type: String,
-      enum: ['Present', 'Absent', 'Leave', 'Paid Leave', 'Weekly Off', 'P', 'W', 'L', 'A'],
+      enum: ['Present', 'Absent', 'Leave', 'Paid Leave', 'Weekly Off', 'P', 'W', 'L', 'A', 'NR', 'No Reliever'],
       default: 'Present',
     },
     dutyLevel: { type: Number, default: 1 },
