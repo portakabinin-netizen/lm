@@ -4,8 +4,8 @@ import { Platform } from 'react-native';
 declare const __DEV__: boolean;
 
 const normalizeApiUrl = (url: string) => {
-  const trimmed = url.trim().replace(/\/$/, '');
-  return trimmed.endsWith('/api') ? trimmed : `${trimmed}/api`;
+  const trimmed = url.trim().replace(/\/+$/, '');
+  return trimmed.endsWith('/api') ? `${trimmed}/` : `${trimmed}/api/`;
 };
 
 // 1. Safe Host Detection
@@ -34,7 +34,7 @@ const webHost =
 const fallbackHost = Platform.OS === 'android' ? '10.0.2.2' : 'localhost';
 const resolvedHost = configuredApiHost || webHost || expoHost || fallbackHost;
 
-export const local_api_url = `http://${resolvedHost}:${configuredApiPort}/api`;
+export const local_api_url = `http://${resolvedHost}:${configuredApiPort}/api/`;
 const api_url = configuredApiUrl ? normalizeApiUrl(configuredApiUrl) : local_api_url;
 
 export default api_url;
