@@ -2349,39 +2349,37 @@ exports.manageEmployees = {
         }
 
         if (Object.keys(dateFilter).length > 0) {
-          // Include either the date range OR anything that is still "On Duty"
-          if (q.employeeId) {
-            const currentQ = { ...q };
-            delete currentQ.employeeId;
-            
+          const targetEmpFilter = q.employeeId;
+          const strFilter = {};
+          if (from_date) strFilter.$gte = String(from_date);
+          if (to_date) strFilter.$lte = String(to_date);
+
+          const dateOrConditions = [
+            { date: dateFilter },
+            { dutyStart: dateFilter },
+            { date: strFilter },
+            { dutyStart: strFilter },
+          ];
+
+          if (targetEmpFilter) {
             q = {
-              ...currentQ,
-              $and: [
-                { employeeId: q.employeeId },
-                {
-                  $or: [
-                    { date: dateFilter },
-                    { dutyStart: dateFilter },
-                    { dutyEnd: { $exists: false } },
-                    { dutyEnd: null }
-                  ]
-                }
-              ]
+              employeeId: targetEmpFilter,
+              $or: [
+                ...dateOrConditions,
+                { dutyEnd: { $exists: false } },
+                { dutyEnd: null },
+              ],
             };
           } else {
             q = {
               ...q,
-              $or: [
-                { date: dateFilter },
-                { dutyStart: dateFilter },
-                { dutyEnd: { $exists: false } },
-                { dutyEnd: null }
-              ]
+              $or: dateOrConditions,
             };
           }
         }
       }
-      const data = await Attendance.find(q).lean();
+      // Exclude heavy raw geoHistory coordinates when listing attendance to keep responses lightweight
+      const data = await Attendance.find(q).select('-geoHistory').lean();
 
       const userMaster = require('../models/userMaster');
       const { Employees, Leads } = req.tenantModels;

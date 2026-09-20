@@ -54,11 +54,18 @@ const dbConnector = {
         try {
             const tenantConn = await mongoose.createConnection(tenantUri, { family: 4 }).asPromise();
             
-            // Run schema migration to convert legacy documents
-            const { migrateTenantDb } = require("./schemaMigrator");
-            await migrateTenantDb(tenantConn, dbName);
-
             connections.set(dbName, tenantConn);
+
+            // Run schema migration in the background so it never blocks API requests or causes serverless timeouts
+            try {
+                const { migrateTenantDb } = require("./schemaMigrator");
+                migrateTenantDb(tenantConn, dbName).catch((mErr) => {
+                    console.warn(`[Migrator] Background check warning (${dbName}):`, mErr.message);
+                });
+            } catch (loadErr) {
+                // ignore
+            }
+
             return tenantConn;
         } catch (err) {
             console.error(`❌ Tenant Database Connection Error (${dbName}):`, err.message);

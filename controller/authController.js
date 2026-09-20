@@ -697,8 +697,17 @@ exports.checkUnique = async (req, res) => {
     try {
         const { userMobile, userAadhar } = req.body;
         let exists = false;
-        if (userMobile) exists = await userMaster.exists({ userMobile });
-        else if (userAadhar) exists = await userMaster.exists({ userAadhar });
+        if (userMobile) {
+            const raw = String(userMobile || "").trim();
+            const clean10 = raw.replace(/\D/g, "").slice(-10);
+            const formats = [clean10, `+91${clean10}`, `91${clean10}`, `0${clean10}`, raw];
+            exists = await userMaster.exists({ userMobile: { $in: formats } });
+        } else if (userAadhar) {
+            const cleanAadhar = String(userAadhar || "").trim().replace(/\s+/g, "");
+            exists = await userMaster.exists({
+                $or: [{ userAadhar }, { userAadhar: cleanAadhar }]
+            });
+        }
         return res.json({ exists: Boolean(exists) });
     } catch (err) { return res.status(500).json({ error: err.message }); }
 };

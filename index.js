@@ -43,11 +43,13 @@ const connectDB = async () => {
 
 connectDB();
 
-// ---------- HTTP + Socket.IO ----------
+// ---------- HTTP + Socket.IO + Pusher Hybrid Realtime ----------
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
+const { createHybridBroadcaster } = require("./utils/realtimeBroadcaster");
+const hybridIo = createHybridBroadcaster(io);
 
-app.use((req, res, next) => { req.io = io; next(); });
+app.use((req, res, next) => { req.io = hybridIo; next(); });
 
 io.on("connection", (socket) => {
 
@@ -367,17 +369,25 @@ app.use((err, req, res, next) => {
   });
 });
 
-// ---------- Start ----------
-const PORT = process.env.PORT || 5000;
-server.listen(PORT, "0.0.0.0", () => {
-  console.log(`🖇️ App running on port->${PORT} & Started at: ${new Date().toLocaleString()}`);
-});
+// ---------- Start (Server & Serverless Compatible) ----------
+const isServerless = Boolean(process.env.VERCEL === "1" || process.env.NOW_REGION);
 
-server.on("error", (err) => {
-  if (err.code === "EADDRINUSE") {
-    console.error(`❌ Port ${PORT} is already in use. Kill the existing process and restart.`);
-    process.exit(1);
-  } else {
-    throw err;
-  }
-});
+if (!isServerless) {
+  const PORT = process.env.PORT || 5000;
+  server.listen(PORT, "0.0.0.0", () => {
+    console.log(`🖇️ App running on port->${PORT} & Started at: ${new Date().toLocaleString()}`);
+  });
+
+  server.on("error", (err) => {
+    if (err.code === "EADDRINUSE") {
+      console.error(`❌ Port ${PORT} is already in use. Kill the existing process and restart.`);
+      process.exit(1);
+    } else {
+      throw err;
+    }
+  });
+}
+
+module.exports = app;
+module.exports.server = server;
+

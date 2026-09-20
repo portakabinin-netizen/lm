@@ -307,6 +307,13 @@ const attendanceSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+attendanceSchema.index({ employeeId: 1, date: -1 });
+attendanceSchema.index({ dutyStart: -1 });
+attendanceSchema.index({ dutyEnd: 1 });
+attendanceSchema.index({ date: -1 });
+attendanceSchema.index({ siteId: 1 });
+
+
 // 7. Accounting
 const groupSchema = new mongoose.Schema(
   {
