@@ -2262,20 +2262,218 @@ exports.manageEmployees = {
         exports.manageEmployees.listAttendance(req, mockResAtt)
       ]);
 
+      let attendanceList = attResult?.data || [];
+
+      // If previous day attendance is not available for any site, fetch the last worker who did duty on that site
+      try {
+        const { Leads, Attendance } = req.tenantModels || {};
+        if (Leads && Attendance) {
+          const sitesWithCompletedAtt = new Set();
+          for (const item of attendanceList) {
+            if (item.dutyEnd) {
+              const lid = item.leadId?._id || item.leadId || item.siteId;
+              if (lid) sitesWithCompletedAtt.add(String(lid));
+            }
+          }
+
+          const acceptedLeads = await Leads.find({
+            status: { $in: ['Accepted', 'Tax Invoice'] }
+          }).select('_id sender_name siteShifts').lean();
+
+          const missingLeadIds = acceptedLeads
+            .filter((l) => !sitesWithCompletedAtt.has(String(l._id)))
+            .map((l) => l._id);
+
+          if (missingLeadIds.length > 0) {
+            const mongoose = require('mongoose');
+            const targetObjIds = missingLeadIds
+              .filter((id) => mongoose.isValidObjectId(id))
+              .map((id) => new mongoose.Types.ObjectId(id));
+            const targetStrIds = missingLeadIds.map((id) => String(id));
+            const matchIds = [...new Set([...targetObjIds, ...targetStrIds])];
+
+            const lastSiteAtts = await Attendance.aggregate([
+              {
+                $match: {
+                  $or: [
+                    { leadId: { $in: matchIds } },
+                    { siteId: { $in: matchIds } }
+                  ],
+                  dutyEnd: { $exists: true, $ne: null }
+                }
+              },
+              { $sort: { dutyStart: -1, createdAt: -1 } },
+              {
+                $group: {
+                  _id: { $ifNull: ['$leadId', '$siteId'] },
+                  doc: { $first: '$$ROOT' }
+                }
+              }
+            ]);
+
+            if (lastSiteAtts.length > 0) {
+              const rawDocs = lastSiteAtts.map((i) => i.doc);
+              const populated = await exports.manageEmployees.populateAttendanceRecords(rawDocs, req);
+              for (const doc of populated) {
+                doc.isLastWorkerFallback = true;
+                attendanceList.push(doc);
+              }
+            }
+          }
+        }
+      } catch (lastWorkerErr) {
+        console.warn('⚠️ [getAttendanceDashboard] Error fetching site fallback last workers:', lastWorkerErr.message);
+      }
+
       res.json({
         success: true,
         employees: empResult?.data || [],
-        attendance: attResult?.data || []
+        attendance: attendanceList
       });
     } catch (err) {
       res.status(500).json({ success: false, message: err.message });
     }
   },
+  populateAttendanceRecords: async (data, req) => {
+    if (!data || !data.length) return [];
+    const userMaster = require('../models/userMaster');
+    const { Employees, Leads } = req.tenantModels;
+
+    const userMasterIds = [];
+    const employeeIds = [];
+    const leadIds = [];
+    for (const item of data) {
+      if (item.employeeId) {
+        if (item.employeeType === 'userMaster') {
+          userMasterIds.push(item.employeeId);
+        } else {
+          employeeIds.push(item.employeeId);
+        }
+      }
+      if (item.leadId) {
+        leadIds.push(item.leadId);
+      } else if (item.siteId) {
+        leadIds.push(item.siteId);
+      } else if (item.clientId) {
+        leadIds.push(item.clientId);
+      }
+    }
+
+    const uniqueUserMasterIds = [...new Set(userMasterIds.map((id) => id.toString()))];
+    const uniqueEmployeeIds = [...new Set(employeeIds.map((id) => id.toString()))];
+    const uniqueLeadIds = [...new Set(leadIds.map((id) => id.toString()))];
+
+    const [usersList, empsList, leadsList] = await Promise.all([
+      uniqueUserMasterIds.length > 0
+        ? userMaster.find({ _id: { $in: uniqueUserMasterIds } }).lean()
+        : Promise.resolve([]),
+      uniqueEmployeeIds.length > 0
+        ? Employees.find({ _id: { $in: uniqueEmployeeIds } }).lean()
+        : Promise.resolve([]),
+      uniqueLeadIds.length > 0
+        ? Leads.find({ _id: { $in: uniqueLeadIds } }).lean()
+        : Promise.resolve([]),
+    ]);
+
+    const usersMap = {};
+    for (const u of usersList) {
+      usersMap[u._id.toString()] = {
+        _id: u._id,
+        name:
+          u.userDisplayName ||
+          u.name ||
+          `${u.firstName || ''} ${u.lastName || ''}`.trim() ||
+          u.email,
+        mobile: u.userMobile || u.mobile,
+        email: u.email,
+        role: u.userRole || u.role || 'project',
+        photo_url: u.userProfileImage || u.photo_url,
+        employeeType: 'userMaster',
+        user_id: u._id,
+        userActive: u.userActive,
+      };
+    }
+
+    const empsMap = {};
+    for (const emp of empsList) {
+      empsMap[emp._id.toString()] = emp;
+    }
+
+    const empUserIds = empsList
+      .filter((e) => !e.photo_url && (e.user_id || e._id))
+      .map((e) => (e.user_id || e._id).toString());
+
+    if (empUserIds.length > 0) {
+      try {
+        const matchingUsers = await userMaster.find({ _id: { $in: empUserIds } }).lean();
+        matchingUsers.forEach((u) => {
+          const uPhoto = u.userProfileImage || u.photo_url;
+          if (uPhoto && empsMap[u._id.toString()]) {
+            empsMap[u._id.toString()].photo_url = uPhoto;
+          }
+        });
+      } catch (enrichErr) {
+        console.warn('Could not enrich user photos in listAttendance:', enrichErr.message);
+      }
+    }
+
+    const leadsMap = {};
+    for (const lead of leadsList) {
+      leadsMap[lead._id.toString()] = lead;
+    }
+
+    const corpFallbackName = req.user?.corporateName || req.user?.companyName || 'Corporate Office';
+
+    for (let item of data) {
+      const idStr = item.employeeId?.toString();
+      if (idStr) {
+        if (item.employeeType === 'userMaster') {
+          if (usersMap[idStr]) {
+            item.employeeId = usersMap[idStr];
+          }
+        } else {
+          if (empsMap[idStr]) {
+            item.employeeId = empsMap[idStr];
+          }
+        }
+      }
+
+      const lIdStr = (item.leadId || item.siteId || item.clientId)?.toString();
+      if (lIdStr && leadsMap[lIdStr]) {
+        item.leadId = leadsMap[lIdStr];
+        const actualLeadName =
+          leadsMap[lIdStr].sender_name ||
+          leadsMap[lIdStr].displayName ||
+          leadsMap[lIdStr].client_name ||
+          leadsMap[lIdStr].product_name ||
+          leadsMap[lIdStr].name;
+        if (
+          actualLeadName &&
+          (!item.site_name || item.site_name === 'Field Duty' || item.site_name === 'New Site')
+        ) {
+          item.site_name = actualLeadName;
+        }
+      }
+
+      if (!item.site_name || item.site_name === 'New Site') {
+        const isRegisteredUser =
+          item.employeeType === 'userMaster' ||
+          item.employeeId?.employeeType === 'userMaster' ||
+          item.employeeId?.user_id ||
+          ['CorpAdmin', 'userAdmin', 'Admin', 'Supervisor', 'Project', 'Finance', 'Sales'].includes(
+            item.role || item.employeeId?.role || ''
+          );
+        item.site_name = isRegisteredUser ? corpFallbackName : 'Field Duty';
+      }
+    }
+
+    return data;
+  },
   listAttendance: async (req, res) => {
     try {
       const { Attendance } = req.tenantModels;
-      const { from_date, to_date, employeeId } = req.query;
-      console.log(`\n[API /listAttendance] requested by employeeId: ${employeeId}, from: ${from_date}, to: ${to_date}`);
+      const { from_date, to_date, employeeId, leadId, siteId, limit } = req.query;
+      console.log(`\n[API /listAttendance] requested by employeeId: ${employeeId}, leadId: ${leadId || siteId}, from: ${from_date}, to: ${to_date}`);
       
       let q = {};
 
@@ -2325,7 +2523,6 @@ exports.manageEmployees = {
         }
 
         if (employeeDoc) {
-          // In case it was found initially, add it (duplicates in matchIds are fine)
           matchIds.push(employeeDoc._id.toString());
           matchIds.push(employeeDoc._id);
           if (employeeDoc.user_id) {
@@ -2335,6 +2532,23 @@ exports.manageEmployees = {
         }
         
         q.employeeId = { $in: matchIds };
+      }
+
+      if (leadId || siteId) {
+        const mongoose = require('mongoose');
+        const targetSiteId = leadId || siteId;
+        const sObjId = mongoose.isValidObjectId(targetSiteId)
+          ? new mongoose.Types.ObjectId(targetSiteId)
+          : targetSiteId;
+        const siteOrConditions = [
+          { leadId: sObjId },
+          { leadId: String(targetSiteId) },
+          { siteId: sObjId },
+          { siteId: String(targetSiteId) }
+        ];
+        q = q.employeeId
+          ? { $and: [{ employeeId: q.employeeId }, { $or: siteOrConditions }] }
+          : { $or: siteOrConditions };
       }
 
       if (from_date || to_date) {
@@ -2349,7 +2563,6 @@ exports.manageEmployees = {
         }
 
         if (Object.keys(dateFilter).length > 0) {
-          const targetEmpFilter = q.employeeId;
           const strFilter = {};
           if (from_date) strFilter.$gte = String(from_date);
           if (to_date) strFilter.$lte = String(to_date);
@@ -2361,14 +2574,24 @@ exports.manageEmployees = {
             { dutyStart: strFilter },
           ];
 
-          if (targetEmpFilter) {
+          if (q.$and) {
+            q.$and.push({ $or: [...dateOrConditions, { dutyEnd: { $exists: false } }, { dutyEnd: null }] });
+          } else if (q.employeeId) {
             q = {
-              employeeId: targetEmpFilter,
+              employeeId: q.employeeId,
               $or: [
                 ...dateOrConditions,
                 { dutyEnd: { $exists: false } },
                 { dutyEnd: null },
               ],
+            };
+          } else if (q.$or) {
+            // Already has site filter
+            q = {
+              $and: [
+                { $or: q.$or },
+                { $or: [...dateOrConditions, { dutyEnd: { $exists: false } }, { dutyEnd: null }] }
+              ]
             };
           } else {
             q = {
@@ -2378,141 +2601,18 @@ exports.manageEmployees = {
           }
         }
       }
+
       // Exclude heavy raw geoHistory coordinates when listing attendance to keep responses lightweight
-      const data = await Attendance.find(q).select('-geoHistory').lean();
+      let queryBuilder = Attendance.find(q)
+        .select('-geoHistory')
+        .sort({ dutyStart: -1, createdAt: -1 });
 
-      const userMaster = require('../models/userMaster');
-      const { Employees, Leads } = req.tenantModels;
-
-      const userMasterIds = [];
-      const employeeIds = [];
-      const leadIds = [];
-      for (const item of data) {
-        if (item.employeeId) {
-          if (item.employeeType === 'userMaster') {
-            userMasterIds.push(item.employeeId);
-          } else {
-            employeeIds.push(item.employeeId);
-          }
-        }
-        if (item.leadId) {
-          leadIds.push(item.leadId);
-        } else if (item.siteId) {
-          leadIds.push(item.siteId);
-        } else if (item.clientId) {
-          leadIds.push(item.clientId);
-        }
+      if (limit && Number(limit) > 0) {
+        queryBuilder = queryBuilder.limit(Number(limit));
       }
 
-      const uniqueUserMasterIds = [...new Set(userMasterIds.map((id) => id.toString()))];
-      const uniqueEmployeeIds = [...new Set(employeeIds.map((id) => id.toString()))];
-      const uniqueLeadIds = [...new Set(leadIds.map((id) => id.toString()))];
-
-      const [usersList, empsList, leadsList] = await Promise.all([
-        uniqueUserMasterIds.length > 0
-          ? userMaster.find({ _id: { $in: uniqueUserMasterIds } }).lean()
-          : Promise.resolve([]),
-        uniqueEmployeeIds.length > 0
-          ? Employees.find({ _id: { $in: uniqueEmployeeIds } }).lean()
-          : Promise.resolve([]),
-        uniqueLeadIds.length > 0
-          ? Leads.find({ _id: { $in: uniqueLeadIds } }).lean()
-          : Promise.resolve([]),
-      ]);
-
-      const usersMap = {};
-      for (const u of usersList) {
-        usersMap[u._id.toString()] = {
-          _id: u._id,
-          name:
-            u.userDisplayName ||
-            u.name ||
-            `${u.firstName || ''} ${u.lastName || ''}`.trim() ||
-            u.email,
-          mobile: u.userMobile || u.mobile,
-          email: u.email,
-          role: u.userRole || u.role || 'project',
-          photo_url: u.userProfileImage || u.photo_url,
-          employeeType: 'userMaster',
-          user_id: u._id,
-          userActive: u.userActive,
-        };
-      }
-
-      const empsMap = {};
-      for (const emp of empsList) {
-        empsMap[emp._id.toString()] = emp;
-      }
-
-      // Also enrich employees with userMaster photo if missing
-      const empUserIds = empsList
-        .filter((e) => !e.photo_url && (e.user_id || e._id))
-        .map((e) => (e.user_id || e._id).toString());
-
-      if (empUserIds.length > 0) {
-        try {
-          const matchingUsers = await userMaster.find({ _id: { $in: empUserIds } }).lean();
-          matchingUsers.forEach((u) => {
-            const uPhoto = u.userProfileImage || u.photo_url;
-            if (uPhoto && empsMap[u._id.toString()]) {
-              empsMap[u._id.toString()].photo_url = uPhoto;
-            }
-          });
-        } catch (enrichErr) {
-          console.warn('Could not enrich user photos in listAttendance:', enrichErr.message);
-        }
-      }
-
-      const leadsMap = {};
-      for (const lead of leadsList) {
-        leadsMap[lead._id.toString()] = lead;
-      }
-
-      const corpFallbackName = req.user?.corporateName || req.user?.companyName || 'Corporate Office';
-
-      for (let item of data) {
-        const idStr = item.employeeId?.toString();
-        if (idStr) {
-          if (item.employeeType === 'userMaster') {
-            if (usersMap[idStr]) {
-              item.employeeId = usersMap[idStr];
-            }
-          } else {
-            if (empsMap[idStr]) {
-              item.employeeId = empsMap[idStr];
-            }
-          }
-        }
-
-        const lIdStr = (item.leadId || item.siteId || item.clientId)?.toString();
-        if (lIdStr && leadsMap[lIdStr]) {
-          item.leadId = leadsMap[lIdStr];
-          const actualLeadName =
-            leadsMap[lIdStr].sender_name ||
-            leadsMap[lIdStr].displayName ||
-            leadsMap[lIdStr].client_name ||
-            leadsMap[lIdStr].product_name ||
-            leadsMap[lIdStr].name;
-          if (
-            actualLeadName &&
-            (!item.site_name || item.site_name === 'Field Duty' || item.site_name === 'New Site')
-          ) {
-            item.site_name = actualLeadName;
-          }
-        }
-
-        // Replace 'New Site' or unassigned corporate staff duties with Corporate Name
-        if (!item.site_name || item.site_name === 'New Site') {
-          const isRegisteredUser =
-            item.employeeType === 'userMaster' ||
-            item.employeeId?.employeeType === 'userMaster' ||
-            item.employeeId?.user_id ||
-            ['CorpAdmin', 'userAdmin', 'Admin', 'Supervisor', 'Project', 'Finance', 'Sales'].includes(
-              item.role || item.employeeId?.role || ''
-            );
-          item.site_name = isRegisteredUser ? corpFallbackName : 'Field Duty';
-        }
-      }
+      const rawData = await queryBuilder.lean();
+      const data = await exports.manageEmployees.populateAttendanceRecords(rawData, req);
 
       res.json({ success: true, data });
     } catch (err) {
