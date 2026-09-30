@@ -84,6 +84,7 @@ router.post("/hr/attendance/lock-worker", ctrl.manageEmployees.lockWorkerAttenda
 router.post("/hr/attendance",    ctrl.manageEmployees.markAttendance);
 router.post("/hr/attendance/mark-paid", ctrl.manageEmployees.markPaid);
 router.post("/hr/attendance/clean-reconcile", ctrl.manageEmployees.cleanAndReconcileAttendance);
+router.post("/hr/attendance/:id/geo-compact", ctrl.manageEmployees.uploadGeoCompact);
 router.put("/hr/attendance/:id", ctrl.manageEmployees.updateAttendance);
 router.delete("/hr/attendance/:id", ctrl.manageEmployees.deleteAttendance);
 router.get("/hr/rate-lookup",   ctrl.manageEmployees.getRateLookup);

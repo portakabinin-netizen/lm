@@ -540,11 +540,15 @@ const siteClientCheckSchema = new mongoose.Schema(
  * Factory function to bind models to a tenant connection
  */
 const getTenantModels = (connection) => {
+  if (connection.__cachedTenantModels) {
+    return connection.__cachedTenantModels;
+  }
+
   const userMasterSchema = require('./userMaster').schema;
   const userMasterModel = connection.models.userMaster || connection.model('userMaster', userMasterSchema);
   const staffModel = connection.models.Staff || connection.model('Staff', userMasterSchema);
 
-  return {
+  const models = {
     ProfileMaster:
       connection.models.ProfileMaster || connection.model('ProfileMaster', profileMasterSchema),
     Categories: connection.models.Categories || connection.model('Categories', categorySchema),
@@ -572,6 +576,9 @@ const getTenantModels = (connection) => {
       connection.models.SiteClientCheck ||
       connection.model('SiteClientCheck', siteClientCheckSchema),
   };
+
+  connection.__cachedTenantModels = models;
+  return models;
 };
 
 module.exports = { getTenantModels };

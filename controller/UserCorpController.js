@@ -8,6 +8,7 @@
 
 const userMaster = require('../models/userMaster');
 const mongoose = require('mongoose');
+const emit = require('../utils/socketEmitter');
 const ExcelJS = require('exceljs');
 const externalService = require('../utils/externalService');
 const { resolveDatePreset } = require('../utils/dateUtils');
@@ -304,6 +305,8 @@ const manageSpoke = {
       const Model = req.tenantModels[modelName];
       const item = await Model.findByIdAndUpdate(req.params.id, req.body, { new: true });
       if (!item) return res.status(404).json({ success: false, message: 'Entity not found' });
+      // 🔔 Notify all connected clients so their cache patches the record
+      emit(req, `${modelName.toLowerCase()}:updated`, { data: item });
       res.json({ success: true, data: item });
     } catch (err) {
       res.status(500).json({ success: false, message: err.message });
@@ -313,6 +316,8 @@ const manageSpoke = {
     try {
       const Model = req.tenantModels[modelName];
       await Model.findByIdAndDelete(req.params.id);
+      // 🔔 Notify all connected clients so their cache removes the record
+      emit(req, `${modelName.toLowerCase()}:deleted`, { id: req.params.id });
       res.json({ success: true, message: 'Entity deleted' });
     } catch (err) {
       res.status(500).json({ success: false, message: err.message });
@@ -3298,6 +3303,89 @@ exports.manageEmployees = {
       res.status(500).json({ success: false, message: err.message });
     }
   },
+  uploadGeoCompact: async (req, res) => {
+    try {
+      const { Attendance } = req.tenantModels;
+      const { id } = req.params;
+      const { compactGeo } = req.body;
+
+      if (!compactGeo || typeof compactGeo !== 'string') {
+        return res.status(400).json({ success: false, message: 'compactGeo string required' });
+      }
+
+      // Decode compact format: <baseEpochMs>|<lat>,<lng>,<off_s>,<acc>|...
+      const segments = compactGeo.split('|');
+      if (segments.length < 2) {
+        return res.status(400).json({ success: false, message: 'Invalid compactGeo format' });
+      }
+
+      const base = parseInt(segments[0], 10);
+      if (isNaN(base)) {
+        return res.status(400).json({ success: false, message: 'Invalid base timestamp' });
+      }
+
+      const ticks = [];
+      for (let i = 1; i < segments.length; i++) {
+        const parts = segments[i].split(',');
+        if (parts.length < 4) continue;
+        const lat = parseFloat(parts[0]);
+        const lng = parseFloat(parts[1]);
+        const off = parseInt(parts[2], 10) * 1000;
+        const acc = parseInt(parts[3], 10);
+        if (isNaN(lat) || isNaN(lng)) continue;
+        ticks.push({
+          lat,
+          long: lng,
+          accuracy: acc === -1 ? null : acc,
+          timestamp: new Date(base + off),
+          type: 'tick',
+        });
+      }
+
+      if (ticks.length === 0) {
+        return res.json({ success: true, count: 0, compactSupported: true });
+      }
+
+      const record = await Attendance.findByIdAndUpdate(
+        id,
+        {
+          $push: { geoHistory: { $each: ticks } },
+        },
+        { new: true }
+      );
+
+      if (!record) {
+        return res.status(404).json({ success: false, message: 'Attendance record not found' });
+      }
+
+      const lastTick = ticks[ticks.length - 1];
+
+      // Broadcast to room so real-time dashboards & maps update immediately
+      if (req.io && req.tenantDbName) {
+        req.io.to(req.tenantDbName).emit('attendance:geo_update', {
+          attendanceId: id,
+          tick: ticks,
+        });
+
+        req.io.to(req.tenantDbName).emit('live_location_update', {
+          workerId: String(record.employeeId),
+          latitude: lastTick.lat,
+          longitude: lastTick.long,
+          accuracy: lastTick.accuracy,
+          lastUpdated: lastTick.timestamp,
+        });
+      }
+
+      res.json({
+        success: true,
+        count: ticks.length,
+        compactSupported: true,
+      });
+    } catch (err) {
+      console.error('🔴 [uploadGeoCompact] Error:', err);
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
   updateAttendance: async (req, res) => {
     try {
       const { Attendance } = req.tenantModels;
@@ -5731,6 +5819,8 @@ exports.manageStaff = {
         }
       }
 
+      // 🔔 Broadcast staff update to all clients
+      emit(req, 'staff:updated', { data: staff });
       res.json({ success: true, data: staff });
     } catch (err) {
       res.status(500).json({ success: false, message: err.message });
@@ -5739,6 +5829,8 @@ exports.manageStaff = {
   delete: async (req, res) => {
     try {
       await userMaster.findByIdAndDelete(req.params.id);
+      // 🔔 Broadcast staff deletion to all clients
+      emit(req, 'staff:deleted', { id: req.params.id });
       res.json({ success: true, message: 'Staff access removed' });
     } catch (err) {
       res.status(500).json({ success: false, message: err.message });
@@ -5756,6 +5848,8 @@ exports.manageClients = {
       const { Parties } = req.tenantModels;
       const item = new Parties({ ...req.body, type: 'Client' });
       await item.save();
+      // 🔔 Notify all clients to patch their parties cache
+      emit(req, 'party:created', { data: item });
 
       // Auto-create client ledger
       try {
@@ -5821,6 +5915,8 @@ exports.manageSuppliers = {
       const { Parties } = req.tenantModels;
       const item = new Parties({ ...req.body, type: 'Supplier' });
       await item.save();
+      // 🔔 Notify all clients to patch their parties cache
+      emit(req, 'party:created', { data: item });
 
       // Auto-create supplier ledger
       try {
