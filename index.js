@@ -22,13 +22,21 @@ const dbConnector = require("./utils/dbConnector");
 const WorkerLocation = require("./models/WorkerLocation");
 const path = require("path");
 
+const compression = require('compression');
+const rateLimit = require('express-rate-limit');
+
 const app = express();
 
 // ---------- Middleware ----------
 app.use(helmet());
 app.use(cors({ origin: "*" }));
-app.use(express.json({ limit: "50mb" }));
-app.use(express.urlencoded({ limit: "50mb", extended: true }));
+
+// 🚀 Gzip compression — shrinks JSON API responses by ~70-80%
+app.use(compression({ level: 6, threshold: 512 }));
+
+// Reduce body size limit — 50mb was extremely large and could spike RAM on malformed requests
+app.use(express.json({ limit: "5mb" }));
+app.use(express.urlencoded({ limit: "5mb", extended: true }));
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 // ---------- MongoDB with Retry logic ----------
@@ -45,7 +53,19 @@ connectDB();
 
 // ---------- HTTP + Socket.IO + Pusher Hybrid Realtime ----------
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: "*" } });
+const io = new Server(server, {
+  cors: { origin: "*" },
+  // 🚀 Enable per-message deflate compression — cuts mobile bandwidth by ~60%
+  perMessageDeflate: {
+    zlibDeflateOptions: { chunkSize: 1024, memLevel: 7, level: 3 },
+    zlibInflateOptions: { chunkSize: 10 * 1024 },
+    threshold: 1024, // compress messages > 1 KB only
+  },
+  // Prefer WebSocket, polling only as fallback
+  transports: ["websocket", "polling"],
+  pingTimeout: 30000,
+  pingInterval: 25000,
+});
 const { createHybridBroadcaster } = require("./utils/realtimeBroadcaster");
 const hybridIo = createHybridBroadcaster(io);
 
@@ -181,6 +201,15 @@ io.on("connection", (socket) => {
         return;
       }
 
+      // 🚀 BANDWIDTH GUARD: Rate-limit location updates to once per 3 seconds per socket
+      const now = Date.now();
+      const lastUpdate = socket._lastLocationUpdate || 0;
+      if (now - lastUpdate < 3000) {
+        if (typeof ack === "function") ack({ success: true, throttled: true });
+        return;
+      }
+      socket._lastLocationUpdate = now;
+
       const numLat = Number(latitude);
       const numLng = Number(longitude);
 
@@ -201,6 +230,7 @@ io.on("connection", (socket) => {
         { upsert: true, new: true, setDefaultsOnInsert: true }
       );
 
+      // 🚀 MINIMAL PAYLOAD: Only send essential fields — omit internal Mongo fields
       const payload = {
         workerId: String(workerId),
         latitude: numLat,
@@ -219,7 +249,7 @@ io.on("connection", (socket) => {
         ack({ success: true, data: payload });
       }
     } catch (err) {
-      console.error("❌ Database update_location error:", err.message);
+      console.error("\u274c Database update_location error:", err.message);
       if (typeof ack === "function") {
         ack({ success: false, message: err.message });
       }
@@ -262,7 +292,10 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("disconnect", () => { });
+  socket.on("disconnect", (reason) => {
+    socket._lastLocationUpdate = null;
+    console.log(`🔌 [Socket.IO] Client ${socket.id} disconnected: ${reason}`);
+  });
 });
 
 // ---------- Health Route ----------
@@ -275,20 +308,33 @@ app.get("/", (req, res) => {
   });
 });
 
-// ---------- 🏥 Request Logging (DEBUG)
-app.use((req, res, next) => {
+// ---------- 🏥 Request Logging (only in development) ----------
+if (process.env.NODE_ENV !== 'production') {
+  app.use((req, res, next) => {
     console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl}`);
     if (req.headers['x-tenant-id']) console.log(`   └─ x-tenant-id: ${req.headers['x-tenant-id']}`);
     next();
+  });
+}
+
+// ---------- API Rate Limiter ----------
+// 120 requests/min per IP — generous for normal use, blocks runaway loops
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many requests, please slow down.' },
+  skip: (req) => req.path === '/' || req.path === '/health', // skip health checks
 });
 
 // ---------- API Routes ----------
 app.use("/api/auth", authRouter);
 app.use("/api/setting", setting);
-app.use("/api/service", UserCorpRouter);
-app.use("/service", UserCorpRouter); // 🚀 Smooth alias for direct /service route calls
-app.use("/api/finance", FinanceRouter);
-app.use("/finance", FinanceRouter);
+app.use("/api/service", apiLimiter, UserCorpRouter);
+app.use("/service", apiLimiter, UserCorpRouter); // 🚀 Smooth alias for direct /service route calls
+app.use("/api/finance", apiLimiter, FinanceRouter);
+app.use("/finance", apiLimiter, FinanceRouter);
 
 // 🚀 LEGACY DASHBOARD ADAPTER ROUTES
 app.use("/api/payment", require("./routes/paymentRouter"));
@@ -296,6 +342,18 @@ app.use("/api/staff", require("./routes/staffRouter"));
 
 // 🛡️ GUARD ALERTNESS MONITORING
 app.use("/api/monitoring", require("./routes/monitoringRouter"));
+
+// 📊 Diagnostics endpoint (internal use)
+app.get("/health", (req, res) => {
+  const dbConnector = require("./utils/dbConnector");
+  res.json({
+    status: "ok",
+    uptime: Math.floor(process.uptime()),
+    memMB: Math.round(process.memoryUsage().rss / 1024 / 1024),
+    tenantConnections: dbConnector.activeConnections(),
+    timestamp: new Date().toISOString(),
+  });
+});
 
 // Secure Uploads (Tenant Aware)
 const authMiddleware = require("./middleware/authMiddleware");

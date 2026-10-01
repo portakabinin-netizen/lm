@@ -200,68 +200,63 @@ function haversineMetres(lat1, lon1, lat2, lon2) {
   return R * c;
 }
 
+// 🗕️ SITE GEO CACHE — keyed by tenantDbName, refreshed every 10 minutes
+// Prevents full Leads + Parties collection scans on every GPS tick
+const _geoCache = new Map(); // dbName -> { sites: [{lat,long,name}], expiresAt }
+const GEO_CACHE_TTL_MS = 10 * 60 * 1000; // 10 min
+
+async function _loadGeoSites(req) {
+  const dbName = req.tenantDbName;
+  const cached = _geoCache.get(dbName);
+  if (cached && cached.expiresAt > Date.now()) return cached.sites;
+
+  const sites = [];
+  try {
+    if (req.tenantModels?.Leads) {
+      const leads = await req.tenantModels.Leads
+        .find({ 'location.lat': { $exists: true } })
+        .select('location site_name sender_name')
+        .lean();
+      for (const l of leads) {
+        if (l.location?.lat && l.location?.long)
+          sites.push({ lat: l.location.lat, long: l.location.long, name: l.site_name || l.sender_name || 'Site' });
+      }
+    }
+    if (req.tenantModels?.Parties) {
+      const clients = await req.tenantModels.Parties
+        .find({ type: 'Client', 'billingAddress.lat': { $exists: true } })
+        .select('billingAddress name')
+        .lean();
+      for (const c of clients) {
+        if (c.billingAddress?.lat && c.billingAddress?.long)
+          sites.push({ lat: c.billingAddress.lat, long: c.billingAddress.long, name: c.name });
+      }
+    }
+    try {
+      const CorpDataMaster = require('../models/CorpDataMaster');
+      const corpData = await CorpDataMaster.findOne({ dbName }, { locations: 1 }).lean();
+      for (const loc of corpData?.locations || []) {
+        if (loc.address?.lat && loc.address?.long)
+          sites.push({ lat: loc.address.lat, long: loc.address.long, name: loc.locationName || loc.locationType });
+      }
+    } catch (_) {}
+  } catch (e) {
+    console.warn('[resolveGeoName] cache load error:', e.message);
+  }
+
+  _geoCache.set(dbName, { sites, expiresAt: Date.now() + GEO_CACHE_TTL_MS });
+  return sites;
+}
+
 async function resolveGeoName(req, lat, long, maxDistanceMeters = 50) {
   if (!lat || !long) return null;
-  
+  const sites = await _loadGeoSites(req);
   let closestName = null;
   let minDistance = maxDistanceMeters;
-
-  // 1. Check Leads (Sites)
-  if (req.tenantModels && req.tenantModels.Leads) {
-    const leads = await req.tenantModels.Leads.find({
-      'location.lat': { $exists: true },
-      'location.long': { $exists: true }
-    }).lean();
-    
-    for (const lead of leads) {
-      if (lead.location?.lat && lead.location?.long) {
-        const dist = haversineMetres(lat, long, lead.location.lat, lead.location.long);
-        if (dist <= minDistance) {
-          minDistance = dist;
-          closestName = lead.site_name || lead.sender_name || 'Site';
-        }
-      }
-    }
+  for (const s of sites) {
+    const dist = haversineMetres(lat, long, s.lat, s.long);
+    if (dist <= minDistance) { minDistance = dist; closestName = s.name; }
   }
-
-  // 2. Check Clients
-  if (req.tenantModels && req.tenantModels.Parties) {
-    const clients = await req.tenantModels.Parties.find({
-      type: 'Client',
-      'billingAddress.lat': { $exists: true },
-      'billingAddress.long': { $exists: true }
-    }).lean();
-    
-    for (const client of clients) {
-      if (client.billingAddress?.lat && client.billingAddress?.long) {
-        const dist = haversineMetres(lat, long, client.billingAddress.lat, client.billingAddress.long);
-        if (dist <= minDistance) {
-          minDistance = dist;
-          closestName = client.name;
-        }
-      }
-    }
-  }
-
-  // 3. Check Corporate Branches (HO, RO, BO)
-  try {
-    const CorpDataMaster = require('../models/CorpDataMaster');
-    const corpData = await CorpDataMaster.findOne({ dbName: req.tenantDbName || req.dbName }).lean();
-    if (corpData && corpData.locations && Array.isArray(corpData.locations)) {
-      for (const loc of corpData.locations) {
-        if (loc.address?.lat && loc.address?.long) {
-          const dist = haversineMetres(lat, long, loc.address.lat, loc.address.long);
-          if (dist <= minDistance) {
-            minDistance = dist;
-            closestName = loc.locationName || loc.locationType;
-          }
-        }
-      }
-    }
-  } catch(e) {
-    console.warn('[resolveGeoName] Could not query CorpDataMaster:', e.message);
-  }
-  
   return closestName;
 }
 
@@ -269,7 +264,7 @@ async function resolveGeoName(req, lat, long, maxDistanceMeters = 50) {
  * 🛠️ Internal Helper: Dynamic Spoke Resolver (for Hub Data)
  */
 const manageSpoke = {
-  list: async (req, res, modelName, filter = {}) => {
+  list: async (req, res, modelName, filter = {}, projection = null) => {
     try {
       const Model = req.tenantModels[modelName];
 
@@ -280,7 +275,12 @@ const manageSpoke = {
         q.locationId = { $in: accessibleIds };
       }
 
-      const data = await Model.find(q).lean();
+      let query = Model.find(q).lean();
+      if (projection) query = query.select(projection);
+      const data = await query;
+
+      // 🚀 Instruct client/CDN to treat list responses as fresh for 10s
+      res.set('Cache-Control', 'private, max-age=10');
       res.json({ success: true, data });
     } catch (err) {
       res.status(500).json({ success: false, message: err.message });
@@ -1215,6 +1215,8 @@ exports.manageProfile = {
         new: true,
         upsert: true,
       });
+      // 🔔 Notify all connected clients to refresh corporate profile
+      emit(req, 'corp:updated', { data: profile });
       res.json({ success: true, data: profile });
     } catch (err) {
       res.status(500).json({ success: false, message: err.message });
@@ -1293,6 +1295,8 @@ exports.manageProducts = {
       const { Products } = req.tenantModels;
       const prod = new Products(req.body);
       await prod.save();
+      // 🔔 Notify all connected clients to update their products cache
+      emit(req, 'product:created', { data: prod });
       res.status(201).json({ success: true, data: prod });
     } catch (err) {
       res.status(500).json({ success: false, message: err.message });
@@ -1351,8 +1355,9 @@ exports.manageEmployees = {
       const allLogs = await Attendance.find(query).sort({ dutyStart: 1, date: 1 });
 
       // Cache Leads for site shift duration / capping lookup
+      // \ud83d\ude80 Select only the 3 fields we need \u2014 avoids loading full lead documents
       const leadMap = new Map();
-      const allLeads = await Leads.find({}).lean();
+      const allLeads = await Leads.find({}).select('_id siteShifts shiftLockHours').lean();
       allLeads.forEach((lead) => leadMap.set(String(lead._id), lead));
 
       let mergedCount = 0;
@@ -1871,6 +1876,8 @@ exports.manageEmployees = {
         console.error('Employee-Ledger Auto Init Failed:', err.message);
       }
 
+      // 🔔 Notify all connected clients to patch their employees cache
+      emit(req, 'employee:created', { data: emp });
       res.status(201).json({ success: true, data: emp });
     } catch (err) {
       res.status(500).json({ success: false, message: err.message });
@@ -1961,6 +1968,8 @@ exports.manageEmployees = {
           dob: employeeDoc.dob,
           ledgerId: employeeDoc.ledgerId,
         };
+        // 🔔 Notify all connected clients about the updated employee
+        emit(req, 'employee:updated', { data: mappedUser });
         return res.json({ success: true, data: mappedUser });
       }
 
@@ -1984,6 +1993,8 @@ exports.manageEmployees = {
         console.error('Employee-Ledger Auto Sync Failed:', err.message);
       }
 
+      // 🔔 Notify all connected clients about the updated employee
+      emit(req, 'employee:updated', { data: emp });
       res.json({ success: true, data: emp });
     } catch (err) {
       res.status(500).json({ success: false, message: err.message });
@@ -5900,6 +5911,8 @@ exports.manageClients = {
         console.error('Client-Ledger Auto Sync Failed:', err.message);
       }
 
+      // 🔔 Notify all connected clients to patch their parties cache
+      emit(req, 'party:updated', { data: item });
       res.json({ success: true, data: item });
     } catch (err) {
       res.status(500).json({ success: false, message: err.message });
@@ -5967,6 +5980,8 @@ exports.manageSuppliers = {
         console.error('Supplier-Ledger Auto Sync Failed:', err.message);
       }
 
+      // 🔔 Notify all connected clients to patch their parties cache
+      emit(req, 'party:updated', { data: item });
       res.json({ success: true, data: item });
     } catch (err) {
       res.status(500).json({ success: false, message: err.message });
