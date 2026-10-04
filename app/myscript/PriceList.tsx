@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { FlatList, SafeAreaView, StyleSheet, Text, View } from "react-native";
-import uuid from 'react-native-uuid';
+import * as Crypto from 'expo-crypto';
 
 // Sample JSON data
 const panelData = {
@@ -75,7 +75,7 @@ export default function RateScreen() {
 
   // Render each coil-core row
   const renderCoilCore = (coilThickness: string, details: { CoreThickness: string; Rate: string }) => {
-    const id = uuid.v4().toString();
+    const id = Crypto.randomUUID();
     return (
       <View key={id} style={styles.coilRow}>
         <Text style={styles.cell}>{coilThickness}</Text>

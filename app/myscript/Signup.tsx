@@ -1,5 +1,5 @@
-﻿import { regex } from "@/backend/middleware/validateAuth";
-import { registerCorpAdmin, registerNonAdmin } from "@/backend/queries/userQueries";
+import { regex } from "@/backend/middleware/validateAuth";
+import { registerCorpAdmin, registerNonAdmin } from "@/hooks/userQueries";
 import { httpClient } from "@/context/AuthContext"; // Use our standardized client
 import { sendGlobalSMS, showGlobalToast } from "@/hooks/commomFunction";
 import { FormData } from "@/hooks/interface";

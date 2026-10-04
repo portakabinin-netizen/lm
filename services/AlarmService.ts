@@ -2,15 +2,15 @@
  * 🔔 AlarmService.ts
  * Handles alarm sound playback and device vibration for alertness challenges.
  *
- * Uses expo-av for audio and expo-haptics for vibration.
+ * Uses expo-audio (Expo SDK 55) for audio and expo-haptics for vibration.
  * Falls back gracefully when native modules are unavailable.
  */
 
-import { Audio } from "expo-av";
+import { createAudioPlayer } from "expo-audio";
 import * as Haptics from "expo-haptics";
 
 class AlarmService {
-  private sound: Audio.Sound | null = null;
+  private player: any = null;
   private vibrationInterval: ReturnType<typeof setInterval> | null = null;
   private isPlaying = false;
 
@@ -22,25 +22,19 @@ class AlarmService {
     // Vibration loop (every 800 ms)
     this.startVibration();
 
-    // Audio alarm
+    // Audio alarm using expo-audio (SDK 55 standard)
     try {
-      await Audio.setAudioModeAsync({
-        playsInSilentModeIOS: true,
-        staysActiveInBackground: true,
-        shouldDuckAndroid: false,
-      });
-
-      const { sound } = await Audio.Sound.createAsync(
-        require("../assets/sounds/alert.mp3"),
-        {
-          shouldPlay: true,
-          isLooping: true,
-          volume: 1.0,
+      if (!this.player) {
+        this.player = createAudioPlayer(require("../assets/sounds/alert.mp3"));
+        if (this.player) {
+          this.player.loop = true;
         }
-      );
-      this.sound = sound;
+      }
+      if (this.player && typeof this.player.play === "function") {
+        this.player.play();
+      }
     } catch (err) {
-      // If no alarm.mp3 is present we still vibrate — degrade gracefully
+      // If audio fails we still vibrate — degrade gracefully
       console.warn("⚠️ AlarmService: audio failed, vibrating only:", (err as Error).message);
     }
   }
@@ -51,10 +45,16 @@ class AlarmService {
     this.stopVibration();
 
     try {
-      if (this.sound) {
-        await this.sound.stopAsync();
-        await this.sound.unloadAsync();
-        this.sound = null;
+      if (this.player) {
+        if (typeof this.player.pause === "function") {
+          this.player.pause();
+        }
+        if (typeof this.player.release === "function") {
+          this.player.release();
+        } else if (typeof this.player.remove === "function") {
+          this.player.remove();
+        }
+        this.player = null;
       }
     } catch (err) {
       console.warn("⚠️ AlarmService: stop audio error:", (err as Error).message);
