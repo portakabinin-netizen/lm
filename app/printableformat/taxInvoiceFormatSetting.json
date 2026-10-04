@@ -1,0 +1,360 @@
+{
+  "invoice_format_settings": {
+    "version": "1.0.0",
+    "created_at": "2026-03-22",
+    "document_type": "TAX INVOICE",
+    "seller": {
+      "business_name": "ABC Enterprises Pvt. Ltd.",
+      "legal_name": "ABC Enterprises Private Limited",
+      "address": {
+        "line1": "Plot No. 45, Industrial Area",
+        "line2": "Sector 12, Near City Mall",
+        "city": "New Delhi",
+        "district": "New Delhi",
+        "state": "Delhi",
+        "state_code": "07",
+        "pincode": "110001",
+        "country": "India"
+      },
+      "contact": {
+        "mobile": "+91-9876543210",
+        "telephone": "+91-11-23456789",
+        "alternate_mobile": "+91-9876543211",
+        "fax": "+91-11-23456780",
+        "email": "info@abcenterprises.com",
+        "website": "www.abcenterprises.com"
+      },
+      "tax_registrations": {
+        "gstin": "07AABCA1234B1ZX",
+        "pan": "AABCA1234B",
+        "tan": "DELA12345B",
+        "cin": "U74999DL2010PTC123456",
+        "iec": "AABCA1234",
+        "msme_udyam": "UDYAM-DL-07-0012345",
+        "fssai": "12345678901234",
+        "drug_license": "DL/MFG/2023/0012345",
+        "import_export_code": "IEC1234567890"
+      },
+      "bank_details": {
+        "bank_name": "State Bank of India",
+        "branch": "Connaught Place Branch",
+        "account_number": "XXXXXXXXXXXX1234",
+        "ifsc_code": "SBIN0001234",
+        "account_type": "Current",
+        "swift_code": "SBININBB104"
+      },
+      "authorized_signatory": {
+        "name": "Rajesh Kumar",
+        "designation": "Director",
+        "signature_label": "Authorised Signatory"
+      }
+    },
+    "buyer": {
+      "billing_address": {
+        "company_name": "XYZ Traders Pvt. Ltd.",
+        "contact_person": "Suresh Sharma",
+        "line1": "Shop No. 12, Commercial Complex",
+        "line2": "MG Road",
+        "city": "Mumbai",
+        "district": "Mumbai",
+        "state": "Maharashtra",
+        "state_code": "27",
+        "pincode": "400001",
+        "country": "India",
+        "mobile": "+91-9123456789",
+        "email": "purchase@xyztraders.com",
+        "gstin": "27AADCX1234A1ZV",
+        "pan": "AADCX1234A"
+      },
+      "shipping_address": {
+        "company_name": "XYZ Traders Pvt. Ltd.",
+        "contact_person": "Amit Verma",
+        "line1": "Warehouse No. 7, Logistics Park",
+        "line2": "JNPT Road, Nhava Sheva",
+        "city": "Navi Mumbai",
+        "district": "Raigad",
+        "state": "Maharashtra",
+        "state_code": "27",
+        "pincode": "400707",
+        "country": "India",
+        "mobile": "+91-9876001234",
+        "same_as_billing": false
+      }
+    },
+    "invoice_details": {
+      "invoice_number": "INV/2025-26/00001",
+      "invoice_date": "2026-03-22",
+      "due_date": "2026-04-21",
+      "purchase_order_number": "PO/2025/00456",
+      "purchase_order_date": "2026-03-15",
+      "delivery_challan_number": "DC/2026/00123",
+      "e_way_bill_number": "1234567890123",
+      "e_invoice_irn": "a1b2c3d4e5f6...",
+      "place_of_supply": "Maharashtra (27)",
+      "reverse_charge_applicable": false,
+      "payment_terms": "Net 30 Days"
+    },
+    "items_table": {
+      "columns": [
+        {
+          "key": "sr_no",
+          "label": "Sr. No.",
+          "visible": true,
+          "align": "center",
+          "width": "4%"
+        },
+        {
+          "key": "item_code",
+          "label": "Item Code / SKU",
+          "visible": true,
+          "align": "left",
+          "width": "8%"
+        },
+        {
+          "key": "description",
+          "label": "Description of Goods",
+          "visible": true,
+          "align": "left",
+          "width": "22%"
+        },
+        {
+          "key": "hsn_sac",
+          "label": "HSN / SAC Code",
+          "visible": true,
+          "align": "center",
+          "width": "7%"
+        },
+        {
+          "key": "batch_no",
+          "label": "Batch No.",
+          "visible": false,
+          "align": "center",
+          "width": "6%"
+        },
+        {
+          "key": "expiry_date",
+          "label": "Expiry Date",
+          "visible": false,
+          "align": "center",
+          "width": "6%"
+        },
+        {
+          "key": "quantity",
+          "label": "Qty",
+          "visible": true,
+          "align": "center",
+          "width": "5%"
+        },
+        {
+          "key": "unit",
+          "label": "Unit",
+          "visible": true,
+          "align": "center",
+          "width": "5%"
+        },
+        {
+          "key": "rate",
+          "label": "Rate (₹)",
+          "visible": true,
+          "align": "right",
+          "width": "7%"
+        },
+        {
+          "key": "discount_percent",
+          "label": "Disc. %",
+          "visible": true,
+          "align": "center",
+          "width": "5%"
+        },
+        {
+          "key": "discount_amount",
+          "label": "Disc. Amt (₹)",
+          "visible": false,
+          "align": "right",
+          "width": "6%"
+        },
+        {
+          "key": "taxable_amount",
+          "label": "Taxable Amt (₹)",
+          "visible": true,
+          "align": "right",
+          "width": "8%"
+        },
+        {
+          "key": "cgst_rate",
+          "label": "CGST %",
+          "visible": true,
+          "align": "center",
+          "width": "5%"
+        },
+        {
+          "key": "cgst_amount",
+          "label": "CGST Amt (₹)",
+          "visible": true,
+          "align": "right",
+          "width": "6%"
+        },
+        {
+          "key": "sgst_rate",
+          "label": "SGST %",
+          "visible": true,
+          "align": "center",
+          "width": "5%"
+        },
+        {
+          "key": "sgst_amount",
+          "label": "SGST Amt (₹)",
+          "visible": true,
+          "align": "right",
+          "width": "6%"
+        },
+        {
+          "key": "igst_rate",
+          "label": "IGST %",
+          "visible": false,
+          "align": "center",
+          "width": "5%"
+        },
+        {
+          "key": "igst_amount",
+          "label": "IGST Amt (₹)",
+          "visible": false,
+          "align": "right",
+          "width": "6%"
+        },
+        {
+          "key": "cess_rate",
+          "label": "Cess %",
+          "visible": false,
+          "align": "center",
+          "width": "4%"
+        },
+        {
+          "key": "cess_amount",
+          "label": "Cess Amt (₹)",
+          "visible": false,
+          "align": "right",
+          "width": "5%"
+        },
+        {
+          "key": "total_amount",
+          "label": "Total (₹)",
+          "visible": true,
+          "align": "right",
+          "width": "8%"
+        }
+      ]
+    },
+    "tax_summary": {
+      "label": "Tax Summary",
+      "columns": [
+        {
+          "key": "hsn_sac",
+          "label": "HSN / SAC"
+        },
+        {
+          "key": "taxable_value",
+          "label": "Taxable Value (₹)"
+        },
+        {
+          "key": "cgst_rate",
+          "label": "CGST %"
+        },
+        {
+          "key": "cgst_amount",
+          "label": "CGST Amt (₹)"
+        },
+        {
+          "key": "sgst_rate",
+          "label": "SGST %"
+        },
+        {
+          "key": "sgst_amount",
+          "label": "SGST Amt (₹)"
+        },
+        {
+          "key": "igst_rate",
+          "label": "IGST %"
+        },
+        {
+          "key": "igst_amount",
+          "label": "IGST Amt (₹)"
+        },
+        {
+          "key": "cess_amount",
+          "label": "Cess Amt (₹)"
+        },
+        {
+          "key": "total_tax",
+          "label": "Total Tax (₹)"
+        }
+      ]
+    },
+    "totals": {
+      "subtotal_label": "Sub Total (Before Discount)",
+      "total_discount_label": "Total Discount",
+      "taxable_amount_label": "Total Taxable Amount",
+      "cgst_label": "CGST",
+      "sgst_label": "SGST",
+      "igst_label": "IGST",
+      "cess_label": "Cess",
+      "total_tax_label": "Total Tax Amount",
+      "round_off_label": "Round Off",
+      "grand_total_label": "Grand Total (₹)",
+      "amount_in_words_label": "Amount in Words",
+      "amount_in_words_value": "Rupees Fifty Six Thousand and Fifty Only"
+    },
+    "terms_and_conditions": {
+      "label": "Terms & Conditions",
+      "items": [
+        "Goods once sold will not be taken back or exchanged.",
+        "Interest @ 18% p.a. will be charged on overdue payments.",
+        "All disputes are subject to Delhi jurisdiction only.",
+        "E. & O. E. (Errors and Omissions Excepted).",
+        "This is a computer-generated invoice and does not require a physical signature."
+      ]
+    },
+    "footer": {
+      "declaration": "We declare that this invoice shows the actual price of the goods described and that all particulars are true and correct.",
+      "for_label": "For ABC Enterprises Pvt. Ltd.",
+      "signature_space": true,
+      "signature_label": "Authorised Signatory",
+      "receiver_acknowledgement": {
+        "show": true,
+        "label": "Receiver's Signature & Stamp",
+        "fields": [
+          "Name",
+          "Designation",
+          "Date",
+          "Signature"
+        ]
+      }
+    },
+    "print_settings": {
+      "paper_size": "A4",
+      "orientation": "portrait",
+      "margins": {
+        "top": "15mm",
+        "bottom": "15mm",
+        "left": "15mm",
+        "right": "15mm"
+      },
+      "font_family": "Arial",
+      "font_size_body": "10pt",
+      "font_size_heading": "14pt",
+      "show_logo": true,
+      "logo_position": "left",
+      "color_theme": {
+        "primary": "#1a3c6b",
+        "secondary": "#f0f4f8",
+        "border": "#cccccc",
+        "text": "#222222"
+      },
+      "copies": [
+        "Original for Buyer",
+        "Duplicate for Transporter",
+        "Triplicate for Seller"
+      ]
+    }
+  }
+}

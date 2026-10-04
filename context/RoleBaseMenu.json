@@ -1,0 +1,134 @@
+{
+  "CorpAdmin": {
+    "sections": [
+      {
+        "title": "Sales",
+        "items": [
+          { "icon": "call-outline", "label": "Projects", "route": "/sales/projects" },
+          { "icon": "document-text-outline", "label": "Quotations", "route": "/sales/quotations" },
+          { "icon": "receipt-outline", "label": "Invoices", "route": "/sales/invoices" },
+          { "icon": "bar-chart-outline", "label": "MIS Reports", "route": "/sales/mis-reports" }
+        ]
+      },
+        {
+        "title": "Purchase",
+        "items": [
+          { "icon": "call-outline", "label": "Vendors", "route": "/myscript/newVendor" },
+          { "icon": "document-text-outline", "label": "Categories/Products", "route": "/myscript/categories" },
+          { "icon": "pricetag", "label": "Add/Update Prices", "route": "myscript/rateSaleBuy" },
+          { "icon": "cart", "label": "Purchase Order", "route": "myscript/" }
+        ]
+      },
+      {
+        "title": "Finance",
+        "items": [
+          { "icon": "cash-outline", "label": "Payments", "route": "/finance/payments" },
+          { "icon": "receipt-outline", "label": "Receipts", "route": "/finance/receipts" }
+        ]
+      },
+      {
+        "title": "User Management",
+        "items": [
+          { "icon": "person-add-outline", "label": "Activate Users", "route": "/user/activate" },
+          { "icon": "person-remove-outline", "label": "Deactivate Users", "route": "/user/deactivate" },
+          { "icon": "list-outline", "label": "Assign Menus", "route": "/user/assign-menus" }
+        ]
+      },
+      {
+        "title": "Settings",
+        "items": [
+          { "icon": "link-outline", "label": "API Integrations", "route": "/settings/api-integrations" },
+          { "icon": "settings-outline", "label": "Update Profile", "route": "/settings/profile" },
+          { "icon": "log-out-outline", "label": "Signout", "route": "/myscript/Signout" }
+        ]
+      }
+    ]
+  },
+  "Sales": {
+    "sections": [
+      {
+        "title": "B2B Registered Portal",
+        "items": 
+          [
+  { 
+  "icon": "call-outline", 
+  "label": "IndiaMart",
+  "appScheme": "indiamart://", 
+  "url": "https://m.indiamart.com/", 
+  "isOpenApp": true 
+},
+{ 
+  "icon": "document-text-outline",
+  "label": "TradeIndia", 
+  "appScheme": "https://www.tradeindia.com/utils/my_inquiry.html", 
+  "url": "https://www.tradeindia.com/utils/my_inquiry.html", 
+  "isOpenApp": true 
+},
+  { 
+    "icon": "receipt-outline", 
+    "label": "JustDial", 
+    "url": "https://www.justdial.com/unlisted/business-login", 
+    "isOpenWeb": true 
+  },
+  { 
+    "icon": "bar-chart-outline", 
+    "label": "Other", 
+    "url": "https://www.google.com", 
+    "isOpenWeb": true 
+  }
+        ]
+      },
+      {
+        "title": "Bussiness",
+        "items": [
+          { "icon": "cash-outline", "label": "Quotation", "route": "/finance/payments" },
+          { "icon": "receipt-outline", "label": "Tax Invoice", "route": "/finance/receipts" }
+        ]
+      },
+            {
+        "title": "Settings",
+        "items": [
+          { "icon": "link-outline", "label": "API Integrations", "route": "/settings/api-integrations" },
+          { "icon": "settings-outline", "label": "Update Profile", "route": "/settings/profile" },
+          { "icon": "log-out-outline", "label": "Signout", "route": "/myscript/Signout" }
+        ]
+      }
+    ]
+  },
+  "Finance": {
+    "sections": [
+      {
+        "title": "Sales",
+        "items": [
+          { "icon": "call-outline", "label": "Projects", "route": "/sales/projects" },
+          { "icon": "document-text-outline", "label": "Quotations", "route": "/sales/quotations" },
+          { "icon": "receipt-outline", "label": "Invoices", "route": "/sales/invoices" },
+          { "icon": "bar-chart-outline", "label": "MIS Reports", "route": "/sales/mis-reports" }
+        ]
+      },
+      {
+        "title": "Finance",
+        "items": [
+          { "icon": "cash-outline", "label": "Payments", "route": "/finance/payments" },
+          { "icon": "receipt-outline", "label": "Receipts", "route": "/finance/receipts" }
+        ]
+      },
+      {
+        "title": "User Management",
+        "items": [
+          { "icon": "person-add-outline", "label": "Activate Users", "route": "/user/activate" },
+          { "icon": "person-remove-outline", "label": "Deactivate Users", "route": "/user/deactivate" },
+          { "icon": "list-outline", "label": "Assign Menus", "route": "/user/assign-menus" }
+        ]
+      },
+      {
+        "title": "Settings",
+        "items": [
+          { "icon": "link-outline", "label": "API Integrations", "route": "/settings/api-integrations" },
+          { "icon": "settings-outline", "label": "Update Profile", "route": "/settings/profile" },
+          { "icon": "log-out-outline", "label": "Signout", "route": "/myscript/Signout" }
+        ]
+      }
+    ]
+  }
+}

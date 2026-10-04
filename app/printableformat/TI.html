@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GST Tax Invoice</title>
+
+    <script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
+
+    <style>
+        body {
+            font-family: Arial;
+            background: #f5f5f5;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: auto;
+            background: #fff;
+            padding: 20px;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .title {
+            font-size: 22px;
+            font-weight: bold;
+        }
+
+        .box {
+            border: 1px solid #ccc;
+            padding: 10px;
+            margin-top: 10px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+        }
+
+        th,
+        td {
+            border: 1px solid #ccc;
+            padding: 6px;
+            font-size: 12px;
+        }
+
+        th {
+            background: #eee;
+        }
+
+        .right {
+            text-align: right;
+        }
+
+        .bold {
+            font-weight: bold;
+        }
+
+        .footer {
+            margin-top: 20px;
+            font-size: 12px;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="container" id="invoice">
+
+        <div class="header">
+            <div>
+                <div class="title" id="s_name">Company Name</div>
+                <div id="s_address"></div>
+                GSTIN: <b id="s_gst"></b><br>
+                PAN: <b id="s_pan"></b>
+            </div>
+            <div class="right">
+                <div class="title">TAX INVOICE</div>
+                <div>(Rule 46 - CGST)</div>
+            </div>
+        </div>
+
+        <div class="box">
+            Invoice No: <b id="inv_no"></b><br>
+            Date: <b id="inv_date"></b><br>
+            Place of Supply: <b id="inv_pos"></b>
+        </div>
+
+        <div class="box">
+            <b>Bill To:</b><br>
+            <div id="buyer"></div>
+        </div>
+
+        <table id="items_table">
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>Description</th>
+                    <th>HSN</th>
+                    <th>Qty</th>
+                    <th>Rate</th>
+                    <th>Taxable</th>
+                    <th>GST%</th>
+                    <th>GST Amt</th>
+                    <th>Total</th>
+                </tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+
+        <div class="box right">
+            Taxable: ₹ <span id="taxable"></span><br>
+            GST: ₹ <span id="gst"></span><br>
+            <b>Grand Total: ₹ <span id="grand"></span></b>
+        </div>
+
+        <div class="box">
+            <b>Bank Details</b><br>
+            Bank: <span id="b_name"></span><br>
+            A/C: <span id="b_acc"></span><br>
+            IFSC: <span id="b_ifsc"></span>
+        </div>
+
+        <div id="qr"></div>
+
+        <div class="footer">
+            This is a computer generated invoice.<br>
+            GSTIN: <span id="footer_gst"></span>
+        </div>
+
+    </div>
+
+    <script>
+
+        /* ================= CONFIG ================= */
+        const BASE_URL = "https://your-api-url.com";
+
+        /* ================= VALIDATION ================= */
+        function validateGST(gst) {
+            return /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][A-Z\d]Z[A-Z\d]$/.test(gst);
+        }
+
+        /* ================= API (Converted Hook) ================= */
+        async function fetchSeller(token, corporateId, corpAdminId) {
+            const res = await fetch(`${BASE_URL}/setting/update/corporate?corporateId=${corporateId}&corpAdminId=${corpAdminId}`, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            const data = await res.json();
+            return data?.data?.accessCorporate || {};
+        }
+
+        /* ================= LOAD ================= */
+        async function init() {
+
+            const token = localStorage.getItem("token");
+            const corporateId = localStorage.getItem("corporateId");
+            const corpAdminId = localStorage.getItem("corpAdminId");
+
+            /* ---- Seller ---- */
+            const s = await fetchSeller(token, corporateId, corpAdminId);
+
+            document.getElementById("s_name").innerText = s.corporateName;
+            document.getElementById("s_address").innerText =
+                `${s.corporateAddress}, ${s.corporateCity}, ${s.corporateState}-${s.corporatePin}`;
+            document.getElementById("s_gst").innerText = s.corporateGST;
+            document.getElementById("s_pan").innerText = s.corporatePAN;
+            document.getElementById("footer_gst").innerText = s.corporateGST;
+
+            if (!validateGST(s.corporateGST)) alert("Invalid GST");
+
+            /* ---- Bank ---- */
+            document.getElementById("b_name").innerText = s.bankDetails?.bankName || "";
+            document.getElementById("b_acc").innerText = s.bankDetails?.accountNumber || "";
+            document.getElementById("b_ifsc").innerText = s.bankDetails?.ifsc || "";
+
+            /* ---- Sample JSON (replace with your upload logic) ---- */
+            const json = {
+                buyer: { name: "ABC Pvt Ltd", gst: "27ABCDE1234F1Z5" },
+                items: [
+                    { desc: "Product A", hsn: "8471", qty: 2, rate: 500, gst: 18 },
+                    { desc: "Product B", hsn: "9983", qty: 1, rate: 1000, gst: 18 }
+                ]
+            };
+
+            /* ---- Buyer ---- */
+            document.getElementById("buyer").innerText =
+                `${json.buyer.name} (GST: ${json.buyer.gst})`;
+
+            /* ---- Items ---- */
+            let taxable = 0, gst = 0;
+
+            const tbody = document.querySelector("#items_table tbody");
+
+            json.items.forEach((it, i) => {
+
+                if (!it.hsn) console.warn("Missing HSN");
+
+                const t = it.qty * it.rate;
+                const g = t * it.gst / 100;
+
+                taxable += t;
+                gst += g;
+
+                tbody.innerHTML += `
+      <tr>
+        <td>${i + 1}</td>
+        <td>${it.desc}</td>
+        <td>${it.hsn}</td>
+        <td>${it.qty}</td>
+        <td>${it.rate}</td>
+        <td>${t}</td>
+        <td>${it.gst}%</td>
+        <td>${g}</td>
+        <td>${t + g}</td>
+      </tr>`;
+            });
+
+            const grand = taxable + gst;
+
+            document.getElementById("taxable").innerText = taxable;
+            document.getElementById("gst").innerText = gst;
+            document.getElementById("grand").innerText = grand;
+
+            /* ---- QR Code ---- */
+            QRCode.toCanvas(document.getElementById('qr'), JSON.stringify({
+                invoice: "INV001",
+                amount: grand,
+                gst: s.corporateGST
+            }));
+        }
+
+        init();
+
+    </script>
+</body>
+
+</html>

@@ -1,0 +1,435 @@
+{
+  "CorpAdmin": {
+    "sections": [
+      {
+        "title": "B2B Registered Portal",
+        "items": [
+          {
+            "icon": "call-outline",
+            "label": "IndiaMart",
+            "appScheme": "indiamart://",
+            "url": "https://m.indiamart.com/",
+            "isOpenApp": true
+          },
+          {
+            "icon": "document-text-outline",
+            "label": "TradeIndia",
+            "appScheme": "tradeindia://",
+            "url": "https://m.tradeindia.com/",
+            "isOpenApp": true
+          },
+          {
+            "icon": "receipt-outline",
+            "label": "JustDial",
+            "appScheme": "justdail://",
+            "url": "https://m.justdail.com/",
+            "isOpenWeb": true
+          },
+          {
+            "icon": "bar-chart-outline",
+            "label": "Other",
+            "url": "https://www.google.com",
+            "isOpenWeb": true
+          }
+        ]
+      },
+      {
+        "title": "Sales",
+        "items": [
+          {
+            "icon": "call-outline",
+            "label": "Leads Ledger",
+            "route": "/leadledger"
+          },
+          {
+            "icon": "document-text-outline",
+            "label": "Quotations",
+            "route": "/inquiryQuote"
+          },
+          {
+            "icon": "receipt-outline",
+            "label": "Invoices",
+            "route": "/taxInvoice"
+          },
+          {
+            "icon": "bar-chart-outline",
+            "label": "MIS Reports",
+            "route": "/"
+          }
+        ]
+      },
+      {
+        "title": "Purchase",
+        "items": [
+          {
+            "icon": "business",
+            "label": "Vendor",
+            "route": "/newVendor"
+          },
+          {
+            "icon": "list",
+            "label": "Categories/Products",
+            "route": "/categories"
+          },
+          {
+            "icon": "pricetag",
+            "label": "Add/Update Prices",
+            "route": "/rateSaleBuy"
+          },
+          {
+            "icon": "cart",
+            "label": "Purchase Order",
+            "route": "/purchaseOrder"
+          },
+          {
+            "icon": "cloud-upload-outline",
+            "label": "Bulk Upload",
+            "route": "/bulkUpload"
+          }
+        ]
+      },
+      {
+        "title": "Project Operations",
+        "items": [
+          {
+            "icon": "construct-outline",
+            "label": "Project Dashboard",
+            "route": "/"
+          },
+          {
+            "icon": "location-outline",
+            "label": "Site Visits",
+            "route": "/"
+          }
+        ]
+      },
+      {
+        "title": "Finance Reports",
+        "items": [
+          {
+            "icon": "stats-chart-outline",
+            "label": "Profit & Loss Account",
+            "route": "/profitAndLoss"
+          },
+          {
+            "icon": "book-outline",
+            "label": "Show Ledgers",
+            "route": "/partyLedgers"
+          },
+          {
+            "icon": "grid-outline",
+            "label": "Ledger-Voucher Master",
+            "route": "/ledgerMaster"
+          },
+          {
+            "icon": "wallet-outline",
+            "label": "Petty Cash Books",
+            "route": "/adminPettyCash"
+          }
+        ]
+      },
+      {
+        "title": "Templates",
+        "items": [
+          {
+            "icon": "document-text-outline",
+            "label": "Template",
+            "route": "/ledgerMaster?mode=template"
+          },
+          {
+            "icon": "download-outline",
+            "label": "Download Template",
+            "route": "/ledgerMaster?mode=downloadTemplate"
+          },
+          {
+            "icon": "cloud-upload-outline",
+            "label": "Upload Template",
+            "route": "/ledgerMaster?mode=uploadTemplate"
+          }
+        ]
+      },
+      {
+        "title": "User Management",
+        "items": [
+          {
+            "icon": "settings-outline",
+            "label": "Other User Setting",
+            "route": "/basicOtherUser"
+          },
+          {
+            "icon": "list-outline",
+            "label": "Assign Corporate",
+            "route": "/assignCorporate"
+          }
+        ]
+      },
+      {
+        "title": "User-Corp Info",
+        "items": [
+          {
+            "icon": "add-circle-outline",
+            "label": "Add New Corporate",
+            "route": "/basicCorporate?mode=new"
+          },
+          {
+            "icon": "link-outline",
+            "label": "Corporate Info",
+            "route": "/basicCorporate"
+          },
+          {
+            "icon": "settings-outline",
+            "label": "User Profile",
+            "route": "/basicAdminUser"
+          }
+        ]
+      }
+    ]
+  },
+  "Sales": {
+    "sections": [
+      {
+        "title": "B2B Registered Portal",
+        "items": [
+          {
+            "icon": "call-outline",
+            "label": "IndiaMart",
+            "appScheme": "indiamart://",
+            "url": "https://m.indiamart.com/",
+            "isOpenApp": true
+          },
+          {
+            "icon": "document-text-outline",
+            "label": "TradeIndia",
+            "appScheme": "tradeindia://",
+            "url": "https://m.tradeindia.com/",
+            "isOpenApp": true
+          },
+          {
+            "icon": "receipt-outline",
+            "label": "JustDial",
+            "appScheme": "justdail://",
+            "url": "https://m.justdail.com/",
+            "isOpenWeb": true
+          },
+          {
+            "icon": "bar-chart-outline",
+            "label": "Other",
+            "url": "https://www.google.com",
+            "isOpenWeb": true
+          }
+        ]
+      },
+      {
+        "title": "Bussiness",
+        "items": [
+          {
+            "icon": "cash-outline",
+            "label": "Quotation",
+            "route": "/inquiryQuote"
+          },
+          {
+            "icon": "receipt-outline",
+            "label": "Tax Invoice",
+            "route": "/taxInvoice"
+          }
+        ]
+      },
+      {
+        "title": "Settings",
+        "items": [
+          {
+            "icon": "link-outline",
+            "label": "API Integrations",
+            "route": "/apiURLsConfigure"
+          },
+          {
+            "icon": "settings-outline",
+            "label": "Update Profile",
+            "route": "/basicAdminUser"
+          },
+          {
+            "icon": "log-out-outline",
+            "label": "Signout",
+            "route": "/Signout"
+          }
+        ]
+      }
+    ]
+  },
+  "Finance": {
+    "sections": [
+      {
+        "title": "Sales",
+        "items": [
+          {
+            "icon": "call-outline",
+            "label": "Projects",
+            "route": "/"
+          },
+          {
+            "icon": "document-text-outline",
+            "label": "Quotations",
+            "route": "/inquiryQuote"
+          },
+          {
+            "icon": "receipt-outline",
+            "label": "Invoices",
+            "route": "/taxInvoice"
+          },
+          {
+            "icon": "bar-chart-outline",
+            "label": "MIS Reports",
+            "route": "/"
+          }
+        ]
+      },
+      {
+        "title": "Finance Reports",
+        "items": [
+          {
+            "icon": "stats-chart-outline",
+            "label": "Profit & Loss Account",
+            "route": "/profitAndLoss"
+          },
+          {
+            "icon": "book-outline",
+            "label": "Show Ledgers",
+            "route": "/partyLedgers"
+          },
+          {
+            "icon": "grid-outline",
+            "label": "Ledger-Voucher Master",
+            "route": "/ledgerMaster"
+          },
+          {
+            "icon": "wallet-outline",
+            "label": "Cash-in-Hand",
+            "route": "/adminPettyCash"
+          }
+        ]
+      },
+      {
+        "title": "Templates",
+        "items": [
+          {
+            "icon": "document-text-outline",
+            "label": "Template",
+            "route": "/ledgerMaster?mode=template"
+          },
+          {
+            "icon": "download-outline",
+            "label": "Download Template",
+            "route": "/ledgerMaster?mode=downloadTemplate"
+          },
+          {
+            "icon": "cloud-upload-outline",
+            "label": "Upload Template",
+            "route": "/ledgerMaster?mode=uploadTemplate"
+          }
+        ]
+      },
+      {
+        "title": "User Management",
+        "items": [
+          {
+            "icon": "person-add-outline",
+            "label": "Activate Users",
+            "route": "/basicOtherUser"
+          },
+          {
+            "icon": "person-remove-outline",
+            "label": "Deactivate Users",
+            "route": "/basicOtherUser"
+          },
+          {
+            "icon": "list-outline",
+            "label": "Assign Menus",
+            "route": "/basicOtherUser"
+          }
+        ]
+      },
+      {
+        "title": "Settings",
+        "items": [
+          {
+            "icon": "link-outline",
+            "label": "API Integrations",
+            "route": "/apiURLsConfigure"
+          },
+          {
+            "icon": "settings-outline",
+            "label": "Update Profile",
+            "route": "/basicAdminUser"
+          },
+          {
+            "icon": "log-out-outline",
+            "label": "Signout",
+            "route": "/Signout"
+          }
+        ]
+      }
+    ]
+  },
+  "Project": {
+    "sections": [
+      {
+        "title": "Project Operations",
+        "items": [
+          {
+            "icon": "construct-outline",
+            "label": "Project Dashboard",
+            "route": "/"
+          },
+          {
+            "icon": "location-outline",
+            "label": "Site Visits",
+            "route": "/"
+          }
+        ]
+      },
+      {
+        "title": "Settings",
+        "items": [
+          {
+            "icon": "settings-outline",
+            "label": "Update Profile",
+            "route": "/basicAdminUser"
+          }
+        ]
+      }
+    ]
+  },
+  "Staff": {
+    "sections": []
+  },
+  "Vendor": {
+    "sections": [
+      {
+        "title": "Supply Chain",
+        "items": [
+          { "icon": "cart-outline", "label": "Purchase Orders", "route": "/purchaseOrder" },
+          { "icon": "document-text-outline", "label": "Invoices", "route": "/" }
+        ]
+      },
+      {
+        "title": "Business",
+        "items": [{ "icon": "stats-chart-outline", "label": "Payments", "route": "/" }]
+      }
+    ]
+  },
+  "Client": {
+    "sections": [
+      {
+        "title": "My Portal",
+        "items": [
+          { "icon": "cube-outline", "label": "Active Orders", "route": "/" },
+          { "icon": "receipt-outline", "label": "Tax Invoices", "route": "/taxInvoice" }
+        ]
+      },
+      {
+        "title": "Support",
+        "items": [{ "icon": "chatbubbles-outline", "label": "Contact Sales", "route": "/" }]
+      }
+    ]
+  }
+}

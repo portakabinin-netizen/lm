@@ -1,0 +1,126 @@
+{
+  "expo": {
+    "name": "HiBiz",
+    "slug": "hibiz",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "scheme": "hibiz",
+    "userInterfaceStyle": "automatic",
+    "owner": "hipk",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.hibiz.app",
+      "config": {
+        "googleMapsApiKey": "AIzaSyCvpWBZy4vz7LD4IXEoydWevdJNG5k9uGc"
+      }
+    },
+    "android": {
+      "package": "com.hibiz.app",
+      "versionCode": 3,
+      "config": {
+        "googleMaps": {
+          "apiKey": "AIzaSyCvpWBZy4vz7LD4IXEoydWevdJNG5k9uGc"
+        }
+      },
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#b00301"
+      },
+      "permissions": [
+        "READ_PHONE_STATE",
+        "READ_CALL_LOG",
+        "READ_PHONE_NUMBERS",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "CAMERA",
+        "READ_CONTACTS",
+        "WRITE_CONTACTS",
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE",
+        "FOREGROUND_SERVICE"
+      ]
+    },
+    "web": {
+      "bundler": "metro",
+      "favicon": "./assets/favicon.png",
+      "splash": {
+        "image": "./assets/splash.png",
+        "resizeMode": "contain",
+        "backgroundColor": "#ffffff"
+      }
+    },
+    "plugins": [
+      "./fix-jcenter.js",
+      "expo-router",
+      "expo-contacts",
+      "expo-font",
+      "expo-asset",
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "useFrameworks": "static"
+          },
+          "android": {
+            "minSdkVersion": 24,
+            "compileSdkVersion": 36,
+            "targetSdkVersion": 36,
+            "kotlinVersion": "2.1.20",
+            "packagingOptions": {
+              "pickFirst": [
+                "**/libc++_shared.so"
+              ]
+            }
+          }
+        }
+      ],
+      "expo-audio",
+      "@react-native-community/datetimepicker",
+      "expo-web-browser",
+      "expo-mail-composer",
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "HiBiz needs your location to track duty attendance and work-site visits.",
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true
+        }
+      ],
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash.png",
+          "resizeMode": "contain",
+          "backgroundColor": "#b00301"
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "HiBiz needs access to your photos to select employee profile pictures.",
+          "cameraPermission": "HiBiz needs access to your camera to take employee profile pictures."
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "HiBiz needs access to your camera to scan Aadhar card QR codes."
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "runtimeVersion": {
+      "policy": "sdkVersion"
+    },
+    "updates": {},
+    "extra": {
+      "eas": {
+        "projectId": "7043e34c-5a09-4e44-aec9-7782c0757645"
+      }
+    }
+  }
+}

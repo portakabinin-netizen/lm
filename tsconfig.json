@@ -1,0 +1,27 @@
+{
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": {
+    "jsx": "react-native",
+    "strict": true,
+    "paths": {
+      "@/*": ["./*"],
+      "/@/*": ["./*"]
+    }
+  },
+  "include": [
+    "**/*.ts",
+    "**/*.tsx",
+    "backend/controller/leadService.js",
+    "app/myscript/funHelper",
+    ".expo/types/**/*.ts",
+    "expo-env.d.ts",
+     "call-detection.d.ts",
+     "app/App.js", "app/myscript/index.js", "app/myscript/apiURLsConfigure.js"
+  ],
+  "exclude": [
+    "node_modules",
+    "tmp",
+    "reduentant",
+    "scratch"
+  ]
+}

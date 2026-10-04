@@ -5,19 +5,11 @@ import { AppHeader } from "@/components/AppHeader";
 import { appService } from "@/UtilServices/appHelper";
 import { useUserContext } from "@/context/AuthContext";
 import * as DocumentPicker from "expo-document-picker";
-import * as FileSystem from "expo-file-system";
+import * as FileSystem from "expo-file-system/legacy";
 import * as Sharing from "expo-sharing";
 import { useRouter } from "expo-router";
 
-const COLORS = {
-  pri: "#059669",
-  sec: "#f59e0b",
-  bg: "#f8fafc",
-  srf: "#ffffff",
-  txt: "#0f172a",
-  muted: "#64748b",
-  bdr: "#e2e8f0"
-};
+import { styles as G, COLORS as GlobalCOLORS, mkShadow } from "@/styles/stylesIndex";
 
 export default function BulkUploadScreen() {
   const { user } = useUserContext();
@@ -30,10 +22,10 @@ export default function BulkUploadScreen() {
   // Validate Context
   if (!user?.corporateId || !user?.corpAdminId) {
     return (
-      <SafeAreaView style={styles.root}>
+      <SafeAreaView style={G.flex1}>
         <AppHeader title="Bulk Upload" onBackPress={() => router.back()} />
-        <View style={styles.center}>
-          <Text style={styles.errorText}>
+        <View style={G.center}>
+          <Text style={[G.fs16, G.bold600, G.centerText, { color: "#b91c1c" }]}>
             Access Denied. Please ensure you have selected a Corporate Business profile before uploading bulk data.
           </Text>
         </View>
@@ -78,7 +70,7 @@ export default function BulkUploadScreen() {
     } catch (err: any) {
       console.log("Download Error:", err?.response || err);
       const msg = err?.response?.data?.error || err.message || "Could not download template.";
-      Alert.alert("Download Error", msg);
+      appService.showToast(msg, "Error");
     } finally {
       setDownloading(false);
     }
@@ -108,8 +100,8 @@ export default function BulkUploadScreen() {
       } as any);
       
       // Pass the corporate identifiers explicitly although middleware normally injects it
-      formData.append("corporateId", user.corporateId);
-      formData.append("corpAdminId", user.corpAdminId);
+      formData.append("corporateId", user.corporateId || "");
+      formData.append("corpAdminId", user.corpAdminId || "");
 
       await appService.httpClient.post("product/bulk-upload", formData, {
         headers: {
@@ -121,16 +113,16 @@ export default function BulkUploadScreen() {
       appService.showToast("Data uploaded successfully!", "Success");
     } catch (err: any) {
       console.log(err);
-      Alert.alert("Upload Failed", err?.response?.data?.error || err.message || "Failed to parse and upload sheet.");
+      appService.showToast(err?.response?.data?.error || err.message || "Failed to parse and upload sheet.", "Error");
     } finally {
       setUploading(false);
     }
   };
 
   return (
-    <SafeAreaView style={styles.root} edges={["left", "right", "bottom"]}>
+    <SafeAreaView style={G.safeAreaNoPrimary as any} edges={["left", "right", "bottom"]}>
       <AppHeader title="Bulk Upload (Excel)" onBackPress={() => router.back()} />
-      <View style={styles.container}>
+      <View style={G.p16 as any}>
         <View style={styles.card}>
           <Text style={styles.title}>1. Get the Template</Text>
           <Text style={styles.desc}>
@@ -142,22 +134,24 @@ export default function BulkUploadScreen() {
             onPress={handleDownloadTemplate}
             disabled={downloading}
           >
-            {downloading ? <ActivityIndicator size="small" color={COLORS.pri} /> : <Text style={styles.btnTxtSec}>Download Template (XLSX)</Text>}
+            {downloading ? <ActivityIndicator size="small" color={GlobalCOLORS.primary} /> : <Text style={styles.btnTxtSec}>Download Template (XLSX)</Text>}
           </TouchableOpacity>
         </View>
 
-        <View style={styles.card}>
-          <Text style={styles.title}>2. Upload Completed File</Text>
-          <Text style={styles.desc}>
-            Once you have populated your vendors, categories, products, and prices in the template, select the file here to import it into your corporate profile.
-          </Text>
-          <TouchableOpacity 
-            style={styles.btnPri} 
-            onPress={handleUploadData}
-            disabled={uploading}
-          >
-            {uploading ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.btnTxtPri}>Select & Upload Excel</Text>}
-          </TouchableOpacity>
+        <View style={G.mt16}>
+         <View style={styles.card}>
+            <Text style={styles.title}>2. Upload Completed File</Text>
+            <Text style={styles.desc}>
+                Once you have populated your vendors, categories, products, and prices in the template, select the file here to import it into your corporate profile.
+            </Text>
+            <TouchableOpacity 
+                style={styles.btnPri} 
+                onPress={handleUploadData}
+                disabled={uploading}
+            >
+                {uploading ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.btnTxtPri}>Select & Upload Excel</Text>}
+            </TouchableOpacity>
+          </View>
         </View>
         
         <View style={styles.infoBox}>
@@ -174,26 +168,18 @@ export default function BulkUploadScreen() {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: COLORS.bg },
-  container: { padding: 16, gap: 16 },
-  center: { flex: 1, justifyContent: "center", alignItems: "center", padding: 20 },
-  errorText: { color: "#b91c1c", fontSize: 16, textAlign: "center", fontWeight: "600" },
   card: {
-    backgroundColor: COLORS.srf,
+    backgroundColor: "#fff",
     borderRadius: 12,
     padding: 16,
     borderWidth: 1,
-    borderColor: COLORS.bdr,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
-    elevation: 2,
+    borderColor: "#e2e8f0",
+    ...StyleSheet.flatten(mkShadow(2))
   },
-  title: { fontSize: 16, fontWeight: "700", color: COLORS.txt, marginBottom: 8 },
-  desc: { fontSize: 13, color: COLORS.muted, marginBottom: 16, lineHeight: 20 },
+  title: { fontSize: 16, fontWeight: "700", color: "#0f172a", marginBottom: 8 },
+  desc: { fontSize: 13, color: "#64748b", marginBottom: 16, lineHeight: 20 },
   btnPri: {
-    backgroundColor: COLORS.pri,
+    backgroundColor: GlobalCOLORS.primary,
     paddingVertical: 12,
     borderRadius: 8,
     alignItems: "center"
@@ -202,18 +188,18 @@ const styles = StyleSheet.create({
   btnSec: {
     backgroundColor: "#ecfdf5",
     borderWidth: 1,
-    borderColor: COLORS.pri,
+    borderColor: GlobalCOLORS.primary,
     paddingVertical: 12,
     borderRadius: 8,
     alignItems: "center"
   },
-  btnTxtSec: { color: COLORS.pri, fontSize: 14, fontWeight: "600" },
+  btnTxtSec: { color: GlobalCOLORS.primary, fontSize: 14, fontWeight: "600" },
   infoBox: {
-    marginTop: 10,
+    marginTop: 20,
     padding: 14,
     backgroundColor: "#fffbeb",
     borderLeftWidth: 4,
-    borderLeftColor: COLORS.sec,
+    borderLeftColor: "#f59e0b",
     borderRadius: 6
   },
   infoTitle: { fontWeight: "700", color: "#92400e", marginBottom: 4, fontSize: 13 },
