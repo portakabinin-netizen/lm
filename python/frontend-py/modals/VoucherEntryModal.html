@@ -1,0 +1,192 @@
+<div class="modal-header">
+  <h3 class="modal-title"><i class="fa-solid fa-file-invoice" style="color: var(--primary-color); margin-right: 8px;"></i> Voucher Entry</h3>
+  <button class="modal-close" onclick="closeModal('VoucherEntryModal')"><i class="fa-solid fa-xmark"></i></button>
+</div>
+<div class="modal-body" style="padding: 1rem; max-height: 75vh; overflow-y: auto;">
+  
+  <div id="veLoading" style="text-align: center; display: none;">
+    <i class="fa-solid fa-circle-notch fa-spin fa-2x" style="color: var(--primary-color);"></i>
+    <p style="margin-top: 10px; color: var(--text-secondary);">Loading Ledgers...</p>
+  </div>
+
+  <div id="veForm" style="display: none;">
+    <div style="display: flex; gap: 10px; margin-bottom: 1rem;">
+      <div style="flex: 1;">
+        <label class="form-label">Voucher Type</label>
+        <select class="form-select" id="veTypeSelect">
+          <option value="Payment">Payment</option>
+          <option value="Receipt">Receipt</option>
+          <option value="Journal">Journal</option>
+          <option value="Contra">Contra</option>
+        </select>
+      </div>
+      <div style="flex: 1;">
+        <label class="form-label">Date</label>
+        <input type="date" id="veDateInput" class="form-input" />
+      </div>
+    </div>
+
+    <div class="form-group" style="margin-bottom: 1rem;">
+      <label class="form-label">Debit Account (By)</label>
+      <select class="form-select" id="veDebitSelect">
+        <option value="">Select Account...</option>
+      </select>
+    </div>
+    
+    <div class="form-group" style="margin-bottom: 1rem;">
+      <label class="form-label">Credit Account (To)</label>
+      <select class="form-select" id="veCreditSelect">
+        <option value="">Select Account...</option>
+      </select>
+    </div>
+
+    <div class="form-group" style="margin-bottom: 1rem;">
+      <label class="form-label">Amount</label>
+      <div style="position: relative;">
+        <span style="position: absolute; left: 1rem; top: 50%; transform: translateY(-50%); color: var(--text-secondary);">₹</span>
+        <input type="number" id="veAmount" class="form-input" style="padding-left: 2rem;" placeholder="0.00" />
+      </div>
+    </div>
+
+    <div class="form-group" style="margin-bottom: 1rem;">
+      <label class="form-label">Narration</label>
+      <textarea id="veNarration" class="form-input" rows="2" placeholder="Reason for transaction..."></textarea>
+    </div>
+  </div>
+
+</div>
+<div class="modal-footer">
+  <button class="btn btn-glass" onclick="closeModal('VoucherEntryModal')">Cancel</button>
+  <button class="btn btn-primary" onclick="veSubmitVoucher()"><i class="fa-solid fa-save" style="margin-right: 6px;"></i> Save Voucher</button>
+</div>
+
+<script>
+(function() {
+  const d = new Date();
+  const today = d.toISOString().split('T')[0];
+
+  window.veState = {
+    token: localStorage.getItem('nex_token') || '',
+    ledgers: []
+  };
+
+  const UI = {
+    loading: document.getElementById('veLoading'),
+    form: document.getElementById('veForm'),
+    typeSelect: document.getElementById('veTypeSelect'),
+    dateInput: document.getElementById('veDateInput'),
+    debitSelect: document.getElementById('veDebitSelect'),
+    creditSelect: document.getElementById('veCreditSelect'),
+    amount: document.getElementById('veAmount'),
+    narration: document.getElementById('veNarration')
+  };
+
+  UI.dateInput.value = today;
+
+  const getUrl = (path) => window.appHelper.getUrl(path);
+
+  async function fetchVEData() {
+    if (!window.veState.token) return;
+    
+    UI.loading.style.display = 'block';
+    UI.form.style.display = 'none';
+
+    try {
+      const headers = { 'Authorization': `Bearer ${window.veState.token}`, 'Content-Type': 'application/json' };
+      const masterRes = await fetch(getUrl('finance/master'), { headers });
+
+      if (masterRes.ok) {
+        const masterJson = await masterRes.json();
+        if (masterJson.data && masterJson.data.ledgers) {
+          window.veState.ledgers = masterJson.data.ledgers;
+        }
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      UI.loading.style.display = 'none';
+      UI.form.style.display = 'block';
+      populateVESelects();
+    }
+  }
+
+  function populateVESelects() {
+    let optionsHtml = '<option value="">Select Account...</option>';
+    
+    // Sort ledgers by group then name
+    const sorted = [...window.veState.ledgers].sort((a, b) => {
+      const gA = a.groupId?.name || 'Z';
+      const gB = b.groupId?.name || 'Z';
+      if (gA !== gB) return gA.localeCompare(gB);
+      return (a.name || '').localeCompare(b.name || '');
+    });
+
+    let currentGroup = '';
+    sorted.forEach(l => {
+      const gName = l.groupId?.name || 'Other';
+      if (gName !== currentGroup) {
+        if (currentGroup) optionsHtml += `</optgroup>`;
+        optionsHtml += `<optgroup label="${gName}">`;
+        currentGroup = gName;
+      }
+      let balText = l.currentBalance ? ` (Bal: ₹${Math.abs(l.currentBalance)} ${l.currentBalance > 0 ? 'Dr' : 'Cr'})` : '';
+      optionsHtml += `<option value="${l._id}">${l.name}${balText}</option>`;
+    });
+    if (currentGroup) optionsHtml += `</optgroup>`;
+
+    UI.debitSelect.innerHTML = optionsHtml;
+    UI.creditSelect.innerHTML = optionsHtml;
+  }
+
+  window.veSubmitVoucher = async () => {
+    const type = UI.typeSelect.value;
+    const date = UI.dateInput.value;
+    const debitId = UI.debitSelect.value;
+    const creditId = UI.creditSelect.value;
+    const amt = parseFloat(UI.amount.value);
+    const narration = UI.narration.value;
+
+    if (!type) return alert("Select Voucher Type");
+    if (!date) return alert("Select Date");
+    if (!debitId) return alert("Select Debit Account");
+    if (!creditId) return alert("Select Credit Account");
+    if (debitId === creditId) return alert("Debit and Credit accounts cannot be the same");
+    if (!amt || amt <= 0) return alert("Enter a valid amount");
+
+    const payload = {
+      type: type,
+      date: date,
+      narration: narration || `${type} Voucher`,
+      entries: [
+        { ledgerId: debitId, type: 'Dr', amount: amt },
+        { ledgerId: creditId, type: 'Cr', amount: amt }
+      ]
+    };
+
+    try {
+      const headers = { 'Authorization': `Bearer ${window.veState.token}`, 'Content-Type': 'application/json' };
+      const res = await fetch(getUrl('finance/vouchers'), {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payload)
+      });
+      
+      if (res.ok) {
+        alert("Voucher Saved Successfully!");
+        closeModal('VoucherEntryModal');
+      } else {
+        const err = await res.json();
+        alert(`Error: ${err.message || 'Failed to save voucher'}`);
+      }
+    } catch (e) {
+      console.error(e);
+      alert("Network error processing voucher.");
+    }
+  };
+
+  window.addEventListener('VoucherEntryModal_opened', () => {
+    fetchVEData();
+  }, { once: false });
+
+})();
+</script>

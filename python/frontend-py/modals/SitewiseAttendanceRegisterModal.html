@@ -1,0 +1,238 @@
+<div class="modal-header">
+  <h3 class="modal-title"><i class="fa-solid fa-table-cells" style="color: var(--primary-color); margin-right: 8px;"></i> Sitewise Attendance Register</h3>
+  <button class="modal-close" onclick="closeModal('SitewiseAttendanceRegisterModal')"><i class="fa-solid fa-xmark"></i></button>
+</div>
+<div class="modal-body" style="overflow-x: auto; padding: 1rem; max-height: 70vh;">
+  <div style="display: flex; gap: 10px; margin-bottom: 1rem; align-items: flex-end;">
+    <div style="flex: 1;">
+      <label class="form-label">Month</label>
+      <input type="month" id="swMonthInput" class="form-input" onchange="window.swState.monthYear = this.value; fetchSWData()" />
+    </div>
+    <div style="flex: 2;">
+      <label class="form-label">Site</label>
+      <select class="form-select" id="swSiteSelect" onchange="window.swState.selectedSite = this.value; renderSWTable()">
+        <option value="all">All Sites</option>
+      </select>
+    </div>
+    <div>
+      <button class="btn btn-primary" onclick="exportSWCSV()"><i class="fa-solid fa-file-csv"></i> Export CSV</button>
+    </div>
+  </div>
+
+  <div id="swLoading" style="text-align: center; display: none; margin: 2rem 0;">
+    <i class="fa-solid fa-circle-notch fa-spin fa-2x" style="color: var(--primary-color);"></i>
+    <p style="margin-top: 10px; color: var(--text-secondary);">Loading Register...</p>
+  </div>
+
+  <div id="swTableContainer">
+    <table style="width: 100%; border-collapse: collapse; font-size: 11px; margin-top: 1rem;" id="swTable">
+      <thead id="swTableHead">
+        <!-- Rendered dynamically -->
+      </thead>
+      <tbody id="swTableBody">
+        <!-- Rendered dynamically -->
+      </tbody>
+    </table>
+  </div>
+</div>
+<div class="modal-footer">
+  <button class="btn btn-glass" onclick="closeModal('SitewiseAttendanceRegisterModal')">Close</button>
+</div>
+
+<script>
+(function() {
+  const d = new Date();
+  const ym = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+  
+  window.swState = {
+    monthYear: ym,
+    selectedSite: 'all',
+    token: localStorage.getItem('nex_token') || '',
+    logs: [],
+    leads: [],
+    groupedData: [],
+    daysInMonth: 31
+  };
+
+  const UI = {
+    monthInput: document.getElementById('swMonthInput'),
+    siteSelect: document.getElementById('swSiteSelect'),
+    thead: document.getElementById('swTableHead'),
+    tbody: document.getElementById('swTableBody'),
+    loading: document.getElementById('swLoading'),
+    table: document.getElementById('swTable')
+  };
+
+  UI.monthInput.value = window.swState.monthYear;
+
+  const getUrl = (path) => window.appHelper.getUrl(path);
+
+  async function fetchSWData() {
+    if (!window.swState.token) return;
+    
+    UI.loading.style.display = 'block';
+    UI.table.style.display = 'none';
+
+    try {
+      const headers = { 'Authorization': `Bearer ${window.swState.token}`, 'Content-Type': 'application/json' };
+      
+      const [year, month] = window.swState.monthYear.split('-');
+      window.swState.daysInMonth = new Date(year, month, 0).getDate();
+      
+      const fromDate = `${year}-${month}-01`;
+      const toDate = new Date(year, month, 0).toISOString().split('T')[0];
+      
+      const [logRes, leadRes] = await Promise.all([
+        fetch(getUrl(`service/hr/attendance?from_date=${fromDate}&to_date=${toDate}&limit=2000`), { headers }),
+        fetch(getUrl('service/leads/list?limit=100'), { headers })
+      ]);
+
+      if (logRes.ok) {
+        const logJson = await logRes.json();
+        window.swState.logs = logJson.data || [];
+      }
+      if (leadRes.ok) {
+        const leadJson = await leadRes.json();
+        window.swState.leads = leadJson.data || [];
+        populateSWSites();
+      }
+      computeSWGroupedData();
+    } catch (e) {
+      console.error(e);
+    } finally {
+      UI.loading.style.display = 'none';
+      UI.table.style.display = 'table';
+      window.renderSWTable();
+    }
+  }
+
+  function populateSWSites() {
+    let html = '<option value="all">All Sites</option>';
+    window.swState.leads.forEach(lead => {
+      const name = lead.sender_name || lead.product_name || lead.email || 'Unknown';
+      html += `<option value="${lead._id}">${name}</option>`;
+    });
+    UI.siteSelect.innerHTML = html;
+    UI.siteSelect.value = window.swState.selectedSite;
+  }
+
+  function computeSWGroupedData() {
+    const empMap = new Map();
+    window.swState.logs.forEach(log => {
+      let rawEmpId = log.employeeId && typeof log.employeeId === 'object' ? log.employeeId._id : log.employeeId;
+      if (!rawEmpId) return;
+
+      const empName = (typeof log.employeeId === 'object' ? log.employeeId.name : log.employeeName) || 'Unknown';
+      const siteId = log.leadId && typeof log.leadId === 'object' ? log.leadId._id : log.leadId;
+      const siteName = log.site_name || 'Unknown Site';
+      
+      const key = rawEmpId + '_' + siteId;
+      
+      if (!empMap.has(key)) {
+        empMap.set(key, {
+          empName: empName,
+          siteId: siteId,
+          siteName: siteName,
+          daysArr: new Array(window.swState.daysInMonth).fill(''),
+          totalDays: 0
+        });
+      }
+      
+      const entry = empMap.get(key);
+      if (!entry) return;
+      const logDate = new Date(log.date || log.dutyStart || log.createdAt);
+      const d = logDate.getDate();
+      
+      if (log.status === 'Present' && d >= 1 && d <= window.swState.daysInMonth) {
+        let weight = log.shiftCode === 'D' || log.shiftCode === 'N' || log.shiftCode === 'G' ? 1 : 0.5;
+        let marker = weight === 1 ? 'P' : 'H';
+        
+        // If already marked, could be double duty
+        if (entry.daysArr[d - 1] === 'P') {
+           marker = '2P';
+           entry.totalDays += weight;
+        } else {
+           entry.daysArr[d - 1] = marker;
+           entry.totalDays += weight;
+        }
+      }
+    });
+
+    window.swState.groupedData = Array.from(empMap.values());
+  }
+
+  window.renderSWTable = () => {
+    let headHtml = `
+      <tr style="background: var(--surface-color-light); text-align: center;">
+        <th style="padding: 6px; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.1); position: sticky; left: 0; background: var(--surface-color-light);">Staff Name</th>
+        <th style="padding: 6px; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.1);">Site</th>
+    `;
+    for (let i = 1; i <= window.swState.daysInMonth; i++) {
+      headHtml += `<th style="padding: 6px; border-bottom: 1px solid rgba(255,255,255,0.1);">${i}</th>`;
+    }
+    headHtml += `<th style="padding: 6px; border-bottom: 1px solid rgba(255,255,255,0.1);">Total</th></tr>`;
+    UI.thead.innerHTML = headHtml;
+
+    let html = '';
+    const filtered = window.swState.selectedSite === 'all' 
+      ? window.swState.groupedData 
+      : window.swState.groupedData.filter(d => d.siteId === window.swState.selectedSite);
+
+    if (filtered.length === 0) {
+      html = `<tr><td colspan="${window.swState.daysInMonth + 3}" style="text-align:center; padding: 20px;">No attendance data for selected criteria</td></tr>`;
+    } else {
+      filtered.forEach(row => {
+        let cells = '';
+        for (let i = 0; i < window.swState.daysInMonth; i++) {
+          let val = row.daysArr[i];
+          let color = val === 'P' || val === '2P' ? '#10b981' : val === 'H' ? '#eab308' : 'inherit';
+          cells += `<td style="padding: 6px; text-align: center; border-bottom: 1px solid rgba(255,255,255,0.05); color: ${color};">${val}</td>`;
+        }
+        
+        html += `
+          <tr>
+            <td style="padding: 6px; border-bottom: 1px solid rgba(255,255,255,0.05); position: sticky; left: 0; background: var(--surface-color); font-weight: 500;">${row.empName}</td>
+            <td style="padding: 6px; border-bottom: 1px solid rgba(255,255,255,0.05);">${row.siteName}</td>
+            ${cells}
+            <td style="padding: 6px; text-align: center; border-bottom: 1px solid rgba(255,255,255,0.05); font-weight: bold; color: var(--primary-color);">${row.totalDays}</td>
+          </tr>
+        `;
+      });
+    }
+    UI.tbody.innerHTML = html;
+  };
+
+  window.exportSWCSV = () => {
+    let header = ["Staff Name", "Site"];
+    for(let i=1; i<=window.swState.daysInMonth; i++) header.push(i.toString());
+    header.push("Total");
+    
+    const rows = [header];
+    
+    const filtered = window.swState.selectedSite === 'all' 
+      ? window.swState.groupedData 
+      : window.swState.groupedData.filter(d => d.siteId === window.swState.selectedSite);
+
+    filtered.forEach(r => {
+      let rData = [r.empName, r.siteName];
+      rData.push(...r.daysArr);
+      rData.push(r.totalDays);
+      rows.push(rData);
+    });
+    
+    let csvContent = "data:text/csv;charset=utf-8," + rows.map(e => e.join(",")).join("\n");
+    var encodedUri = encodeURI(csvContent);
+    var link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `sitewise_attendance_${window.swState.monthYear}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  };
+
+  window.addEventListener('SitewiseAttendanceRegisterModal_opened', () => {
+    fetchSWData();
+  }, { once: false });
+
+})();
+</script>

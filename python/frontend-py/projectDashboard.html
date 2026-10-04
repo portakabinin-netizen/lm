@@ -1,0 +1,733 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>HiBiz - Project Dashboard</title>
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
+    />
+    <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
+    <script src="appHelper.js"></script>
+    <script src="appHeader.js"></script>
+  </head>
+  <body>
+    <!-- App Header Injection Point -->
+    <div id="app-header-container"></div>
+
+    <div class="dashboard-layout">
+      <!-- Navigation Area -->
+      <div class="dashboard-nav-container">
+      <nav class="tier1-menu">
+        <div
+          class="tier1-item"
+          data-menu="staff"
+          data-roles="corpAdmin,userAdmin"
+          onclick="toggleMenu('staff', this)"
+        >
+          <i class="fa-solid fa-users"></i> Staff
+        </div>
+        <div
+          class="tier1-item"
+          data-menu="operation"
+          data-roles="corpAdmin,userAdmin,project"
+          onclick="toggleMenu('operation', this)"
+        >
+          <i class="fa-solid fa-calendar-check"></i> Attendance
+        </div>
+        <div
+          class="tier1-item"
+          data-menu="finance"
+          data-roles="corpAdmin"
+          onclick="toggleMenu('finance', this)"
+        >
+          <i class="fa-solid fa-money-bill-wave"></i> Voucher
+        </div>
+        <div
+          class="tier1-item"
+          data-menu="report"
+          data-roles="corpAdmin,userAdmin"
+          onclick="toggleMenu('report', this)"
+        >
+          <i class="fa-solid fa-chart-bar"></i> Report
+        </div>
+        <div
+          class="tier1-item"
+          data-menu="service"
+          data-roles="corpAdmin,project"
+          onclick="toggleMenu('service', this)"
+        >
+          <i class="fa-solid fa-layer-group"></i> Services
+        </div>
+      </nav>
+
+      <!-- Tier 2 Menus -->
+      <!-- Staff Menu -->
+      <div id="menu-staff" class="tier2-menu">
+        <div
+          class="tier2-item"
+          onclick="
+            showResponseInDashboard(
+              'Add Staff',
+              'Staff management system initialized. Form ready to input target employee credentials.'
+            )
+          "
+        >
+          <i class="fa-solid fa-user-plus"></i> Add Staff
+        </div>
+        <div
+          class="tier2-item"
+          onclick="
+            showResponseInDashboard(
+              'Edit Staff',
+              'Fetch processing... Active staff directories mapped. Select a record row to overwrite entries.'
+            )
+          "
+        >
+          <i class="fa-solid fa-user-pen"></i> Edit Staff
+        </div>
+        <div
+          class="tier2-item"
+          onclick="
+            showResponseInDashboard(
+              'Linked Staff',
+              'Displaying active organizational links across sub-stations and active shifts.'
+            )
+          "
+        >
+          <i class="fa-solid fa-link"></i> Linked Staff
+        </div>
+        <div
+          class="tier2-item"
+          onclick="
+            showResponseInDashboard(
+              'Delinked Staff',
+              'Archived associations panel. Historic tracking logs loaded successfully.'
+            )
+          "
+        >
+          <i class="fa-solid fa-link-slash"></i> Delinked Staff
+        </div>
+        <div
+          class="tier2-item"
+          onclick="
+            showResponseInDashboard(
+              'Print/Share EFN',
+              'EFN compiler active. Distribution nodes configured and ready for dispatch.'
+            )
+          "
+        >
+          <i class="fa-solid fa-share-nodes"></i> Print/Share EFN
+        </div>
+      </div>
+
+      <!-- Operation (Attendance) Menu -->
+      <div id="menu-operation" class="tier2-menu">
+        <div
+          class="tier2-item"
+          onclick="
+            showResponseInDashboard(
+              'Daily Present Register',
+              'Retrieving device logs... 84 staff members checked in across active sites today.'
+            )
+          "
+        >
+          <i class="fa-solid fa-check-circle"></i> Daily Present
+        </div>
+        <div
+          class="tier2-item"
+          onclick="
+            showResponseInDashboard(
+              'Modify Records',
+              'Override clearance authenticated. Select timing cell block to manually adjust timestamp inputs.'
+            )
+          "
+        >
+          <i class="fa-solid fa-pen-to-square"></i> Modify
+        </div>
+        <div
+          class="tier2-item"
+          onclick="
+            showResponseInDashboard(
+              'Process System Batch',
+              'Processing shift calculations... Compiling final hourly tallies for current payroll cycles.'
+            )
+          "
+        >
+          <i class="fa-solid fa-rotate"></i> Process
+        </div>
+        <div
+          class="tier2-item"
+          onclick="
+            showResponseInDashboard(
+              'Database Backup',
+              'System structural archive compiled: backup secure down to root repository.'
+            )
+          "
+        >
+          <i class="fa-solid fa-cloud-arrow-down"></i> Backup
+        </div>
+      </div>
+
+      <!-- Finance (Voucher) Menu -->
+      <div id="menu-finance" class="tier2-menu">
+        <div
+          class="tier2-item"
+          onclick="
+            showResponseInDashboard(
+              'Client Receipt Ledger',
+              'Awaiting stream sync. Live ledger transactions rendering below.'
+            )
+          "
+        >
+          <i class="fa-solid fa-receipt"></i> Client Receipt
+        </div>
+        <div
+          class="tier2-item"
+          onclick="
+            showResponseInDashboard(
+              'Vendor Payments',
+              'Outward ledger balancing metrics loaded. Processing corporate disbursals.'
+            )
+          "
+        >
+          <i class="fa-solid fa-credit-card"></i> Vendor Payment
+        </div>
+        <div
+          class="tier2-item"
+          onclick="
+            showResponseInDashboard(
+              'Staff Salary Panel',
+              'Consolidated direct payment pipeline configured for active balance sheets.'
+            )
+          "
+        >
+          <i class="fa-solid fa-wallet"></i> Staff Payment
+        </div>
+        <div
+          class="tier2-item"
+          onclick="
+            showResponseInDashboard(
+              'Operating Expenses',
+              'Operational billing profiles active. Select category line to allocate current funds.'
+            )
+          "
+        >
+          <i class="fa-solid fa-cart-shopping"></i> Expenses
+        </div>
+        <div
+          class="tier2-item"
+          onclick="
+            showResponseInDashboard(
+              'Liquidity Cash Transfer',
+              'Inter-account liquid asset router active. Supply target account parameters.'
+            )
+          "
+        >
+          <i class="fa-solid fa-money-bill-transfer"></i> Cash Transfer
+        </div>
+      </div>
+
+      <!-- Report Menu -->
+      <div id="menu-report" class="tier2-menu">
+        <div
+          class="tier2-item"
+          onclick="
+            showResponseInDashboard(
+              'Petty Cash Register',
+              'Live tracking: Petty cash reserves operating within standard parameters.'
+            )
+          "
+        >
+          <i class="fa-solid fa-book"></i> My Petty Cash Book
+        </div>
+        <div
+          class="tier2-item"
+          onclick="
+            showResponseInDashboard(
+              'Attendance Run Analysis',
+              'Historical structural matrix loaded. Review compliance distributions across operations.'
+            )
+          "
+        >
+          <i class="fa-solid fa-table-cells"></i> Attendance
+        </div>
+        <div
+          class="tier2-item"
+          onclick="
+            showResponseInDashboard(
+              'Salary Accumulation Index',
+              'Calculated payroll projections generated against actual shift check-ins.'
+            )
+          "
+        >
+          <i class="fa-solid fa-calculator"></i> Salary
+        </div>
+        <div
+          class="tier2-item"
+          onclick="
+            showResponseInDashboard(
+              'Compliance & Penalty Logs',
+              'System tracking reports matching missed check-outs or shift standard deviations.'
+            )
+          "
+        >
+          <i class="fa-solid fa-triangle-exclamation"></i> Penalty
+        </div>
+      </div>
+
+      <!-- Service Menu -->
+      <div id="menu-service" class="tier2-menu">
+        <div
+          class="tier2-item"
+          onclick="
+            showResponseInDashboard(
+              'GeoTag Operations',
+              'Satellite verification protocols matching tracking terminals down to site radius coordinates.'
+            )
+          "
+        >
+          <i class="fa-solid fa-location-dot"></i> GeoTag
+        </div>
+        <div
+          class="tier2-item"
+          onclick="
+            showResponseInDashboard(
+              'Client Interaction Records',
+              'CRM tracking timeline mapping ongoing corporate stakeholder engagements.'
+            )
+          "
+        >
+          <i class="fa-solid fa-handshake"></i> ClientMeet
+        </div>
+        <div
+          class="tier2-item"
+          onclick="
+            showResponseInDashboard(
+              'Work Progress Monitoring',
+              'Real-time production indices tracking project deliverable completion parameters.'
+            )
+          "
+        >
+          <i class="fa-solid fa-person-digging"></i> WorkProgress
+        </div>
+        <div
+          class="tier2-item"
+          onclick="
+            showResponseInDashboard(
+              'Media Asset Gallery',
+              'Secure field assets and documentation snapshots safely categorized.'
+            )
+          "
+        >
+          <i class="fa-solid fa-images"></i> Gallery
+        </div>
+      </div> <!-- End dashboard-nav-container -->
+
+      <!-- Main Content Area -->
+      <main class="main-content">
+        <div class="card-modern">
+          <!-- Profile Dashboard Header Bar -->
+        <div
+          class="profile-header-bar"
+          style="
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+          "
+        >
+          <!-- Left: Corporate Workspace Profile Info -->
+          <div class="corp-profile-block" style="display: flex; align-items: center; gap: 14px">
+            <div
+              style="
+                width: 50px;
+                height: 50px;
+                border-radius: 10px;
+                background: rgba(255, 255, 255, 0.05);
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                overflow: hidden;
+                border: 1px solid rgba(255, 255, 255, 0.1);
+              "
+            >
+              <img
+                id="corpProfileImage"
+                src=""
+                alt="Corp Logo"
+                style="display: none; width: 100%; height: 100%; object-fit: cover"
+              />
+              <i
+                id="corpFallbackIcon"
+                class="fa-solid fa-building fa-lg"
+                style="color: #94a3b8"
+              ></i>
+            </div>
+            <div>
+              <div
+                id="corporateNameField"
+                style="font-weight: 700; font-size: 18px; color: #f8fafc; line-height: 1.2"
+              >
+                HiBiz Enterprise Workspace
+              </div>
+              <div id="corporatePanField" style="font-size: 11px; color: #94a3b8; margin-top: 2px">
+                PAN: Processing...
+              </div>
+            </div>
+          </div>
+
+          <!-- Right: User Credentials Info -->
+          <div class="user-profile-block" style="display: flex; align-items: center; gap: 14px">
+            <div style="text-align: right">
+              <div
+                id="userDisplayNameField"
+                style="font-weight: 600; font-size: 15px; color: #f8fafc"
+              >
+                System User
+              </div>
+              <div
+                id="userRoleField"
+                style="
+                  font-size: 11px;
+                  color: #10b981;
+                  background: rgba(16, 185, 129, 0.12);
+                  padding: 2px 8px;
+                  border-radius: 12px;
+                  display: inline-block;
+                  margin-top: 4px;
+                  font-weight: 700;
+                  text-transform: uppercase;
+                  letter-spacing: 0.5px;
+                "
+              >
+                STAFF
+              </div>
+            </div>
+            <div
+              style="
+                width: 44px;
+                height: 44px;
+                border-radius: 50%;
+                background: #475569;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                overflow: hidden;
+                border: 2px solid rgba(255, 255, 255, 0.1);
+              "
+            >
+              <img
+                id="userProfileImage"
+                src=""
+                alt="User Avatar"
+                style="display: none; width: 100%; height: 100%; object-fit: cover"
+              />
+              <i id="userFallbackIcon" class="fa-solid fa-user" style="color: #94a3b8"></i>
+            </div>
+          </div>
+        </div>
+
+        <!-- Dynamic Output Workspace Response Area -->
+        <div
+          id="workspace-response-container"
+          style="
+            display: none;
+            margin-bottom: 24px;
+            padding: 20px;
+            background: rgba(16, 185, 129, 0.04);
+            border: 1px solid rgba(16, 185, 129, 0.2);
+            border-radius: 12px;
+          "
+        >
+          <div
+            style="
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+              margin-bottom: 10px;
+            "
+          >
+            <h3
+              id="response-title"
+              style="
+                margin: 0;
+                font-size: 16px;
+                color: #34d399;
+                font-weight: 700;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+              "
+            >
+              <i class="fa-solid fa-square-poll-horizontal"></i> Response Terminal
+            </h3>
+            <button
+              onclick="
+                document.getElementById('workspace-response-container').style.display = 'none'
+              "
+              style="
+                background: transparent;
+                border: none;
+                color: #94a3b8;
+                cursor: pointer;
+                font-size: 14px;
+              "
+            >
+              <i class="fa-solid fa-xmark"></i>
+            </button>
+          </div>
+          <div
+            id="response-body"
+            style="color: #e2e8f0; font-size: 14px; line-height: 1.5; font-family: monospace"
+          >
+            ---
+          </div>
+        </div>
+
+        <!-- Inner body page display area -->
+        <div class="placeholder-content">
+          <h2 id="greetingMessage" style="margin-bottom: 8px">Welcome to Project Dashboard</h2>
+          <p style="color: #94a3b8; margin-bottom: 30px">
+            Select an option from the menu above to get started.
+          </p>
+
+          <!-- Enterprise Profiles Panel List -->
+          <div
+            class="accessible-profiles-card"
+            style="
+              background: rgba(255, 255, 255, 0.02);
+              border: 1px solid rgba(255, 255, 255, 0.06);
+              border-radius: 14px;
+              padding: 24px;
+              width: 100%;
+              max-width: 650px;
+            "
+          >
+            <h3
+              style="
+                font-size: 15px;
+                font-weight: 700;
+                margin-bottom: 18px;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                color: #f8fafc;
+              "
+            >
+              <i class="fa-solid fa-layer-group" style="color: #10b981"></i> Associated Enterprise
+              Profiles
+            </h3>
+            <div
+              id="corporateAccessContainer"
+              style="display: flex; flex-direction: column; gap: 12px"
+            >
+              <p style="color: #94a3b8; font-size: 13px">Processing access profiles...</p>
+            </div>
+          </div>
+        </div>
+        </div> <!-- End card-modern -->
+      </main>
+    </div>
+
+    <!-- Dynamic Modal Container -->
+    <div id="dynamic-modals"></div>
+
+    <script>
+      // Initialize Dashboard Engine
+      document.addEventListener('DOMContentLoaded', () => {
+        const sessionDataString = localStorage.getItem('hibiz_session');
+        let role = localStorage.getItem('hibiz_user_role');
+
+        // Silent route checkpoint checks
+        if (!role && !sessionDataString) {
+          window.location.href = 'login.html';
+          return;
+        }
+
+        // Normalize string case inputs safely
+        if (role === 'CorpAdmin') role = 'corpAdmin';
+        if (role === 'UserAdmin') role = 'userAdmin';
+        if (!role) role = 'corpAdmin';
+
+        let session = {};
+        try {
+          if (sessionDataString) {
+            session = JSON.parse(sessionDataString);
+          } else {
+            // Smooth custom context creation if explicit session cache data is blank
+            session = {
+              corporateName: 'HiBiz Main Hub',
+              corporatePAN: 'BRKPC8812N',
+              userDisplayName: 'Administrator',
+              userRole: role,
+              accessCorporate: [],
+            };
+          }
+
+          // 1. Map Corporate Metadata Elements
+          document.getElementById('corporateNameField').innerText =
+            session.corporateName || 'HiBiz Main Hub';
+          document.getElementById('corporatePanField').innerText =
+            `PAN: ${session.corporatePAN || 'N/A'}`;
+          if (session.CorpProfileImage) {
+            const corpImg = document.getElementById('corpProfileImage');
+            corpImg.src = session.CorpProfileImage;
+            corpImg.style.display = 'block';
+            document.getElementById('corpFallbackIcon').style.display = 'none';
+          }
+
+          // 2. Map Active User Profile Elements
+          document.getElementById('userDisplayNameField').innerText =
+            session.userDisplayName || 'Authorized Profile';
+          document.getElementById('greetingMessage').innerText =
+            `Welcome back, ${session.userDisplayName || 'User'}!`;
+          document.getElementById('userRoleField').innerText = role.toUpperCase();
+          if (session.userProfileImage) {
+            const userImg = document.getElementById('userProfileImage');
+            userImg.src = session.userProfileImage;
+            userImg.style.display = 'block';
+            document.getElementById('userFallbackIcon').style.display = 'none';
+          }
+
+          // 3. Build Sub-Profile List
+          const corpContainer = document.getElementById('corporateAccessContainer');
+          if (session.accessCorporate && session.accessCorporate.length > 0) {
+            corpContainer.innerHTML = '';
+            session.accessCorporate.forEach((corp) => {
+              const row = document.createElement('div');
+              row.style.cssText =
+                'display: flex; align-items: center; justify-content: space-between; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.05); padding: 12px 16px; border-radius: 10px;';
+              let imgTemplate = `<i class="fa-solid fa-building" style="color: #94a3b8;"></i>`;
+              if (corp.CorpProfileImage) {
+                imgTemplate = `<img src="${corp.CorpProfileImage}" style="width:100%; height:100%; object-fit:cover;" />`;
+              }
+              row.innerHTML = `
+                <div style="display: flex; align-items: center; gap: 12px;">
+                  <div style="width: 36px; height: 36px; background: rgba(0,0,0,0.2); border-radius: 6px; overflow: hidden; display: flex; align-items: center; justify-content: center; border: 1px solid rgba(255,255,255,0.05);">
+                    ${imgTemplate}
+                  </div>
+                  <div>
+                    <div style="font-size: 14px; font-weight: 600; color: #f8fafc;">${corp.corporateName}</div>
+                    <div style="font-size: 11px; color: #94a3b8;">PAN: ${corp.corporatePAN || 'N/A'}</div>
+                  </div>
+                </div>
+                <span style="font-size: 11px; font-weight: bold; padding: 3px 8px; border-radius: 6px; background: rgba(16, 185, 129, 0.15); color: #34d399;">Active</span>
+              `;
+              corpContainer.appendChild(row);
+            });
+          } else {
+            corpContainer.innerHTML = `<p style="color: #94a3b8; font-size: 13px;">No alternative corporate system profiles linked.</p>`;
+          }
+        } catch (err) {
+          console.error('Dashboard profile engine load warning:', err);
+        }
+
+        if (window.renderAppHeader) {
+          window.renderAppHeader({ showUserMenu: true });
+        }
+
+        // Apply Menu Action Layer Visibility
+        const tier1Items = document.querySelectorAll('.tier1-item');
+        let firstVisibleMenu = null;
+
+        tier1Items.forEach((item) => {
+          const rolesAllowed = item.getAttribute('data-roles').split(',');
+          if (rolesAllowed.includes(role)) {
+            item.classList.remove('hidden');
+            item.style.display = '';
+            if (!firstVisibleMenu) firstVisibleMenu = item;
+          } else {
+            item.classList.add('hidden');
+            item.style.display = 'none';
+          }
+        });
+
+        if (firstVisibleMenu) {
+          firstVisibleMenu.click();
+        }
+      });
+
+      // Show Selected Item Actions in Dashboard Response Terminal Window
+      function showResponseInDashboard(title, responseText) {
+        const container = document.getElementById('workspace-response-container');
+        const titleField = document.getElementById('response-title');
+        const bodyField = document.getElementById('response-body');
+
+        titleField.innerHTML = `<i class="fa-solid fa-square-poll-horizontal"></i> Workspace: ${title}`;
+        bodyField.innerHTML = `[SUCCESS] ${responseText}<br><span style="color: #94a3b8; font-size: 12px;">Timestamp: ${new Date().toLocaleTimeString()} - Status: Operational</span>`;
+        container.style.display = 'block';
+        container.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+
+      function logout() {
+        localStorage.clear();
+        window.location.href = 'login.html';
+      }
+
+      function toggleMenu(menuId, element) {
+        document.querySelectorAll('.tier1-item').forEach((el) => el.classList.remove('active'));
+        element.classList.add('active');
+        document.querySelectorAll('.tier2-menu').forEach((el) => el.classList.remove('active'));
+        const targetMenu = document.getElementById(`menu-${menuId}`);
+        if (targetMenu) {
+          targetMenu.classList.add('active');
+        }
+      }
+
+      // Safe Modal Async Injector Core
+      const loadedModals = {};
+      const dynamicModalsContainer = document.getElementById('dynamic-modals');
+
+      async function openModal(modalId) {
+        let modal = document.getElementById(modalId);
+        if (!modal) {
+          modal = document.createElement('div');
+          modal.id = modalId;
+          modal.className = 'modal-overlay';
+
+          const container = document.createElement('div');
+          container.className = 'modal-container';
+          modal.appendChild(container);
+          dynamicModalsContainer.appendChild(modal);
+
+          try {
+            const response = await fetch(`modals/${modalId}.html`);
+            if (!response.ok) throw new Error('Target layout failed to resolve');
+            const html = await response.text();
+            container.innerHTML = html;
+
+            const scripts = container.querySelectorAll('script');
+            scripts.forEach((oldScript) => {
+              const newScript = document.createElement('script');
+              Array.from(oldScript.attributes).forEach((attr) =>
+                newScript.setAttribute(attr.name, attr.value)
+              );
+              newScript.appendChild(document.createTextNode(oldScript.innerHTML));
+              oldScript.parentNode.replaceChild(newScript, oldScript);
+            });
+
+            loadedModals[modalId] = true;
+            modal.addEventListener('click', (e) => {
+              if (e.target === modal) closeModal(modalId);
+            });
+          } catch (e) {
+            console.error('Modal framework injection halt:', e);
+            return;
+          }
+        }
+        modal.classList.add('active');
+        window.dispatchEvent(new CustomEvent(`${modalId}_opened`));
+      }
+
+      function closeModal(modalId) {
+        const modal = document.getElementById(modalId);
+        if (modal) {
+          modal.classList.remove('active');
+        }
+      }
+    </script>
+  </body>
+</html>

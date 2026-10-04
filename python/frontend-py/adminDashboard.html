@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>HiBiz - Admin Dashboard</title>
+    <link rel="stylesheet" href="style.css" />
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
+    />
+    <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
+    <script src="appHelper.js"></script>
+    <script src="appHeader.js"></script>
+  </head>
+  <body>
+    <!-- App Header Injection Point -->
+    <div id="app-header-container"></div>
+
+    <div class="dashboard-layout">
+      <!-- Navigation Area -->
+      <div class="dashboard-nav-container">
+      <!-- Tier 1 Menu -->
+      <nav class="tier1-menu">
+        <div class="tier1-item" data-menu="admin" onclick="toggleMenu('admin', this)">
+          <i class="fa-solid fa-shield"></i> Admin
+        </div>
+        <div class="tier1-item" data-menu="project" onclick="toggleMenu('project', this)">
+          <i class="fa-solid fa-folder"></i> Project
+        </div>
+        <div class="tier1-item" data-menu="monitor" onclick="toggleMenu('monitor', this)">
+          <i class="fa-solid fa-video"></i> Monitor
+        </div>
+        <div class="tier1-item" data-menu="sales" onclick="toggleMenu('sales', this)">
+          <i class="fa-solid fa-arrow-trend-up"></i> Sales
+        </div>
+        <div class="tier1-item" data-menu="finance" onclick="toggleMenu('finance', this)">
+          <i class="fa-solid fa-money-bill-wave"></i> Finance
+        </div>
+      </nav>
+
+      <!-- Tier 2 Menus -->
+      
+      <!-- Admin Menu -->
+      <div id="menu-admin" class="tier2-menu">
+        <div class="tier2-item" onclick="showResponseInDashboard('Lead Analytics', 'Loading analytics...')">
+          <i class="fa-solid fa-chart-pie"></i> Analytics
+        </div>
+        <div class="tier2-item" onclick="showResponseInDashboard('Broadcast Message', 'Opening broadcast composer...')">
+          <i class="fa-solid fa-bullhorn"></i> Broadcast
+        </div>
+        <div class="tier2-item" onclick="showResponseInDashboard('Activity Feed', 'Loading activity feed...')">
+          <i class="fa-solid fa-list"></i> Activity
+        </div>
+      </div>
+
+      <!-- Project Menu -->
+      <div id="menu-project" class="tier2-menu">
+        <div class="tier2-item" onclick="window.location.href='projectDashboard.html'">
+          <i class="fa-solid fa-arrow-up-right-from-square"></i> Open Project Dashboard
+        </div>
+      </div>
+
+      <!-- Monitor Menu -->
+      <div id="menu-monitor" class="tier2-menu">
+        <div class="tier2-item" onclick="showResponseInDashboard('Staff Monitoring', 'Initializing staff tracking panel...')">
+          <i class="fa-solid fa-users-viewfinder"></i> Staff Monitor
+        </div>
+      </div>
+
+      <!-- Sales Menu -->
+      <div id="menu-sales" class="tier2-menu">
+        <div class="tier2-item" onclick="showResponseInDashboard('Sales - Engaged', 'Filtering engaged leads...')">
+          <i class="fa-regular fa-comments"></i> Engaged
+        </div>
+        <div class="tier2-item" onclick="showResponseInDashboard('Sales - Accepted', 'Filtering accepted leads...')">
+          <i class="fa-solid fa-check-double"></i> Accepted
+        </div>
+        <div class="tier2-item" onclick="showResponseInDashboard('Sales - Tax Invoice', 'Filtering tax invoices...')">
+          <i class="fa-solid fa-file-invoice-dollar"></i> Tax Invoice
+        </div>
+        <div class="tier2-item" onclick="showResponseInDashboard('Sales - Recycle', 'Filtering recycled leads...')">
+          <i class="fa-solid fa-trash"></i> Recycle
+        </div>
+      </div>
+
+      <!-- Finance Menu -->
+      <div id="menu-finance" class="tier2-menu">
+        <div class="tier2-item" onclick="showResponseInDashboard('Finance Dashboard', 'Loading finance modules...')">
+          <i class="fa-solid fa-vault"></i> Overview
+        </div>
+      </div>
+
+      </div> <!-- End dashboard-nav-container -->
+
+      <!-- Main Content Area -->
+      <main class="main-content">
+        <div class="card-modern">
+        <!-- Profile Dashboard Header Bar -->
+        <div
+          class="profile-header-bar"
+          style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; padding-bottom: 20px; border-bottom: 1px solid rgba(255, 255, 255, 0.08);"
+        >
+          <!-- Left: Corporate Workspace Profile Info -->
+          <div class="corp-profile-block" style="display: flex; align-items: center; gap: 14px">
+            <div
+              style="width: 50px; height: 50px; border-radius: 10px; background: rgba(255, 255, 255, 0.05); display: flex; align-items: center; justify-content: center; overflow: hidden; border: 1px solid rgba(255, 255, 255, 0.1);"
+            >
+              <img id="corpProfileImage" src="" alt="Corp Logo" style="display: none; width: 100%; height: 100%; object-fit: cover" />
+              <i id="corpFallbackIcon" class="fa-solid fa-building fa-lg" style="color: #94a3b8"></i>
+            </div>
+            <div>
+              <div id="corporateNameField" style="font-weight: 700; font-size: 18px; color: #f8fafc; line-height: 1.2">
+                HiBiz Enterprise Workspace
+              </div>
+              <div id="corporatePanField" style="font-size: 11px; color: #94a3b8; margin-top: 2px">
+                PAN: Processing...
+              </div>
+            </div>
+          </div>
+
+          <!-- Right: User Credentials Info -->
+          <div class="user-profile-block" style="display: flex; align-items: center; gap: 14px">
+            <div style="text-align: right">
+              <div id="userDisplayNameField" style="font-weight: 600; font-size: 15px; color: #f8fafc">
+                System Admin
+              </div>
+              <div id="userRoleField" style="font-size: 11px; color: #10b981; background: rgba(16, 185, 129, 0.12); padding: 2px 8px; border-radius: 12px; display: inline-block; margin-top: 4px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;">
+                ADMIN
+              </div>
+            </div>
+            <div style="width: 44px; height: 44px; border-radius: 50%; background: #475569; display: flex; align-items: center; justify-content: center; overflow: hidden; border: 2px solid rgba(255, 255, 255, 0.1);">
+              <img id="userProfileImage" src="" alt="User Avatar" style="display: none; width: 100%; height: 100%; object-fit: cover" />
+              <i id="userFallbackIcon" class="fa-solid fa-user" style="color: #94a3b8"></i>
+            </div>
+          </div>
+        </div>
+
+        <!-- Dynamic Output Workspace Response Area -->
+        <div id="workspace-response-container" style="display: none; margin-bottom: 24px; padding: 20px; background: rgba(16, 185, 129, 0.04); border: 1px solid rgba(16, 185, 129, 0.2); border-radius: 12px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+            <h3 id="response-title" style="margin: 0; font-size: 16px; color: #34d399; font-weight: 700; display: flex; align-items: center; gap: 8px;">
+              <i class="fa-solid fa-square-poll-horizontal"></i> Response Terminal
+            </h3>
+            <button onclick="document.getElementById('workspace-response-container').style.display = 'none'" style="background: transparent; border: none; color: #94a3b8; cursor: pointer; font-size: 14px;">
+              <i class="fa-solid fa-xmark"></i>
+            </button>
+          </div>
+          <div id="response-body" style="color: #e2e8f0; font-size: 14px; line-height: 1.5; font-family: monospace">
+            ---
+          </div>
+        </div>
+
+        <!-- Inner body page display area -->
+        <div class="placeholder-content">
+          <h2 id="greetingMessage" style="margin-bottom: 8px">Welcome to Admin Dashboard</h2>
+          <p style="color: #94a3b8; margin-bottom: 30px">
+            Select an option from the menu above to get started.
+          </p>
+        </div>
+        </div> <!-- End card-modern -->
+      </main>
+    </div>
+
+    <!-- Dynamic Modal Container -->
+    <div id="dynamic-modals"></div>
+
+    <script>
+      // Initialize Dashboard Engine
+      document.addEventListener('DOMContentLoaded', () => {
+        const sessionDataString = localStorage.getItem('hibiz_session');
+        let role = localStorage.getItem('hibiz_user_role');
+
+        if (!role && !sessionDataString) {
+          window.location.href = 'login.html';
+          return;
+        }
+
+        if (role === 'CorpAdmin') role = 'corpAdmin';
+        if (role === 'UserAdmin') role = 'userAdmin';
+        if (!role) role = 'corpAdmin';
+
+        let session = {};
+        try {
+          if (sessionDataString) {
+            session = JSON.parse(sessionDataString);
+          } else {
+            session = {
+              corporateName: 'HiBiz Main Hub',
+              corporatePAN: 'BRKPC8812N',
+              userDisplayName: 'Administrator',
+              userRole: role,
+              accessCorporate: [],
+            };
+          }
+
+          document.getElementById('corporateNameField').innerText = session.corporateName || 'HiBiz Main Hub';
+          document.getElementById('corporatePanField').innerText = `PAN: ${session.corporatePAN || 'N/A'}`;
+          if (session.CorpProfileImage) {
+            const corpImg = document.getElementById('corpProfileImage');
+            corpImg.src = session.CorpProfileImage;
+            corpImg.style.display = 'block';
+            document.getElementById('corpFallbackIcon').style.display = 'none';
+          }
+
+          document.getElementById('userDisplayNameField').innerText = session.userDisplayName || 'Authorized Profile';
+          document.getElementById('greetingMessage').innerText = `Welcome back, ${session.userDisplayName || 'Admin'}!`;
+          document.getElementById('userRoleField').innerText = role.toUpperCase();
+          if (session.userProfileImage) {
+            const userImg = document.getElementById('userProfileImage');
+            userImg.src = session.userProfileImage;
+            userImg.style.display = 'block';
+            document.getElementById('userFallbackIcon').style.display = 'none';
+          }
+        } catch (err) {
+          console.error('Dashboard profile engine load warning:', err);
+        }
+
+        if (window.renderAppHeader) {
+          window.renderAppHeader({ showUserMenu: true, title: 'HiBiz Admin' });
+        }
+
+        const tier1Items = document.querySelectorAll('.tier1-item');
+        if (tier1Items.length > 0) {
+          tier1Items[0].click();
+        }
+      });
+
+      function showResponseInDashboard(title, responseText) {
+        const container = document.getElementById('workspace-response-container');
+        const titleField = document.getElementById('response-title');
+        const bodyField = document.getElementById('response-body');
+
+        titleField.innerHTML = `<i class="fa-solid fa-square-poll-horizontal"></i> Workspace: ${title}`;
+        bodyField.innerHTML = `[SUCCESS] ${responseText}<br><span style="color: #94a3b8; font-size: 12px;">Timestamp: ${new Date().toLocaleTimeString()} - Status: Operational</span>`;
+        container.style.display = 'block';
+        container.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+
+      function toggleMenu(menuId, element) {
+        document.querySelectorAll('.tier1-item').forEach((el) => el.classList.remove('active'));
+        element.classList.add('active');
+        document.querySelectorAll('.tier2-menu').forEach((el) => el.classList.remove('active'));
+        const targetMenu = document.getElementById(`menu-${menuId}`);
+        if (targetMenu) {
+          targetMenu.classList.add('active');
+        }
+      }
+    </script>
+  </body>
+</html>

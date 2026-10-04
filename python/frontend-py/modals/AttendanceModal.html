@@ -1,0 +1,212 @@
+<div class="modal-header">
+  <h3 class="modal-title"><i class="fa-solid fa-check-circle" style="color: var(--primary-color); margin-right: 8px;"></i> Daily Present</h3>
+  <button class="modal-close" onclick="closeModal('AttendanceModal')"><i class="fa-solid fa-xmark"></i></button>
+</div>
+<div class="modal-body" style="display: flex; flex-direction: column; gap: 1rem; max-height: 70vh; overflow-y: auto; padding: 1rem;">
+  
+  <div class="form-group" style="margin-bottom: 1rem;">
+    <label class="form-label">Select Site</label>
+    <select class="form-select" id="attSiteSelect" onchange="window.attState.selectedSite = this.value; renderAttList()">
+      <option value="">Choose Site...</option>
+    </select>
+  </div>
+  
+  <div class="form-group" style="margin-bottom: 1rem;">
+    <label class="form-label">Select Shift</label>
+    <select class="form-select" id="attShiftSelect" onchange="window.attState.selectedShift = this.value">
+      <option value="D">Day Shift (D)</option>
+      <option value="N">Night Shift (N)</option>
+      <option value="G">General Shift (G)</option>
+    </select>
+  </div>
+
+  <div class="form-group" style="margin-bottom: 1rem;">
+    <div style="position: relative;">
+      <i class="fa-solid fa-search" style="position: absolute; left: 1rem; top: 50%; transform: translateY(-50%); color: var(--text-secondary);"></i>
+      <input type="text" id="attSearchInput" class="form-input" style="padding-left: 2.5rem;" placeholder="Search employee..." oninput="window.attState.searchQuery = this.value.toLowerCase(); renderAttList()" />
+    </div>
+  </div>
+
+  <hr style="border: 1px solid var(--surface-color-light); margin: 0.5rem 0;" />
+
+  <div id="attLoading" style="text-align: center; display: none;">
+    <i class="fa-solid fa-circle-notch fa-spin fa-2x" style="color: var(--primary-color);"></i>
+    <p style="margin-top: 10px; color: var(--text-secondary);">Loading...</p>
+  </div>
+
+  <h4 style="margin-bottom: 1rem;">Staff List</h4>
+  <div id="attListContainer" style="display: flex; flex-direction: column; gap: 0.5rem;">
+    <!-- Rendered dynamically -->
+  </div>
+</div>
+
+<script>
+(function() {
+  window.attState = {
+    leads: [],
+    employees: [],
+    searchQuery: '',
+    selectedSite: '',
+    selectedShift: 'D',
+    token: localStorage.getItem('nex_token') || '',
+    loading: false
+  };
+
+  const UI = {
+    siteSelect: document.getElementById('attSiteSelect'),
+    listContainer: document.getElementById('attListContainer'),
+    loading: document.getElementById('attLoading')
+  };
+
+  const getUrl = (path) => window.appHelper.getUrl(path);
+
+  async function fetchAttData() {
+    if (!window.attState.token) {
+      alert("No authentication token found. Please login.");
+      return;
+    }
+    
+    UI.loading.style.display = 'block';
+    UI.listContainer.style.display = 'none';
+
+    try {
+      const headers = { 'Authorization': \`Bearer \${window.attState.token}\`, 'Content-Type': 'application/json' };
+      
+      const [empRes, leadRes] = await Promise.all([
+        fetch(getUrl('service/hr/employees?limit=200'), { headers }),
+        fetch(getUrl('service/leads/list?limit=100'), { headers })
+      ]);
+
+      if (empRes.ok) {
+        const empJson = await empRes.json();
+        window.attState.employees = empJson.data || [];
+      }
+      if (leadRes.ok) {
+        const leadJson = await leadRes.json();
+        window.attState.leads = leadJson.data || [];
+        populateAttSites();
+      }
+    } catch (e) {
+      console.error("Error fetching attendance data", e);
+    } finally {
+      UI.loading.style.display = 'none';
+      UI.listContainer.style.display = 'flex';
+      window.renderAttList();
+    }
+  }
+
+  function populateAttSites() {
+    let html = '<option value="">Choose Site...</option>';
+    window.attState.leads.forEach(lead => {
+      const name = lead.sender_name || lead.product_name || lead.email || 'Unknown';
+      html += \`<option value="\${lead._id}">\${name}</option>\`;
+    });
+    UI.siteSelect.innerHTML = html;
+  }
+
+  window.renderAttList = () => {
+    let html = '';
+    const filtered = window.attState.employees.filter(emp => 
+      (emp.name && emp.name.toLowerCase().includes(window.attState.searchQuery)) ||
+      (emp.enrollment_no && emp.enrollment_no.toLowerCase().includes(window.attState.searchQuery))
+    );
+
+    if (filtered.length === 0) {
+      html = \`<div style="text-align:center; color: var(--text-secondary); padding: 1rem;">No staff found</div>\`;
+    } else {
+      filtered.forEach(emp => {
+        let initial = (emp.name || 'W').substring(0,2).toUpperCase();
+        html += \`
+          <div style="background: var(--surface-color-light); padding: 1rem; border-radius: 8px; display: flex; justify-content: space-between; align-items: center;">
+            <div style="display: flex; align-items: center; gap: 12px;">
+              <div style="width: 40px; height: 40px; border-radius: 20px; background: rgba(16, 185, 129, 0.1); color: var(--primary-color); display: flex; align-items: center; justify-content: center; font-weight: bold;">
+                \${emp.photo_url ? \`<img src="\${emp.photo_url}" style="width:100%;height:100%;border-radius:20px;object-fit:cover;" />\` : initial}
+              </div>
+              <div>
+                <div style="font-weight: 600;">\${emp.name}</div>
+                <div style="font-size: 12px; color: var(--text-secondary);">\${emp.enrollment_no ? 'EFN: ' + emp.enrollment_no : 'Staff'}</div>
+              </div>
+            </div>
+            <div>
+              <button class="btn btn-primary" style="padding: 6px 12px; font-size: 12px;" onclick="markPresent('\${emp._id}')">Mark Present</button>
+            </div>
+          </div>
+        \`;
+      });
+    }
+    UI.listContainer.innerHTML = html;
+  };
+
+  window.markPresent = async (empId) => {
+    if (!window.attState.selectedSite) {
+      alert("Please select a Site first!");
+      return;
+    }
+    
+    const lead = window.attState.leads.find(l => l._id === window.attState.selectedSite);
+    const emp = window.attState.employees.find(e => e._id === empId);
+    
+    // Check Rate Lookup
+    try {
+      const headers = { 'Authorization': \`Bearer \${window.attState.token}\`, 'Content-Type': 'application/json' };
+      const rateRes = await fetch(getUrl(\`service/hr/rate-lookup?employeeId=\${empId}&leadId=\${window.attState.selectedSite}\`), { headers });
+      
+      let rate = null;
+      if (rateRes.ok) {
+        const rateJson = await rateRes.json();
+        if (rateJson.data && rateJson.data.daily) {
+          rate = rateJson.data.daily;
+        }
+      }
+
+      if (rate === null) {
+        // Need to ask for rate
+        const monthlyPrompt = prompt(\`Set Monthly Salary for \${emp.name} at \${lead.sender_name || 'Site'}:\`);
+        if (!monthlyPrompt || isNaN(monthlyPrompt)) {
+          alert("Valid monthly rate required to mark attendance.");
+          return;
+        }
+        const m = parseFloat(monthlyPrompt);
+        const daysInMonth = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate();
+        rate = +(m / daysInMonth).toFixed(2);
+      }
+
+      // Post Attendance
+      const payload = {
+        employeeId: empId,
+        leadId: window.attState.selectedSite,
+        clientId: lead.clientId || null,
+        status: 'Present',
+        dutyLevel: 1,
+        rate: rate,
+        date: new Date().toISOString(),
+        dutyStart: new Date().toISOString(),
+        shiftCode: window.attState.selectedShift,
+        site_name: lead.sender_name || lead.product_name || 'Unknown Site'
+      };
+
+      const postRes = await fetch(getUrl('service/hr/attendance'), {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payload)
+      });
+
+      if (postRes.ok) {
+        alert(\`Attendance saved for \${emp.name}!\`);
+      } else {
+        const err = await postRes.json();
+        alert(\`Error: \${err.message || 'Failed to save attendance'}\`);
+      }
+    } catch (e) {
+      console.error(e);
+      alert("Network error. Could not mark attendance.");
+    }
+  };
+
+  // Run on open
+  window.addEventListener('AttendanceModal_opened', () => {
+    fetchAttData();
+  }, { once: false });
+
+})();
+</script>

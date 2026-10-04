@@ -42,7 +42,7 @@ echo.
 echo   1)  Create Release APK
 echo   2)  Update GitHub  ^(git push^)
 echo   3)  All  ^(Release APK + GitHub push^)
-echo   4)  Run Python Backend   ^(backend-py  port 5002^)
+echo   4)  Run Python Backend   ^(python/backend-py  port 5002^)
 echo   5)  Run Frontend         ^(npx expo start -c^)
 echo   6)  Build + Install APK on ALL connected devices
 echo   7)  Emulator  ^(Build APK + Start Metro + Boot Emulator + Install + Launch^)
@@ -121,14 +121,14 @@ REM  4 — Python FastAPI backend  (new tab, non-blocking)
 REM ================================================================
 :RUN_PYTHON
 echo.
-echo  [4] Starting Python backend (backend-py) on port 5002...
+echo  [4] Starting Python backend (python/backend-py) on port 5002...
 echo.
 for /f "tokens=5" %%A in ('netstat -ano ^| findstr ":5002 " ^| findstr "LISTENING" 2^>nul') do taskkill /F /PID %%A >nul 2>&1
 set "SH_WIN=%SCRIPTS_WIN%\run_python.sh"
 set "SH_BASH=%SCRIPTS_BASH%/run_python.sh"
 > "%SH_WIN%" echo #!/usr/bin/env bash
 >> "%SH_WIN%" echo set -e
->> "%SH_WIN%" echo cd '%TARGET_DIR%/backend-py'
+>> "%SH_WIN%" echo cd '%TARGET_DIR%/python/backend-py'
 >> "%SH_WIN%" echo echo '==> Activating Python venv...'
 >> "%SH_WIN%" echo source venv/Scripts/activate 2>/dev/null ^|^| source venv/bin/activate 2>/dev/null ^|^| true
 >> "%SH_WIN%" echo echo '==> Starting FastAPI with uvicorn on port 5002...'

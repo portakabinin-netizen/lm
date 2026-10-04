@@ -1,0 +1,48 @@
+<div class="modal-header">
+  <h3 class="modal-title"><i class="fa-solid fa-triangle-exclamation" style="color: var(--primary-color); margin-right: 8px;"></i> Penalty Register</h3>
+  <button class="modal-close" onclick="closeModal('DynamicModal')"><i class="fa-solid fa-xmark"></i></button>
+</div>
+<div class="modal-body">
+  <div style="display: flex; gap: 10px; margin-bottom: 1rem;">
+    <div style="flex: 1;">
+      <label class="form-label">Month</label>
+      <input type="month" class="form-input" value="2026-07" />
+    </div>
+    <div style="flex: 2;">
+      <label class="form-label">Site</label>
+      <select class="form-select">
+        <option value="all">All Sites</option>
+        <option value="site1">Main Office</option>
+      </select>
+    </div>
+  </div>
+
+  <table style="width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 1rem;">
+    <thead>
+      <tr style="background: var(--surface-color-light); text-align: left;">
+        <th style="padding: 8px; border-bottom: 1px solid rgba(255,255,255,0.1);">Staff Name</th>
+        <th style="padding: 8px; border-bottom: 1px solid rgba(255,255,255,0.1);">Date</th>
+        <th style="padding: 8px; border-bottom: 1px solid rgba(255,255,255,0.1);">Reason</th>
+        <th style="padding: 8px; border-bottom: 1px solid rgba(255,255,255,0.1);">Amount</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td style="padding: 8px; border-bottom: 1px solid rgba(255,255,255,0.05);">John Doe</td>
+        <td style="padding: 8px; border-bottom: 1px solid rgba(255,255,255,0.05);">02-07-2026</td>
+        <td style="padding: 8px; border-bottom: 1px solid rgba(255,255,255,0.05);">Late Arrival</td>
+        <td style="padding: 8px; border-bottom: 1px solid rgba(255,255,255,0.05); color: #ef4444; font-weight: bold;">₹100</td>
+      </tr>
+      <tr>
+        <td style="padding: 8px; border-bottom: 1px solid rgba(255,255,255,0.05);">Jane Smith</td>
+        <td style="padding: 8px; border-bottom: 1px solid rgba(255,255,255,0.05);">04-07-2026</td>
+        <td style="padding: 8px; border-bottom: 1px solid rgba(255,255,255,0.05);">Uniform Violation</td>
+        <td style="padding: 8px; border-bottom: 1px solid rgba(255,255,255,0.05); color: #ef4444; font-weight: bold;">₹500</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+<div class="modal-footer">
+  <button class="btn btn-glass" onclick="closeModal('DynamicModal')">Close</button>
+  <button class="btn btn-primary" onclick="alert('Add New Penalty')"><i class="fa-solid fa-plus" style="margin-right: 6px;"></i> Add Penalty</button>
+</div>

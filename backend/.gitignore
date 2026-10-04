@@ -1,0 +1,96 @@
+# ============================================================
+#  BLOCKED FOLDERS - Never push these to GitHub
+# ============================================================
+
+# Local scratch/temp work - NEVER push
+scratch/
+scripts/
+
+# ============================================================
+#  Node / NPM
+# ============================================================
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# Diagnostic reports
+report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage
+lib-cov
+coverage
+*.lcov
+.nyc_output
+
+# Misc tooling
+.grunt
+bower_components
+.lock-wscript
+build/Release
+
+# Dependency directories
+node_modules/
+jspm_packages/
+web_modules/
+
+# TypeScript cache
+*.tsbuildinfo
+
+# Cache files
+.npm
+.eslintcache
+.stylelintcache
+.node_repl_history
+*.tgz
+.yarn-integrity
+.cache
+.parcel-cache
+
+# ============================================================
+#  Environment / Secrets - NEVER push
+# ============================================================
+.env
+.env.*
+.env.example
+
+# ============================================================
+#  Framework build outputs
+# ============================================================
+.next
+out
+.nuxt
+dist
+.svelte-kit/
+**/.vitepress/dist
+**/.vitepress/cache
+.docusaurus
+.vuepress/dist
+.temp
+.serverless/
+.fusebox/
+.dynamodb/
+.firebase/
+.tern-port
+.vscode-test
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+
+# Yarn v3
+.pnp.*
+.yarn/*
+.yarn/patches
+.yarn/plugins
+.yarn/releases
+.yarn/sdks
+.yarn/versions
