@@ -1,5 +1,40 @@
 env: load .env
-env: export EXPO_PUBLIC_API_KEY EXPO_PUBLIC_API_KEY1 EXPO_PUBLIC_GOOGLE_MAPS_API_KEY GEOLOC_PUBLIC_API_KEY
+env: export APP_NAME CLOUDINARY_API_KEY CLOUDINARY_API_SECRET CLOUDINARY_CLOUD_NAME EXPO_PUBLIC_API_KEY EXPO_PUBLIC_PROD_API_URL JWT_EXPIRE JWT_SECRET MONGO_URI MSG91_API_KEY MSG91_TEMPLATE_ID MSG91_WHATSAPP_TEMPLATE_ID MSG_SIMULATION PHONE_NUMBER_ID PORT TWILIO_ACCOUNT_SID TWILIO_AUTH_TOKEN TWILIO_WHATSAPP_NUMBER VERIFY_SERVICE_SID WHATSAPP_SANDBOX_OVERRIDE WHATSAPP_TOKEN WHATSAPP_URL WhatsApp_Business_Account_ID
 Starting project at C:\hipk
 Starting Metro Bundler
 
+The following packages should be updated for best compatibility with the installed expo version:
+  expo-build-properties@55.0.14 - expected version: ~55.0.18
+  expo-camera@55.0.19 - expected version: ~55.0.23
+  expo-contacts@55.0.14 - expected version: ~55.0.18
+  expo-crypto@55.0.15 - expected version: ~55.0.19
+  expo-document-picker@55.0.13 - expected version: ~55.0.17
+  expo-gl@55.0.14 - expected version: ~55.0.18
+  expo-haptics@55.0.14 - expected version: ~55.0.18
+  expo-image-manipulator@55.0.17 - expected version: ~55.0.21
+  expo-image-picker@55.0.20 - expected version: ~55.0.24
+  expo-intent-launcher@55.0.12 - expected version: ~55.0.16
+  expo-linear-gradient@55.0.14 - expected version: ~55.0.18
+  expo-linking@55.0.15 - expected version: ~55.0.17
+  expo-location@55.1.10 - expected version: ~55.1.14
+  expo-mail-composer@55.0.14 - expected version: ~55.0.18
+  expo-print@55.0.15 - expected version: ~55.0.19
+  expo-router@55.0.16 - expected version: ~55.0.18
+  expo-sms@55.0.14 - expected version: ~55.0.18
+  expo-sqlite@55.0.16 - expected version: ~55.0.20
+  expo-system-ui@55.0.18 - expected version: ~55.0.22
+  expo-task-manager@55.0.16 - expected version: ~55.0.20
+  expo-updates@55.0.24 - expected version: ~55.0.33
+  expo-web-browser@55.0.16 - expected version: ~55.0.20
+  react-native@0.83.6 - expected version: 0.83.10
+Your project may not work correctly until you install the expected versions of the packages.
+Waiting on http://localhost:8081
+Logs for your project will appear below.
+Android node_modules\expo-router\entry.js ░░░░░░░░░░░░░░░░  0.0% (0/1)
+Android Bundled 2141ms node_modules\expo-router\entry.js (2310 modules)
+ WARN  Route "./myscript/dashboards/getDataProcees.tsx" is missing the required default export. Ensure a React component is exported as default.
+ WARN  Route "./myscript/dashboards/multiurl.tsx" is missing the required default export. Ensure a React component is exported as default.
+ WARN  Route "./myscript/dashboards/styles/TileStyles.ts" is missing the required default export. Ensure a React component is exported as default.
+ WARN  Route "./myscript/dashboards/styles/styles.ts" is missing the required default export. Ensure a React component is exported as default.
+ WARN  Route "./myscript/profileUpdate.tsx" is missing the required default export. Ensure a React component is exported as default.
+ WARN  🔄 Switched to fallback: http://10.0.2.2:5002/api/

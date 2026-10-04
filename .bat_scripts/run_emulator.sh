@@ -21,6 +21,9 @@ if [ -z "$RUNNING" ]; then
 else
 fi
 
+"$ADB" shell settings put global verifier_verify_adb_installs 0 || true
+"$ADB" shell settings put global package_verifier_enable 0 || true
+
 node restore-native.js
 cd android
 ./gradlew assembleDebug --no-daemon "-Dorg.gradle.jvmargs=-Xmx4096m"
@@ -37,3 +40,4 @@ if [ -n "$MAIN" ]; then
 else
   "$ADB" shell monkey -p "$PACKAGE_NAME" -c android.intent.category.LAUNCHER 1
 fi
+npx expo start -c

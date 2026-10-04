@@ -102,7 +102,7 @@ const LoginScreen = () => {
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ flex: 1 }}>
         <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
           <View style={styles.header}>
-            <Image source={require("../../assets/images/icon.png")} style={styles.logo} />
+            <Image source={require("../../assets/icon.png")} style={styles.logo} />
             <Text style={styles.headerTitle}>MIS Report Management</Text>
           </View>
           

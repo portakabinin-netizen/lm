@@ -166,7 +166,7 @@ const UserRegistration = () => {
         <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
           
           <View style={styles.header}>
-            <Image source={require("../../assets/images/icon.png")} style={styles.logo} />
+            <Image source={require("../../assets/icon.png")} style={styles.logo} />
             <Text style={styles.headerTitle}>Lead Manager</Text>
             <Text style={styles.headerSubtitle}>Create Your Account</Text>
           </View>
