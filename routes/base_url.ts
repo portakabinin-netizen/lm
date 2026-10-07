@@ -1,11 +1,11 @@
-import Constants from 'expo-constants';
-import { Platform } from 'react-native';
+import Constants from "expo-constants";
+import { Platform } from "react-native";
 
 declare const __DEV__: boolean;
 
 const normalizeApiUrl = (url: string) => {
-  const trimmed = url.trim().replace(/\/+$/, '');
-  return trimmed.endsWith('/api') ? `${trimmed}/` : `${trimmed}/api/`;
+  const trimmed = url.trim().replace(/\/$/, "");
+  return trimmed.endsWith("/api") ? `${trimmed}/` : `${trimmed}/api/`;
 };
 
 // 1. Safe Host Detection
@@ -14,69 +14,61 @@ const getDevHost = () => {
     Constants.expoConfig?.hostUri ||
     (Constants as any).manifest2?.extra?.expoClient?.hostUri ||
     (Constants as any).manifest?.debuggerHost;
-  if (!uri) return '';
-  return uri.split(':')[0];
+  if (!uri) return "";
+  return uri.split(":")[0];
 };
 
 const expoHost = getDevHost();
 
-// 2. Dynamic discovery of backend API URL from process.env / .env
-const getDynamicConfiguredApiUrl = (): string => {
+// Helper to collect all dynamic env sources (Expo extra, manifests, process.env)
+const getEnvSources = (): Record<string, any>[] => {
   const sources: any[] = [
-    typeof process !== 'undefined' && process?.env ? process.env : null,
+    Constants?.expoConfig?.extra?.expoPublicEnv,
     Constants?.expoConfig?.extra,
+    (Constants as any)?.manifest?.extra?.expoPublicEnv,
     (Constants as any)?.manifest?.extra,
+    (Constants as any)?.manifest2?.extra?.expoClient?.extra?.expoPublicEnv,
     (Constants as any)?.manifest2?.extra?.expoClient?.extra,
+    typeof process !== 'undefined' && process?.env ? process.env : null,
   ];
 
+  return sources.filter((s): s is Record<string, any> => Boolean(s && typeof s === 'object'));
+};
+
+// 2. Dynamic discovery: read all API URLs from .env / Expo config and store in an array
+export const getConfiguredApiUrls = (): string[] => {
   const urlPattern = /^https?:\/\//i;
-  const envEntries: [string, string][] = [];
-  const seenKeys = new Set<string>();
+  const urls: string[] = [];
+  const seen = new Set<string>();
 
-  // Loop through all sources to collect environment variables
-  for (let s = 0; s < sources.length; s++) {
-    const src = sources[s];
-    if (src && typeof src === 'object') {
-      const target =
-        src.expoPublicEnv && typeof src.expoPublicEnv === 'object'
-          ? { ...src, ...src.expoPublicEnv }
-          : src;
+  for (const src of getEnvSources()) {
+    const target =
+      src.expoPublicEnv && typeof src.expoPublicEnv === 'object'
+        ? { ...src, ...src.expoPublicEnv }
+        : src;
 
-      const entries = Object.entries(target);
-      // Run loop up to the number of variables
-      for (let i = 0; i < entries.length; i++) {
-        const [key, val] = entries[i];
-        if (
-          typeof val === 'string' &&
-          val.trim() &&
-          urlPattern.test(val.trim()) &&
-          !seenKeys.has(key)
-        ) {
-          seenKeys.add(key);
-          envEntries.push([key, val.trim()]);
+    for (const [key, val] of Object.entries(target)) {
+      if (
+        (key.startsWith('EXPO_PUBLIC_API_URL') || key.startsWith('API_URL')) &&
+        typeof val === 'string' &&
+        val.trim() &&
+        urlPattern.test(val.trim())
+      ) {
+        const normalized = normalizeApiUrl(val.trim());
+        if (!seen.has(normalized)) {
+          seen.add(normalized);
+          urls.push(normalized);
         }
       }
     }
   }
 
-  // Find key starting with EXPO_PUBLIC_API_URL_ for api host name
-  for (let i = 0; i < envEntries.length; i++) {
-    const [key, val] = envEntries[i];
-    if (key.startsWith('EXPO_PUBLIC_API_URL_')) {
-      return val;
-    }
-  }
-
-  return '';
+  return urls;
 };
 
-const configuredApiUrl = getDynamicConfiguredApiUrl();
-const configuredApiHost = process.env.EXPO_PUBLIC_API_HOST;
-const configuredApiPort = process.env.EXPO_PUBLIC_API_PORT || '5001';
-const webHost =
-  Platform.OS === 'web' && typeof window !== 'undefined' ? window.location.hostname : '';
-const fallbackHost = Platform.OS === 'android' ? '10.0.2.2' : 'localhost';
-const resolvedHost = configuredApiHost || webHost || expoHost || fallbackHost;
+// Array of all configured API URLs extracted dynamically from .env
+export const configuredApiUrls: string[] = getConfiguredApiUrls();
+export const api_urls: string[] = configuredApiUrls;
 
 export const isLocalMachine = Boolean(
   (typeof __DEV__ !== 'undefined' && __DEV__) ||
@@ -87,7 +79,13 @@ export const isLocalMachine = Boolean(
       window.location.hostname.endsWith('.local')))
 );
 
+const configuredApiHost = process.env.EXPO_PUBLIC_API_HOST;
+const configuredApiPort = process.env.EXPO_PUBLIC_API_PORT || '5002';
+const webHost = Platform.OS === 'web' && typeof window !== 'undefined' ? window.location.hostname : '';
+const fallbackHost = Platform.OS === 'android' ? '10.0.2.2' : 'localhost';
+const resolvedHost = configuredApiHost || webHost || expoHost || fallbackHost;
+
 export const local_api_url = `http://${resolvedHost}:${configuredApiPort}/api/`;
-export const api_url = configuredApiUrl ? normalizeApiUrl(configuredApiUrl) : '';
+export const api_url = configuredApiUrls.length > 0 ? configuredApiUrls[0] : '';
 
 export default api_url;

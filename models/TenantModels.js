@@ -81,7 +81,6 @@ const employmentEntrySchema = new mongoose.Schema(
       default: null,
     },
     active: { type: Boolean, default: true }, // true = currently active employment period
-    exemptDays: { type: [String], default: ['Sun'] },
     endDate: { type: Date }, // Populated when this period ends
     notes: { type: String, trim: true }, // Optional reason / remark for change
     locationId: { type: mongoose.Schema.Types.ObjectId },
@@ -114,11 +113,19 @@ const employeeSchema = new mongoose.Schema(
     shiftGroupName: { type: String, enum: ['MANG', 'DaNi', null], default: null },
     selectedShift: { type: String, trim: true },
     monthlyRate: { type: Number, default: 0 },
-    exemptDays: { type: [String], default: ['Sun'] },
     locationId: { type: mongoose.Schema.Types.ObjectId },
   },
   { timestamps: true }
 );
+
+// 🚀 Database Indexes for Employees
+employeeSchema.index({ active: 1 });
+employeeSchema.index({ locationId: 1 });
+employeeSchema.index({ user_id: 1 });
+employeeSchema.index({ mobile: 1 });
+employeeSchema.index({ email: 1 });
+employeeSchema.index({ ledgerId: 1 });
+employeeSchema.index({ enrollment_no: 1 });
 
 // 5. Leads (CRM)
 const leadSchema = new mongoose.Schema(
@@ -143,32 +150,8 @@ const leadSchema = new mongoose.Schema(
           action: { type: String },
           byUser: { type: String },
           date: { type: Date, default: Date.now },
-          meetingCode: { type: String },
-          personMet: { type: String },
-          clientMobile: { type: String },
-          meetingType: { type: String },
-          summary: { type: String },
-          complaintCategory: { type: String },
-          complaintDetails: { type: String },
-          resolution: { type: String },
-          promisedDate: { type: String },
-          selfieUrl: { type: String },
-          isVerified: { type: Boolean, default: false },
-          verifiedAt: { type: Date },
-          geofence: {
-            inside: { type: Boolean },
-            distanceMeters: { type: Number },
-            radiusMeters: { type: Number },
-            bypassed: { type: Boolean },
-          },
-          location: {
-            lat: { type: Number },
-            long: { type: Number },
-            address: { type: String },
-          },
-          metadata: { type: mongoose.Schema.Types.Mixed },
         },
-        { _id: true, strict: false }
+        { _id: false }
       ),
     ],
     locationId: { type: mongoose.Schema.Types.ObjectId }, // Link to ProfileMaster.locations._id
@@ -194,7 +177,6 @@ const leadSchema = new mongoose.Schema(
           billRate: { type: Number, default: 0 }, // Amount charged to client per worker per shift
           salaryRate: { type: Number, default: 0 }, // Amount paid to worker per shift
           active: { type: Boolean, default: true },
-          exemptDays: { type: [String], default: ['Sun'] }, // e.g. ['Sun'] or ['Sun', 'Sat']
         },
         { _id: true }
       ),
@@ -207,6 +189,8 @@ leadSchema.index({ locationId: 1 });
 leadSchema.index({ status: 1 });
 leadSchema.index({ ledgerId: 1 });
 leadSchema.index({ ledgerIds: 1 });
+leadSchema.index({ generated_date: -1 });
+leadSchema.index({ sender_mobile: 1 });
 
 // 6. Attendance
 // Shift Reference — Group MANG (8hr):
@@ -223,7 +207,7 @@ const attendanceSchema = new mongoose.Schema(
     employeeType: {
       type: String,
       required: true,
-      enum: ['Employees', 'userMaster', 'Staff'],
+      enum: ['Employees', 'userMaster'],
       default: 'Employees',
     },
     startLat: { type: Number },
@@ -232,11 +216,7 @@ const attendanceSchema = new mongoose.Schema(
     siteLong: { type: Number },
     role: { type: String, trim: true },
     date: { type: Date, required: true },
-    status: {
-      type: String,
-      enum: ['Present', 'Absent', 'Leave', 'Paid Leave', 'Weekly Off', 'P', 'W', 'L', 'A', 'NR', 'No Reliever'],
-      default: 'Present',
-    },
+    status: { type: String, enum: ['Present', 'Absent', 'Leave'], default: 'Present' },
     dutyLevel: { type: Number, default: 1 },
     rate: { type: Number, default: 0 },
     site_name: { type: String, trim: true },
@@ -268,14 +248,10 @@ const attendanceSchema = new mongoose.Schema(
     isDoubleShift: { type: Boolean, default: false }, // true if worker continued into next shift
     previousShiftId: { type: mongoose.Schema.Types.ObjectId, ref: 'Attendance', default: null }, // links to prior shift record
     doubleShiftNotified: { type: Boolean, default: false }, // notification sent to supervisors?
-    isExemptDay: { type: Boolean, default: false }, // true if marked on scheduled weekly off / exempt day
-    assignedExemptDays: { type: [String], default: [] }, // snapshot of assigned weekly off days (e.g. ['Sun'])
 
     // ── Device & Marked By ──
     markedByDevice: { type: Boolean, default: true }, // true if user marked themselves
     markedByUserName: { type: String, trim: true }, // name of supervisor if markedByDevice is false
-    isPaid: { type: Boolean, default: false },
-    isLocked: { type: Boolean, default: false },
 
     // ── Duty Toggle Fields ──
     dutyStartScheduled: { type: Date },
@@ -297,7 +273,7 @@ const attendanceSchema = new mongoose.Schema(
         address: { type: String },
         accuracy: { type: Number },
         speed: { type: Number },
-        type: { type: String },
+        type: { type: String, enum: ['start', 'end', 'tick', 'siteVisit'] },
         timestamp: { type: Date, default: Date.now }, // Renamed from 'time' for clarity
       },
     ],
@@ -307,12 +283,17 @@ const attendanceSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-attendanceSchema.index({ employeeId: 1, date: -1 });
-attendanceSchema.index({ dutyStart: -1 });
-attendanceSchema.index({ dutyEnd: 1 });
+// 🚀 Database Indexes for Attendance
 attendanceSchema.index({ date: -1 });
-attendanceSchema.index({ siteId: 1 });
-
+attendanceSchema.index({ employeeId: 1, date: -1 });
+attendanceSchema.index({ dutyEnd: 1 });
+attendanceSchema.index({ date: -1, dutyEnd: 1 });
+attendanceSchema.index({ employeeId: 1, dutyEnd: 1 });
+attendanceSchema.index({ locationId: 1, date: -1 });
+attendanceSchema.index({ leadId: 1 });
+attendanceSchema.index({ clientId: 1 });
+attendanceSchema.index({ status: 1 });
+attendanceSchema.index({ employeeType: 1 });
 
 // 7. Accounting
 const groupSchema = new mongoose.Schema(
@@ -331,7 +312,6 @@ const groupSchema = new mongoose.Schema(
 const ledgerSchema = new mongoose.Schema(
   {
     ledgerName: { type: String, required: true, trim: true },
-    groupName: { type: String, trim: true },
     ledgerGroupId: { type: mongoose.Schema.Types.ObjectId, ref: 'Groups', required: true },
 
     // Balances
@@ -362,6 +342,9 @@ ledgerSchema.index({ ledgerName: 1 });
 ledgerSchema.index({ ledgerGroupId: 1 });
 ledgerSchema.index({ refId: 1 });
 ledgerSchema.index({ refType: 1 });
+ledgerSchema.index({ ledgerCode: 1 });
+ledgerSchema.index({ isActive: 1 });
+ledgerSchema.index({ locationId: 1 });
 
 const voucherEntrySchema = new mongoose.Schema(
   {
@@ -438,6 +421,9 @@ voucherSchema.pre('save', function (next) {
 
 voucherSchema.index({ date: -1 });
 voucherSchema.index({ 'entries.ledgerId': 1 });
+voucherSchema.index({ 'entries.ledgerId': 1, date: -1 });
+voucherSchema.index({ voucherType: 1, date: -1 });
+voucherSchema.index({ locationId: 1, date: -1 });
 
 // 8. Commercial Documents
 const {
@@ -472,19 +458,13 @@ const taxInvoiceSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// 9. Messages & Groups (Chat)
-const chatGroupSchema = new mongoose.Schema({
-  name: { type: String, required: true, trim: true },
-  members: [{ type: String, required: true }], // Array of user IDs
-  createdBy: { type: String, required: true },
-}, { timestamps: true });
-
+// 9. Messages (Chat)
 const messageSchema = new mongoose.Schema(
   {
     senderName: { type: String, required: true },
     senderId: { type: String }, // ID of sender
     text: { type: String },
-    type: { type: String, enum: ['text', 'advance', 'leave', 'uniform', 'media', 'late_duty_request'], default: 'text' },
+    type: { type: String, enum: ['text', 'advance', 'leave', 'uniform', 'media'], default: 'text' },
     status: { type: String, enum: ['unseen', 'seen'], default: 'unseen' },
     mediaUrl: { type: String }, // URL (Cloudinary or Local)
     mediaType: { type: String }, // 'image', 'audio', 'video'
@@ -492,29 +472,7 @@ const messageSchema = new mongoose.Schema(
     mediaPath: { type: String }, // Path on device or server
     isCloudDeleted: { type: Boolean, default: false }, // Flag for cloud removal
     isOneToOne: { type: Boolean, default: false },
-    isGroup: { type: Boolean, default: false }, // Explicit group flag
-    groupId: { type: String }, // Link to ChatGroups
     receiverId: { type: String }, // If one-to-one
-    seenBy: [{ type: String }], // Array of userIds who have seen this message
-    location: {
-      lat: { type: Number },
-      long: { type: Number },
-      address: { type: String }
-    },
-    contact: {
-      name: { type: String },
-      mobile: { type: String },
-      role: { type: String }
-    },
-    // New fields for Leave, Advance & Late Duty Requests
-    requestStatus: { type: String, enum: ['pending', 'passed', 'rejected', 'allowed', 'denied'], default: 'pending' },
-    requestType: { type: String }, // e.g. 'Periodical Leave', 'Cash Advance', 'Late Duty Start'
-    fromDate: { type: Date },
-    toDate: { type: Date },
-    amount: { type: Number },
-    approvedAmount: { type: Number },
-    remarks: { type: String },
-    attendancePayload: { type: Object }
   },
   { timestamps: true }
 );
@@ -540,23 +498,13 @@ const siteClientCheckSchema = new mongoose.Schema(
  * Factory function to bind models to a tenant connection
  */
 const getTenantModels = (connection) => {
-  if (connection.__cachedTenantModels) {
-    return connection.__cachedTenantModels;
-  }
-
-  const userMasterSchema = require('./userMaster').schema;
-  const userMasterModel = connection.models.userMaster || connection.model('userMaster', userMasterSchema);
-  const staffModel = connection.models.Staff || connection.model('Staff', userMasterSchema);
-
-  const models = {
+  return {
     ProfileMaster:
       connection.models.ProfileMaster || connection.model('ProfileMaster', profileMasterSchema),
     Categories: connection.models.Categories || connection.model('Categories', categorySchema),
     Products: connection.models.Products || connection.model('Products', productSchema),
     Parties: connection.models.Parties || connection.model('Parties', partySchema),
     Employees: connection.models.Employees || connection.model('Employees', employeeSchema),
-    userMaster: userMasterModel,
-    Staff: staffModel,
     Leads: connection.models.Leads || connection.model('Leads', leadSchema),
     Attendance: connection.models.Attendance || connection.model('Attendance', attendanceSchema),
     Groups: connection.models.Groups || connection.model('Groups', groupSchema),
@@ -568,7 +516,6 @@ const getTenantModels = (connection) => {
     TaxInvoices: connection.models.TaxInvoices || connection.model('TaxInvoices', taxInvoiceSchema),
     Counters: connection.models.Counters || connection.model('Counters', counterSchema),
     Messages: connection.models.Messages || connection.model('Messages', messageSchema),
-    ChatGroups: connection.models.ChatGroups || connection.model('ChatGroups', chatGroupSchema),
     StaffMonitoring:
       connection.models.StaffMonitoring ||
       connection.model('StaffMonitoring', staffMonitoringSchema),
@@ -576,9 +523,6 @@ const getTenantModels = (connection) => {
       connection.models.SiteClientCheck ||
       connection.model('SiteClientCheck', siteClientCheckSchema),
   };
-
-  connection.__cachedTenantModels = models;
-  return models;
 };
 
 module.exports = { getTenantModels };

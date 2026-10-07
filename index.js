@@ -19,24 +19,15 @@ const uploadRouter = require("./routes/uploadRouter");
 const UserCorpRouter = require("./routes/UserCorpRouter");
 const FinanceRouter = require("./routes/FinanceRouter");
 const dbConnector = require("./utils/dbConnector");
-const WorkerLocation = require("./models/WorkerLocation");
 const path = require("path");
-
-const compression = require('compression');
-const rateLimit = require('express-rate-limit');
 
 const app = express();
 
 // ---------- Middleware ----------
 app.use(helmet());
 app.use(cors({ origin: "*" }));
-
-// 🚀 Gzip compression — shrinks JSON API responses by ~70-80%
-app.use(compression({ level: 6, threshold: 512 }));
-
-// Reduce body size limit — 50mb was extremely large and could spike RAM on malformed requests
-app.use(express.json({ limit: "5mb" }));
-app.use(express.urlencoded({ limit: "5mb", extended: true }));
+app.use(express.json({ limit: "50mb" }));
+app.use(express.urlencoded({ limit: "50mb", extended: true }));
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 // ---------- MongoDB with Retry logic ----------
@@ -51,25 +42,11 @@ const connectDB = async () => {
 
 connectDB();
 
-// ---------- HTTP + Socket.IO + Pusher Hybrid Realtime ----------
+// ---------- HTTP + Socket.IO ----------
 const server = http.createServer(app);
-const io = new Server(server, {
-  cors: { origin: "*" },
-  // 🚀 Enable per-message deflate compression — cuts mobile bandwidth by ~60%
-  perMessageDeflate: {
-    zlibDeflateOptions: { chunkSize: 1024, memLevel: 7, level: 3 },
-    zlibInflateOptions: { chunkSize: 10 * 1024 },
-    threshold: 1024, // compress messages > 1 KB only
-  },
-  // Prefer WebSocket, polling only as fallback
-  transports: ["websocket", "polling"],
-  pingTimeout: 30000,
-  pingInterval: 25000,
-});
-const { createHybridBroadcaster } = require("./utils/realtimeBroadcaster");
-const hybridIo = createHybridBroadcaster(io);
+const io = new Server(server, { cors: { origin: "*" } });
 
-app.use((req, res, next) => { req.io = hybridIo; next(); });
+app.use((req, res, next) => { req.io = io; next(); });
 
 io.on("connection", (socket) => {
 
@@ -79,223 +56,7 @@ io.on("connection", (socket) => {
     }
   });
 
-  // 🚀 INSTANT DB READ OVER SOCKET FOR ACTIVE ATTENDANCE
-  socket.on("attendance:get_active", async (data, ack) => {
-    try {
-      const { employeeId, dbName } = data || {};
-      if (!employeeId || !dbName) {
-        const errRes = { success: false, message: "employeeId and dbName required" };
-        if (typeof ack === "function") ack(errRes);
-        return socket.emit("attendance:active_response", errRes);
-      }
-
-      const tenantConnection = await dbConnector.getTenantConnection(dbName);
-      const { Attendance, Employees } = require("./models/TenantModels").getTenantModels(tenantConnection);
-
-      const queryId = mongoose.Types.ObjectId.isValid(employeeId)
-        ? new mongoose.Types.ObjectId(employeeId)
-        : employeeId;
-
-      const userMaster = require("./models/userMaster");
-      let userDoc = await userMaster.findById(queryId).lean().catch(() => null);
-      let employeeDoc = await Employees.findById(queryId).lean().catch(() => null);
-
-      if (userDoc && !employeeDoc) {
-        const mob = (userDoc.mobile || userDoc.userMobile || userDoc.username || "").replace(/\D/g, "").slice(-10);
-        const searchOr = [];
-        if (userDoc._id) searchOr.push({ user_id: userDoc._id });
-        if (userDoc.employee_id && mongoose.Types.ObjectId.isValid(String(userDoc.employee_id))) searchOr.push({ _id: userDoc.employee_id });
-        if (mob && mob.length === 10) searchOr.push({ mobile: new RegExp(mob + "$") });
-        if (userDoc.email || userDoc.userEmail) searchOr.push({ email: userDoc.email || userDoc.userEmail });
-        if (searchOr.length > 0) {
-          employeeDoc = await Employees.findOne({ $or: searchOr }).lean().catch(() => null);
-        }
-      } else if (employeeDoc && !userDoc) {
-        const mob = (employeeDoc.mobile || "").replace(/\D/g, "").slice(-10);
-        const searchOr = [];
-        if (employeeDoc.user_id && mongoose.Types.ObjectId.isValid(String(employeeDoc.user_id))) searchOr.push({ _id: employeeDoc.user_id });
-        if (employeeDoc._id) searchOr.push({ employee_id: employeeDoc._id });
-        if (mob && mob.length === 10) searchOr.push({ userMobile: new RegExp(mob + "$") });
-        if (employeeDoc.email) searchOr.push({ userEmail: employeeDoc.email });
-        if (searchOr.length > 0) {
-          userDoc = await userMaster.findOne({ $or: searchOr }).lean().catch(() => null);
-        }
-      }
-
-      const linkedIds = [queryId];
-      if (userDoc?._id) linkedIds.push(userDoc._id);
-      if (employeeDoc?._id) linkedIds.push(employeeDoc._id);
-      if (employeeDoc?.user_id && mongoose.Types.ObjectId.isValid(String(employeeDoc.user_id))) {
-        linkedIds.push(new mongoose.Types.ObjectId(employeeDoc.user_id));
-      }
-      if (userDoc?.employee_id && mongoose.Types.ObjectId.isValid(String(userDoc.employee_id))) {
-        linkedIds.push(new mongoose.Types.ObjectId(userDoc.employee_id));
-      }
-      const uniqueLinkedIds = Array.from(new Set(linkedIds.map((id) => String(id))))
-        .filter((id) => mongoose.Types.ObjectId.isValid(id))
-        .map((id) => new mongoose.Types.ObjectId(id));
-
-      const active = await Attendance.findOne({
-        employeeId: { $in: uniqueLinkedIds },
-        status: "Present",
-        $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }],
-      })
-        .sort({ dutyStart: -1 })
-        .lean();
-
-      const result = { success: true, employeeId, data: active || null };
-      if (typeof ack === "function") ack(result);
-      socket.emit("attendance:active_response", result);
-    } catch (err) {
-      console.error("❌ Socket attendance:get_active error:", err.message);
-      const errRes = { success: false, message: err.message };
-      if (typeof ack === "function") ack(errRes);
-      socket.emit("attendance:active_response", errRes);
-    }
-  });
-
-  socket.on("attendance:get_active_staff", async (data, ack) => {
-    try {
-      const { dbName } = data || {};
-      if (!dbName) {
-        const errRes = { success: false, message: "dbName required" };
-        if (typeof ack === "function") ack(errRes);
-        return socket.emit("attendance:active_staff_response", errRes);
-      }
-
-      const tenantConnection = await dbConnector.getTenantConnection(dbName);
-      const { Attendance } = require("./models/TenantModels").getTenantModels(tenantConnection);
-
-      const active = await Attendance.find({
-        $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }],
-      }).lean();
-
-      const result = { success: true, data: active || [] };
-      if (typeof ack === "function") ack(result);
-      socket.emit("attendance:active_staff_response", result);
-    } catch (err) {
-      console.error("❌ Socket attendance:get_active_staff error:", err.message);
-      const errRes = { success: false, message: err.message };
-      if (typeof ack === "function") ack(errRes);
-      socket.emit("attendance:active_staff_response", errRes);
-    }
-  });
-
-  // 🚀 HIGH-PERFORMANCE REAL-TIME WORKER LOCATION TRACKING
-  socket.on("update_location", async (data, ack) => {
-    try {
-      const {
-        workerId,
-        latitude,
-        longitude,
-        batteryLevel = null,
-        speed = null,
-        heading = null,
-        accuracy = null,
-        timestamp,
-      } = data || {};
-
-      if (!workerId || latitude === undefined || longitude === undefined || isNaN(Number(latitude)) || isNaN(Number(longitude))) {
-        const errRes = { success: false, message: "Valid workerId, latitude, and longitude are required" };
-        if (typeof ack === "function") ack(errRes);
-        return;
-      }
-
-      // 🚀 BANDWIDTH GUARD: Rate-limit location updates to once per 3 seconds per socket
-      const now = Date.now();
-      const lastUpdate = socket._lastLocationUpdate || 0;
-      if (now - lastUpdate < 3000) {
-        if (typeof ack === "function") ack({ success: true, throttled: true });
-        return;
-      }
-      socket._lastLocationUpdate = now;
-
-      const numLat = Number(latitude);
-      const numLng = Number(longitude);
-
-      // Upsert worker coordinates in MongoDB with 2dsphere index
-      const updated = await WorkerLocation.findOneAndUpdate(
-        { workerId: String(workerId) },
-        {
-          location: {
-            type: "Point",
-            coordinates: [numLng, numLat], // [Longitude, Latitude]
-          },
-          batteryLevel: batteryLevel !== null && !isNaN(Number(batteryLevel)) ? Number(batteryLevel) : null,
-          speed: speed !== null && !isNaN(Number(speed)) ? Number(speed) : null,
-          heading: heading !== null && !isNaN(Number(heading)) ? Number(heading) : null,
-          accuracy: accuracy !== null && !isNaN(Number(accuracy)) ? Number(accuracy) : null,
-          lastUpdated: timestamp ? new Date(timestamp) : new Date(),
-        },
-        { upsert: true, new: true, setDefaultsOnInsert: true }
-      );
-
-      // 🚀 MINIMAL PAYLOAD: Only send essential fields — omit internal Mongo fields
-      const payload = {
-        workerId: String(workerId),
-        latitude: numLat,
-        longitude: numLng,
-        batteryLevel: updated.batteryLevel,
-        speed: updated.speed,
-        heading: updated.heading,
-        accuracy: updated.accuracy,
-        lastUpdated: updated.lastUpdated,
-      };
-
-      // Broadcast update to dashboard and all other connected clients
-      socket.broadcast.emit("live_location_update", payload);
-
-      if (typeof ack === "function") {
-        ack({ success: true, data: payload });
-      }
-    } catch (err) {
-      console.error("\u274c Database update_location error:", err.message);
-      if (typeof ack === "function") {
-        ack({ success: false, message: err.message });
-      }
-    }
-  });
-
-  // 🛡️ ULTRA-FAST GEOFENCE VERIFICATION (using 2dsphere $geoWithin / $near)
-  socket.on("check_geofence", async (data, ack) => {
-    try {
-      const { workerId, siteLongitude, siteLatitude, radiusMeters = 200 } = data || {};
-
-      if (!workerId || siteLongitude === undefined || siteLatitude === undefined) {
-        const errRes = { success: false, message: "workerId, siteLongitude, and siteLatitude required" };
-        if (typeof ack === "function") ack(errRes);
-        return socket.emit("geofence_status", errRes);
-      }
-
-      const isInside = await WorkerLocation.isWorkerInsideCircle(
-        workerId,
-        siteLongitude,
-        siteLatitude,
-        Number(radiusMeters)
-      );
-
-      const result = {
-        success: true,
-        workerId: String(workerId),
-        inside: isInside,
-        radiusMeters: Number(radiusMeters),
-        checkedAt: new Date(),
-      };
-
-      if (typeof ack === "function") ack(result);
-      socket.emit("geofence_status", result);
-    } catch (err) {
-      console.error("❌ Geofence check error:", err.message);
-      const errRes = { success: false, message: err.message };
-      if (typeof ack === "function") ack(errRes);
-      socket.emit("geofence_status", errRes);
-    }
-  });
-
-  socket.on("disconnect", (reason) => {
-    socket._lastLocationUpdate = null;
-    console.log(`🔌 [Socket.IO] Client ${socket.id} disconnected: ${reason}`);
-  });
+  socket.on("disconnect", () => { });
 });
 
 // ---------- Health Route ----------
@@ -308,33 +69,18 @@ app.get("/", (req, res) => {
   });
 });
 
-// ---------- 🏥 Request Logging (only in development) ----------
-if (process.env.NODE_ENV !== 'production') {
-  app.use((req, res, next) => {
+// ---------- 🏥 Request Logging (DEBUG)
+app.use((req, res, next) => {
     console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl}`);
     if (req.headers['x-tenant-id']) console.log(`   └─ x-tenant-id: ${req.headers['x-tenant-id']}`);
     next();
-  });
-}
-
-// ---------- API Rate Limiter ----------
-// 120 requests/min per IP — generous for normal use, blocks runaway loops
-const apiLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 120,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { success: false, message: 'Too many requests, please slow down.' },
-  skip: (req) => req.path === '/' || req.path === '/health', // skip health checks
 });
 
 // ---------- API Routes ----------
 app.use("/api/auth", authRouter);
 app.use("/api/setting", setting);
-app.use("/api/service", apiLimiter, UserCorpRouter);
-app.use("/service", apiLimiter, UserCorpRouter); // 🚀 Smooth alias for direct /service route calls
-app.use("/api/finance", apiLimiter, FinanceRouter);
-app.use("/finance", apiLimiter, FinanceRouter);
+app.use("/api/service", UserCorpRouter);
+app.use("/api/finance", FinanceRouter);
 
 // 🚀 LEGACY DASHBOARD ADAPTER ROUTES
 app.use("/api/payment", require("./routes/paymentRouter"));
@@ -342,18 +88,6 @@ app.use("/api/staff", require("./routes/staffRouter"));
 
 // 🛡️ GUARD ALERTNESS MONITORING
 app.use("/api/monitoring", require("./routes/monitoringRouter"));
-
-// 📊 Diagnostics endpoint (internal use)
-app.get("/health", (req, res) => {
-  const dbConnector = require("./utils/dbConnector");
-  res.json({
-    status: "ok",
-    uptime: Math.floor(process.uptime()),
-    memMB: Math.round(process.memoryUsage().rss / 1024 / 1024),
-    tenantConnections: dbConnector.activeConnections(),
-    timestamp: new Date().toISOString(),
-  });
-});
 
 // Secure Uploads (Tenant Aware)
 const authMiddleware = require("./middleware/authMiddleware");
@@ -427,25 +161,17 @@ app.use((err, req, res, next) => {
   });
 });
 
-// ---------- Start (Server & Serverless Compatible) ----------
-const isServerless = Boolean(process.env.VERCEL === "1" || process.env.NOW_REGION);
+// ---------- Start ----------
+const PORT = process.env.PORT || 5000;
+server.listen(PORT, "0.0.0.0", () => {
+  console.log(`🖇️ App running on port->${PORT} & Started at: ${new Date().toLocaleString()}`);
+});
 
-if (!isServerless) {
-  const PORT = process.env.PORT || 5000;
-  server.listen(PORT, "0.0.0.0", () => {
-    console.log(`🖇️ App running on port->${PORT} & Started at: ${new Date().toLocaleString()}`);
-  });
-
-  server.on("error", (err) => {
-    if (err.code === "EADDRINUSE") {
-      console.error(`❌ Port ${PORT} is already in use. Kill the existing process and restart.`);
-      process.exit(1);
-    } else {
-      throw err;
-    }
-  });
-}
-
-module.exports = app;
-module.exports.server = server;
-
+server.on("error", (err) => {
+  if (err.code === "EADDRINUSE") {
+    console.error(`❌ Port ${PORT} is already in use. Kill the existing process and restart.`);
+    process.exit(1);
+  } else {
+    throw err;
+  }
+});
