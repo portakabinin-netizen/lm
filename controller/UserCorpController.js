@@ -178,6 +178,8 @@ const manageSpoke = {
       const Model = req.tenantModels[modelName];
       const item = await Model.findByIdAndUpdate(req.params.id, req.body, { new: true });
       if (!item) return res.status(404).json({ success: false, message: 'Entity not found' });
+      const emit = require('../utils/socketEmitter');
+      emit(req, `${modelName.toLowerCase()}:updated`, { data: item });
       res.json({ success: true, data: item });
     } catch (err) {
       res.status(500).json({ success: false, message: err.message });
@@ -187,6 +189,8 @@ const manageSpoke = {
     try {
       const Model = req.tenantModels[modelName];
       await Model.findByIdAndDelete(req.params.id);
+      const emit = require('../utils/socketEmitter');
+      emit(req, `${modelName.toLowerCase()}:deleted`, { id: req.params.id });
       res.json({ success: true, message: 'Entity deleted' });
     } catch (err) {
       res.status(500).json({ success: false, message: err.message });
@@ -1230,6 +1234,9 @@ exports.manageEmployees = {
         console.error('Employee-Ledger Auto Init Failed:', err.message);
       }
 
+      const emit = require('../utils/socketEmitter');
+      emit(req, 'employee:created', { data: emp });
+
       res.status(201).json({ success: true, data: emp });
     } catch (err) {
       res.status(500).json({ success: false, message: err.message });
@@ -1320,6 +1327,8 @@ exports.manageEmployees = {
           dob: employeeDoc.dob,
           ledgerId: employeeDoc.ledgerId,
         };
+        const emit = require('../utils/socketEmitter');
+        emit(req, 'employee:updated', { data: mappedUser });
         return res.json({ success: true, data: mappedUser });
       }
 
@@ -1342,6 +1351,9 @@ exports.manageEmployees = {
       } catch (err) {
         console.error('Employee-Ledger Auto Sync Failed:', err.message);
       }
+
+      const emit = require('../utils/socketEmitter');
+      emit(req, 'employee:updated', { data: emp });
 
       res.json({ success: true, data: emp });
     } catch (err) {
@@ -2141,6 +2153,11 @@ exports.manageEmployees = {
         siteLong,
       });
       await record.save();
+      const emit = require('../utils/socketEmitter');
+      emit(req, 'attendance:created', { data: record });
+      if (req.io && req.tenantDbName) {
+        req.io.to(req.tenantDbName).emit('attendance:active_updated');
+      }
       res.status(201).json({
         success: true,
         message: 'Attendance recorded',
@@ -2167,6 +2184,11 @@ exports.manageEmployees = {
       const record = await Attendance.findByIdAndDelete(req.params.id);
       if (!record) {
         return res.status(404).json({ success: false, message: 'Attendance record not found' });
+      }
+      const emit = require('../utils/socketEmitter');
+      emit(req, 'attendance:deleted', { id: req.params.id });
+      if (req.io && req.tenantDbName) {
+        req.io.to(req.tenantDbName).emit('attendance:active_updated');
       }
       res.json({ success: true, message: 'Attendance record deleted' });
     } catch (err) {
@@ -2284,6 +2306,12 @@ exports.manageEmployees = {
           attendanceId: record._id,
           hoursWorked: record.hoursWorked,
         });
+      }
+
+      const emit = require('../utils/socketEmitter');
+      emit(req, 'attendance:updated', { data: record });
+      if (req.io && req.tenantDbName) {
+        req.io.to(req.tenantDbName).emit('attendance:active_updated');
       }
 
       console.log('🟢 [updateAttendance] Saved successfully:', record._id);
