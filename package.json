@@ -3,8 +3,8 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "dev": "nodemon --quiet index.js"
+    "start": "node --max-old-space-size=2048 index.js",
+    "dev": "nodemon --quiet --exec \"node --max-old-space-size=2048\" index.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",

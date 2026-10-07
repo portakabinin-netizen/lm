@@ -24,7 +24,7 @@ const dbConnector = {
             // Robustly replace the database name in the URI (prevents "doubling" names)
             const baseUri = uri.replace(/\/[^/?]+(?=\?|$)/, "/mainDatabase");
 
-            await mongoose.connect(baseUri, { family: 4 });
+            await mongoose.connect(baseUri, { family: 4, maxPoolSize: 15, minPoolSize: 2 });
             mainConnection = mongoose.connection;
             return mainConnection;
         } catch (err) {
@@ -52,7 +52,11 @@ const dbConnector = {
         let tenantUri = masterUri.replace(/\/[^/?]+(?=\?|$)/, `/${dbName}`);
 
         try {
-            const tenantConn = await mongoose.createConnection(tenantUri, { family: 4 }).asPromise();
+            const tenantConn = await mongoose.createConnection(tenantUri, {
+                family: 4,
+                maxPoolSize: 10,
+                minPoolSize: 1
+            }).asPromise();
             
             // Run schema migration to convert legacy documents
             const { migrateTenantDb } = require("./schemaMigrator");

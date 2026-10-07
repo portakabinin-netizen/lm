@@ -1697,7 +1697,11 @@ exports.manageEmployees = {
           $or: [{ date: { $gte: defaultStart } }, { dutyEnd: { $exists: false } }, { dutyEnd: null }],
         };
       }
-      const data = await Attendance.find(q).sort({ date: -1 }).limit(1000).lean();
+      const data = await Attendance.find(q)
+        .select('-geoHistory')
+        .sort({ date: -1 })
+        .limit(1000)
+        .lean();
 
       const userMaster = require('../models/userMaster');
       const { Employees, Leads } = req.tenantModels;
@@ -2283,7 +2287,11 @@ exports.manageEmployees = {
       }
 
       console.log('🟢 [updateAttendance] Saved successfully:', record._id);
-      res.json({ success: true, data: record });
+      const resData = record.toObject ? record.toObject() : { ...record };
+      if (Array.isArray(resData.geoHistory) && resData.geoHistory.length > 1) {
+        resData.geoHistory = [resData.geoHistory[resData.geoHistory.length - 1]];
+      }
+      res.json({ success: true, data: resData });
     } catch (err) {
       console.error('🔴 [updateAttendance] Error:', err.message);
       res.status(500).json({ success: false, message: err.message });
@@ -3478,7 +3486,9 @@ exports.manageEmployees = {
       try {
         active = await Attendance.find({
           $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }, { dutyEnd: '' }],
-        }).lean();
+        })
+          .select({ geoHistory: { $slice: -1 } })
+          .lean();
       } catch (dbErr) {
         console.error('❌ [STEP 1] FAILED — Attendance.find() threw:', dbErr.message);
         return res
