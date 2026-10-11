@@ -1,0 +1,4198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HiBiz - Management Portal</title>
+  <!-- Google Fonts & Font Awesome 6 -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+
+  <style>
+    :root {
+      --primary: #16a34a;
+      --primary-dark: #15803d;
+      --primary-light: #dcfce7;
+      --accent: #2563eb;
+      --accent-light: #dbeafe;
+      --bg: #f8fafc;
+      --card-bg: #ffffff;
+      --text-main: #0f172a;
+      --text-muted: #64748b;
+      --border: #e2e8f0;
+      --border-dark: #cbd5e1;
+      --danger: #ef4444;
+      --danger-light: #fee2e2;
+      --warning: #f59e0b;
+      --warning-light: #fef3c7;
+      --success: #10b981;
+      --radius: 10px;
+      --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+      --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
+      --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.1);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      background-color: var(--bg);
+      color: var(--text-main);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ---------- Login Screen ---------- */
+    #loginScreen {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: radial-gradient(circle at top right, #dcfce7, #f8fafc);
+      padding: 20px;
+    }
+    .login-card {
+      width: 100%;
+      max-width: 400px;
+      background: var(--card-bg);
+      padding: 36px 32px;
+      border-radius: 16px;
+      box-shadow: var(--shadow-lg);
+      border: 1px solid var(--border);
+    }
+    .login-brand {
+      text-align: center;
+      margin-bottom: 24px;
+    }
+    .login-brand .logo-icon {
+      width: 54px;
+      height: 54px;
+      background: var(--primary-light);
+      color: var(--primary);
+      border-radius: 14px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 26px;
+      margin-bottom: 12px;
+    }
+    .login-brand h2 {
+      font-size: 22px;
+      font-weight: 800;
+      color: var(--text-main);
+    }
+    .login-brand p {
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+    .form-group {
+      margin-bottom: 18px;
+    }
+    .form-group label {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 13px;
+      font-weight: 600;
+      color: #334155;
+    }
+    .form-control {
+      width: 100%;
+      padding: 11px 14px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 14px;
+      color: var(--text-main);
+      background-color: #fff;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    .form-control:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.15);
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 10px 18px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      border: none;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+    .btn-primary {
+      background-color: var(--primary);
+      color: #fff;
+      width: 100%;
+      padding: 12px;
+    }
+    .btn-primary:hover { background-color: var(--primary-dark); }
+    .btn-secondary {
+      background-color: #f1f5f9;
+      color: #475569;
+    }
+    .btn-secondary:hover { background-color: #e2e8f0; color: var(--text-main); }
+    .btn-outline {
+      background: transparent;
+      border: 1px solid var(--border-dark);
+      color: var(--text-main);
+    }
+    .btn-outline:hover { background: #f8fafc; border-color: var(--primary); color: var(--primary); }
+    .btn-danger {
+      background-color: var(--danger);
+      color: #fff;
+    }
+    .btn-danger:hover { background-color: #dc2626; }
+    .btn-sm {
+      padding: 6px 12px;
+      font-size: 12px;
+      border-radius: 6px;
+    }
+    #loginError {
+      color: var(--danger);
+      font-size: 13px;
+      margin-top: 12px;
+      text-align: center;
+      min-height: 18px;
+      font-weight: 500;
+    }
+
+    /* ---------- App Layout ---------- */
+    #appContent {
+      display: none;
+      flex: 1;
+    }
+    .topbar {
+      background: #fff;
+      border-bottom: 1px solid var(--border);
+      padding: 12px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      box-shadow: var(--shadow-sm);
+    }
+    .topbar-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .brand-logo {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 800;
+      font-size: 18px;
+      color: var(--primary);
+    }
+    .system-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 3px 8px;
+      border-radius: 12px;
+      background: #f1f5f9;
+      color: #64748b;
+    }
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--success);
+    }
+    .topbar-right {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    .corp-select-wrap {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+    .corp-select {
+      padding: 6px 12px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-main);
+      background-color: #f8fafc;
+      outline: none;
+      cursor: pointer;
+    }
+    .corp-select:focus { border-color: var(--primary); }
+    .user-badge {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      background: #f8fafc;
+      border-radius: 20px;
+      border: 1px solid var(--border);
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-main);
+    }
+    .user-avatar {
+      width: 26px;
+      height: 26px;
+      border-radius: 50%;
+      background: var(--primary);
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    /* ---------- Main Menu Cards ---------- */
+    .dashboard-container {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 24px;
+      width: 100%;
+    }
+    .menu-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 20px;
+      margin-top: 10px;
+    }
+    .menu-card {
+      background: var(--card-bg);
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      padding: 28px 24px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.25s ease;
+      box-shadow: var(--shadow-sm);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 14px;
+      position: relative;
+      overflow: hidden;
+    }
+    .menu-card::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 4px;
+      background: transparent;
+      transition: background-color 0.2s;
+    }
+    .menu-card:hover {
+      transform: translateY(-4px);
+      box-shadow: var(--shadow);
+      border-color: var(--primary);
+    }
+    .menu-card:hover::before {
+      background: var(--primary);
+    }
+    .menu-card .icon-box {
+      width: 64px;
+      height: 64px;
+      border-radius: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 26px;
+      transition: transform 0.2s;
+    }
+    .menu-card:hover .icon-box {
+      transform: scale(1.08);
+    }
+    .menu-card.card-profile .icon-box { background: #e0f2fe; color: #0284c7; }
+    .menu-card.card-voucher .icon-box { background: #fef3c7; color: #d97706; }
+    .menu-card.card-attendance .icon-box { background: #dcfce7; color: #16a34a; }
+    .menu-card.card-report .icon-box { background: #f3e8ff; color: #9333ea; }
+    .menu-card .title {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text-main);
+    }
+    .menu-card .desc {
+      font-size: 12px;
+      color: var(--text-muted);
+      line-height: 1.4;
+    }
+
+    /* ---------- Section Panels ---------- */
+    .section-panel {
+      display: none;
+      animation: fadeIn 0.2s ease-in-out;
+    }
+    .section-panel.visible { display: block; }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    .panel-header-left {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    .panel-header h2 {
+      font-size: 20px;
+      font-weight: 800;
+      color: var(--text-main);
+    }
+    .panel-subnav {
+      display: flex;
+      gap: 6px;
+      background: #e2e8f0;
+      padding: 4px;
+      border-radius: 10px;
+    }
+    .subnav-btn {
+      padding: 8px 16px;
+      font-size: 13px;
+      font-weight: 700;
+      border: none;
+      background: transparent;
+      color: #64748b;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .subnav-btn.active {
+      background: #fff;
+      color: var(--primary);
+      box-shadow: var(--shadow-sm);
+    }
+
+    /* ---------- Toolbar Controls ---------- */
+    .toolbar-box {
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 8px 12px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: nowrap;
+      overflow: visible !important;
+      overflow-x: hidden !important;
+      margin-bottom: 18px;
+      box-shadow: var(--shadow-sm);
+    }
+    .toolbar-left, .toolbar-right {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: nowrap;
+      flex: 1 1 auto;
+      overflow: visible !important;
+    }
+    .toolbar-box .btn,
+    .toolbar-btn {
+      width: auto !important;
+      max-width: max-content !important;
+      white-space: nowrap !important;
+      display: inline-flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      gap: 5px !important;
+      padding: 5px 10px !important;
+      font-size: 12px !important;
+      font-weight: 600 !important;
+      border-radius: 6px !important;
+      height: 34px !important;
+      box-sizing: border-box !important;
+      flex: 0 0 auto !important;
+      cursor: pointer;
+    }
+    .month-picker-nav,
+    #attendanceSiteFilter,
+    #attendanceSearchInput,
+    #salaryPettyCashSelect {
+      height: 34px !important;
+      box-sizing: border-box !important;
+      flex: 0 0 auto !important;
+    }
+    .month-picker-nav {
+      display: flex;
+      align-items: center;
+      background: #f8fafc;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .month-picker-nav button {
+      padding: 5px 8px !important;
+      border: none;
+      background: transparent;
+      color: var(--primary);
+      cursor: pointer;
+      font-weight: bold;
+    }
+    .month-picker-nav button:hover { background: #f1f5f9; }
+    .month-picker-nav span {
+      padding: 5px 10px !important;
+      font-size: 12px !important;
+      font-weight: 700;
+      color: var(--text-main);
+      white-space: nowrap;
+      min-width: 110px;
+      text-align: center;
+    }
+
+    /* ---------- Stat KPI Badges ---------- */
+    .kpi-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 14px;
+      margin-bottom: 18px;
+    }
+    .kpi-card {
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 18px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      box-shadow: var(--shadow-sm);
+    }
+    .kpi-icon {
+      width: 42px;
+      height: 42px;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+    }
+    .kpi-value {
+      font-size: 20px;
+      font-weight: 800;
+      color: var(--text-main);
+    }
+    .kpi-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    /* ---------- Data Tables ---------- */
+    .table-container {
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow-x: auto;
+      box-shadow: var(--shadow-sm);
+      margin-bottom: 20px;
+      position: relative;
+    }
+    table.data-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+      text-align: left;
+    }
+    table.data-table th {
+      background: #f8fafc;
+      color: #475569;
+      font-weight: 700;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      padding: 12px 10px;
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    table.data-table td {
+      padding: 10px;
+      border-bottom: 1px solid var(--border);
+      color: var(--text-main);
+      vertical-align: middle;
+    }
+    table.data-table tr:hover td {
+      background-color: #f8fafc;
+    }
+
+    /* Clean Excel-style Grid for Attendance Matrix & Registers */
+    #attendanceMatrixTable, #salaryRegisterTable, table.grid-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+      border: 1px solid #cbd5e1;
+      background: #ffffff;
+    }
+    #attendanceMatrixTable th, #salaryRegisterTable th, table.grid-table th {
+      background: #f1f5f9;
+      color: #334155;
+      font-weight: 700;
+      font-size: 11px;
+      padding: 8px 4px;
+      border: 1px solid #cbd5e1;
+      text-align: center;
+      white-space: nowrap;
+      user-select: none;
+    }
+    #attendanceMatrixTable td, #salaryRegisterTable td, table.grid-table td {
+      border: 1px solid #cbd5e1;
+      padding: 5px 6px;
+      vertical-align: middle;
+      color: var(--text-main);
+    }
+    #attendanceMatrixTable tr:hover td, #salaryRegisterTable tr:hover td {
+      background-color: #f8fafc;
+    }
+    #attendanceMatrixTable tr.emp-row-end td {
+      border-bottom: 2px solid #64748b;
+    }
+
+    /* Sticky columns for Attendance Matrix */
+    .sticky-col {
+      position: sticky;
+      background: #ffffff;
+      z-index: 10;
+    }
+    th.sticky-col {
+      background: #f1f5f9 !important;
+      z-index: 11;
+      border-right: 2px solid #64748b !important;
+      border-left: 1px solid #cbd5e1 !important;
+    }
+    .col-worker {
+      left: 0;
+      min-width: 110px;
+      max-width: 125px;
+      border-right: 2px solid #64748b !important;
+      border-left: 1px solid #cbd5e1 !important;
+      padding: 6px 8px !important;
+    }
+
+    /* Day Matrix Cell Styles - Clean Crisp Grid Box */
+    .matrix-cell {
+      width: 25px;
+      min-width: 25px;
+      max-width: 25px;
+      height: 25px;
+      text-align: center;
+      padding: 1px !important;
+      font-size: 11px;
+      border: 1px solid #cbd5e1 !important;
+    }
+    .day-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 22px;
+      height: 22px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 800;
+      cursor: pointer;
+      line-height: 1;
+      transition: transform 0.1s, box-shadow 0.1s;
+    }
+    .day-badge:hover {
+      transform: scale(1.18);
+      box-shadow: 0 2px 4px rgba(0,0,0,0.12);
+      z-index: 5;
+    }
+    .day-p { background: #dcfce7; color: #15803d; border: 1px solid #bbf7d0; }
+    .day-a { background: #fee2e2; color: #b91c1c; border: 1px solid #fecaca; }
+    .day-l { background: #fef3c7; color: #b45309; border: 1px solid #fde68a; }
+    .day-hd { background: #f3e8ff; color: #7e22ce; border: 1px solid #e9d5ff; font-size: 9px; }
+    .day-dd { background: #dbeafe; color: #1d4ed8; border: 1px solid #bfdbfe; font-size: 9px; }
+    .day-empty { color: #cbd5e1; font-weight: normal; cursor: pointer; }
+    .day-empty:hover { background: #f1f5f9; border-radius: 4px; }
+
+    /* Summary column grid headers & cells (P, L, A, H) */
+    .col-p-th { background: #dcfce7 !important; color: #166534 !important; border: 1px solid #bbf7d0 !important; }
+    .col-l-th { background: #fef3c7 !important; color: #b45309 !important; border: 1px solid #fde68a !important; }
+    .col-a-th { background: #fee2e2 !important; color: #b91c1c !important; border: 1px solid #fecaca !important; }
+    .col-h-th { background: #f3e8ff !important; color: #6b21a8 !important; border: 1px solid #e9d5ff !important; }
+
+    .col-p-cell { background: #f0fdf4; font-weight: 800; color: #16a34a; text-align: center; border: 1px solid #cbd5e1 !important; font-size: 11.5px; }
+    .col-l-cell { background: #fffbeb; font-weight: 800; color: #d97706; text-align: center; border: 1px solid #cbd5e1 !important; font-size: 11.5px; }
+    .col-a-cell { background: #fef2f2; font-weight: 800; color: #dc2626; text-align: center; border: 1px solid #cbd5e1 !important; font-size: 11.5px; }
+    .col-h-cell { background: #faf5ff; font-weight: 800; color: #7e22ce; text-align: center; border: 1px solid #cbd5e1 !important; font-size: 11.5px; }
+
+    /* Half-A4 Payment Voucher Slip (2 per A4 sheet) */
+    .voucher-half-page {
+      box-sizing: border-box;
+      background: #ffffff;
+      border: 1.5px solid #1e293b;
+      border-radius: 6px;
+      padding: 14px 18px;
+      margin-bottom: 16px;
+      font-family: 'Inter', system-ui, sans-serif;
+      color: #0f172a;
+      position: relative;
+    }
+    .voucher-dashed-divider, .voucher-dashed-cutline {
+      display: none;
+    }
+
+    /* Search & Filter inputs */
+    .search-input {
+      padding: 8px 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 13px;
+      min-width: 220px;
+      outline: none;
+    }
+    .search-input:focus { border-color: var(--primary); }
+
+    /* ---------- Modals ---------- */
+    .modal-overlay {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(15, 23, 42, 0.6);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+      padding: 20px;
+    }
+    .modal-overlay.open { display: flex; }
+    .modal-box {
+      background: #fff;
+      border-radius: 14px;
+      max-width: 600px;
+      width: 100%;
+      max-height: 90vh;
+      overflow-y: auto;
+      box-shadow: var(--shadow-lg);
+      animation: modalScale 0.2s ease-out;
+    }
+    .modal-box.modal-lg { max-width: 900px; }
+    @keyframes modalScale {
+      from { transform: scale(0.95); opacity: 0; }
+      to { transform: scale(1); opacity: 1; }
+    }
+    .modal-header {
+      padding: 18px 24px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .modal-header h3 {
+      font-size: 17px;
+      font-weight: 800;
+      color: var(--text-main);
+    }
+    .modal-close-btn {
+      background: transparent;
+      border: none;
+      font-size: 20px;
+      color: var(--text-muted);
+      cursor: pointer;
+    }
+    .modal-body {
+      padding: 20px 24px;
+    }
+    .modal-footer {
+      padding: 14px 24px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      background: #f8fafc;
+      border-bottom-left-radius: 14px;
+      border-bottom-right-radius: 14px;
+    }
+
+    /* Form Grid */
+    .form-grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+
+    /* Toast Notification */
+    #toastContainer {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      z-index: 9999;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .toast {
+      padding: 12px 18px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      box-shadow: var(--shadow-lg);
+      animation: slideInRight 0.25s ease-out;
+    }
+    .toast-success { background-color: var(--success); }
+    .toast-error { background-color: var(--danger); }
+    .toast-info { background-color: var(--accent); }
+    @keyframes slideInRight {
+      from { transform: translateX(100%); opacity: 0; }
+      to { transform: translateX(0); opacity: 1; }
+    }
+
+    /* Loading Spinner */
+    .loading-wrap {
+      padding: 50px 20px;
+      text-align: center;
+      color: var(--text-muted);
+    }
+    .spinner {
+      width: 34px;
+      height: 34px;
+      border: 3px solid rgba(22, 163, 74, 0.2);
+      border-top-color: var(--primary);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin: 0 auto 12px;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    /* Print Preview Styles */
+    @page {
+      size: A4 landscape;
+      margin: 8mm 6mm;
+    }
+    @media print {
+      html, body {
+        width: 100% !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        background: #fff !important;
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+      }
+
+      /* STANDARD REGISTER PRINT (MUSTER ROLL & SALARY STATEMENT) */
+      body:not(.printing-voucher-mode) .topbar,
+      body:not(.printing-voucher-mode) .panel-header-left button,
+      body:not(.printing-voucher-mode) .toolbar-box,
+      body:not(.printing-voucher-mode) .panel-subnav,
+      body:not(.printing-voucher-mode) .btn,
+      body:not(.printing-voucher-mode) .no-print,
+      body:not(.printing-voucher-mode) .modal-overlay,
+      body:not(.printing-voucher-mode) #toastContainer {
+        display: none !important;
+      }
+      body:not(.printing-voucher-mode) .dashboard-container {
+        padding: 0 !important;
+        max-width: 100% !important;
+        margin: 0 !important;
+        width: 100% !important;
+      }
+      body:not(.printing-voucher-mode) .section-panel {
+        display: block !important;
+      }
+      body:not(.printing-voucher-mode) .panel-header h2 {
+        font-size: 14px !important;
+        margin-bottom: 6px !important;
+      }
+      body:not(.printing-voucher-mode) .table-container {
+        border: 1px solid #cbd5e1 !important;
+        box-shadow: none !important;
+        overflow: visible !important;
+      }
+      body:not(.printing-voucher-mode) table.data-table {
+        font-size: 8px !important;
+        width: 100% !important;
+        border-collapse: collapse !important;
+      }
+      body:not(.printing-voucher-mode) table.data-table th, 
+      body:not(.printing-voucher-mode) table.data-table td {
+        padding: 2.5px 2px !important;
+        border: 1px solid #cbd5e1 !important;
+      }
+      body:not(.printing-voucher-mode) .matrix-cell {
+        width: 18px !important;
+        min-width: 18px !important;
+        height: 18px !important;
+        padding: 1px !important;
+      }
+      body:not(.printing-voucher-mode) .day-badge {
+        width: 16px !important;
+        height: 16px !important;
+        font-size: 7.5px !important;
+        border-radius: 2px !important;
+      }
+      body:not(.printing-voucher-mode) .col-worker {
+        min-width: 100px !important;
+        position: static !important;
+      }
+      body:not(.printing-voucher-mode) th.sticky-col, 
+      body:not(.printing-voucher-mode) td.sticky-col {
+        position: static !important;
+      }
+      body:not(.printing-voucher-mode) tr {
+        page-break-inside: avoid;
+      }
+
+      /* HALF-A4 VOUCHER PRINTING MODE (EXACTLY 1 VOUCHER PER HALF-A4 PAGE) */
+      body.printing-voucher-mode #appContent,
+      body.printing-voucher-mode #loginScreen,
+      body.printing-voucher-mode #toastContainer,
+      body.printing-voucher-mode .modal-overlay:not(#modalPayslip),
+      body.printing-voucher-mode .no-print {
+        display: none !important;
+      }
+      body.printing-voucher-mode #modalPayslip {
+        display: block !important;
+        position: static !important;
+        background: transparent !important;
+        padding: 0 !important;
+        margin: 0 !important;
+        width: 100% !important;
+        min-height: 0 !important;
+        height: auto !important;
+      }
+      body.printing-voucher-mode #modalPayslip .modal-box {
+        max-width: 100% !important;
+        width: 100% !important;
+        box-shadow: none !important;
+        padding: 0 !important;
+        margin: 0 !important;
+        border: none !important;
+        border-radius: 0 !important;
+        background: transparent !important;
+      }
+      body.printing-voucher-mode #modalPayslip .modal-header,
+      body.printing-voucher-mode #modalPayslip .modal-footer,
+      body.printing-voucher-mode #modalPayslip .modal-close-btn {
+        display: none !important;
+      }
+      body.printing-voucher-mode #payslipPrintArea {
+        width: 100% !important;
+        padding: 0 !important;
+        margin: 0 !important;
+        background: transparent !important;
+      }
+      body.printing-voucher-mode .voucher-half-page {
+        box-sizing: border-box !important;
+        width: 100% !important;
+        height: 136mm !important;
+        max-height: 136mm !important;
+        overflow: hidden !important;
+        border: 1.5px solid #0f172a !important;
+        padding: 4mm 6mm !important;
+        margin: 0 !important;
+        display: flex !important;
+        flex-direction: column !important;
+        justify-content: space-between !important;
+        page-break-inside: avoid !important;
+        break-inside: avoid !important;
+        page-break-after: always !important;
+        break-after: page !important;
+        border-radius: 0 !important;
+        background: #ffffff !important;
+      }
+      body.printing-voucher-mode .voucher-half-page:last-child {
+        page-break-after: auto !important;
+        break-after: auto !important;
+      }
+      body.printing-voucher-mode .voucher-dashed-cutline {
+        display: none !important;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Toast Notification Container -->
+  <div id="toastContainer"></div>
+
+  <!-- 1. Login Screen -->
+  <div id="loginScreen">
+    <div class="login-card">
+      <div class="login-brand">
+        <div class="logo-icon">
+          <i class="fa-solid fa-layer-group"></i>
+        </div>
+        <h2>HiBiz Management</h2>
+        <p>Enter your credentials to access operations portal</p>
+      </div>
+
+      <div class="form-group">
+        <label for="loginMobile"><i class="fa-solid fa-phone" style="margin-right:4px;"></i> Mobile Number</label>
+        <input type="tel" id="loginMobile" class="form-control" placeholder="10-digit mobile number" maxlength="10">
+      </div>
+
+      <div class="form-group">
+        <label for="loginPassword"><i class="fa-solid fa-lock" style="margin-right:4px;"></i> Password</label>
+        <input type="password" id="loginPassword" class="form-control" placeholder="Enter password" onkeydown="if(event.key==='Enter') doLogin()">
+      </div>
+
+      <button class="btn btn-primary" onclick="doLogin()">
+        <i class="fa-solid fa-arrow-right-to-bracket"></i> Sign In
+      </button>
+
+      <div id="loginError"></div>
+    </div>
+  </div>
+
+  <!-- 2. Main App Content -->
+  <div id="appContent">
+    <!-- Top Bar -->
+    <header class="topbar">
+      <div class="topbar-left">
+        <div class="brand-logo">
+          <i class="fa-solid fa-shapes"></i> HiBiz
+        </div>
+        <div class="system-status">
+          <span class="status-dot"></span>
+          <span id="systemStatusText">API Connected</span>
+        </div>
+      </div>
+
+      <div class="topbar-right">
+        <!-- Corporate Selector with Corporate Logo -->
+        <div class="corp-select-wrap" style="display:flex; align-items:center; gap:8px; background:#f8fafc; border:1px solid var(--border); padding:3px 10px 3px 6px; border-radius:20px;">
+          <div id="headerCorpImgWrap" style="width:26px; height:26px; border-radius:50%; overflow:hidden; background:#e2e8f0; display:flex; align-items:center; justify-content:center; border:1px solid #cbd5e1; flex-shrink:0;">
+            <img id="headerCorpImg" src="" alt="Corp" style="display:none; width:100%; height:100%; object-fit:cover;" onerror="this.style.display='none'; document.getElementById('headerCorpFallback').style.display='flex';">
+            <div id="headerCorpFallback" style="width:100%; height:100%; display:flex; align-items:center; justify-content:center; color:#64748b; font-size:12px;">
+              <i class="fa-solid fa-building"></i>
+            </div>
+          </div>
+          <select id="corporateSelect" class="corp-select" onchange="onCorporateChange(this.value)" style="border:none; background:transparent; font-weight:700; color:#1e293b; padding:2px 4px; font-size:13px; cursor:pointer; outline:none;"></select>
+        </div>
+
+        <!-- User Profile with Avatar & Role Badge -->
+        <div class="user-badge" style="display:flex; align-items:center; gap:8px; padding:3px 12px 3px 6px; background:#f8fafc; border:1px solid var(--border); border-radius:20px;">
+          <div id="headerUserImgWrap" style="width:26px; height:26px; border-radius:50%; overflow:hidden; background:var(--primary); color:#fff; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:800; border:1px solid var(--primary-dark); flex-shrink:0;">
+            <img id="headerUserImg" src="" alt="User" style="display:none; width:100%; height:100%; object-fit:cover;" onerror="this.style.display='none'; document.getElementById('headerUserFallback').style.display='flex';">
+            <div id="headerUserFallback" style="width:100%; height:100%; display:flex; align-items:center; justify-content:center;">
+              <span id="userAvatar">U</span>
+            </div>
+          </div>
+          <div style="display:flex; flex-direction:column; line-height:1.2;">
+            <span id="userDisplayName" style="font-weight:700; font-size:13px; color:#1e293b;">User</span>
+            <span class="user-role-badge" style="font-size:10px; font-weight:700; color:#0284c7; text-transform:uppercase; letter-spacing:0.5px;">CorpAdmin</span>
+          </div>
+        </div>
+
+        <button class="btn btn-secondary btn-sm" onclick="doLogout()" style="border-radius:20px; padding:6px 14px; font-weight:600;">
+          <i class="fa-solid fa-power-off" style="color:var(--danger)"></i> Logout
+        </button>
+      </div>
+    </header>
+
+    <!-- Main Container -->
+    <main class="dashboard-container">
+
+      <!-- A. Menu Grid -->
+      <div id="menuGrid" class="menu-grid">
+        <!-- 1. Update Employee Profile -->
+        <div class="menu-card card-profile" onclick="openSection('employeeProfile')">
+          <div class="icon-box">
+            <i class="fa-solid fa-user-gear"></i>
+          </div>
+          <div class="title">Update Employee Profile</div>
+          <div class="desc">Manage worker directory, rates, designations, contact credentials and status.</div>
+        </div>
+
+        <!-- 2. Payment Voucher -->
+        <div class="menu-card card-voucher" onclick="openSection('paymentVoucher')">
+          <div class="icon-box">
+            <i class="fa-solid fa-file-invoice-dollar"></i>
+          </div>
+          <div class="title">Payment Voucher</div>
+          <div class="desc">Record direct vendor, staff disbursements, cash contra and journal entries.</div>
+        </div>
+
+        <!-- 3. Monthly Attendance (Includes Attendance & Salary) -->
+        <div class="menu-card card-attendance" onclick="openSection('monthlyAttendance')">
+          <div class="icon-box">
+            <i class="fa-solid fa-calendar-check"></i>
+          </div>
+          <div class="title">Monthly Attendance</div>
+          <div class="desc">Sitewise attendance muster roll, daily checks, and monthly salary calculation register.</div>
+        </div>
+
+        <!-- 4. Print Report -->
+        <div class="menu-card card-report" onclick="openSection('printReport')">
+          <div class="icon-box">
+            <i class="fa-solid fa-print"></i>
+          </div>
+          <div class="title">Print Report</div>
+          <div class="desc">Generate formatted printable reports for attendance, salary, fines and enrollment forms.</div>
+        </div>
+      </div>
+
+      <!-- ========================================================================= -->
+      <!-- SECTION 1: MONTHLY ATTENDANCE (Attendance Register & Salary Register)      -->
+      <!-- ========================================================================= -->
+      <section id="section-monthlyAttendance" class="section-panel">
+        <div class="panel-header">
+          <div class="panel-header-left">
+            <button class="btn btn-secondary btn-sm" onclick="closeSection()">
+              <i class="fa-solid fa-arrow-left"></i> Dashboard
+            </button>
+            <h2>Monthly Attendance & Salary</h2>
+          </div>
+
+          <!-- Sub-Tab Switcher -->
+          <div class="panel-subnav">
+            <button id="subTabAttendanceBtn" class="subnav-btn active" onclick="switchAttendanceSubTab('attendance')">
+              <i class="fa-solid fa-table-cells"></i> Attendance Register
+            </button>
+            <button id="subTabSalaryBtn" class="subnav-btn" onclick="switchAttendanceSubTab('salary')">
+              <i class="fa-solid fa-calculator"></i> Salary Register
+            </button>
+          </div>
+        </div>
+
+        <!-- Toolbar for Month & Site Filters -->
+        <div class="toolbar-box">
+          <div class="toolbar-left">
+            <!-- Month Nav -->
+            <div class="month-picker-nav">
+              <button onclick="changeMonth(-1)"><i class="fa-solid fa-chevron-left"></i></button>
+              <span id="currentMonthYearDisplay">September 2026</span>
+              <button onclick="changeMonth(1)"><i class="fa-solid fa-chevron-right"></i></button>
+            </div>
+
+            <!-- Site / Project Selector -->
+            <select id="attendanceSiteFilter" class="form-control" style="width:155px; max-width:155px; padding:5px 8px; font-size:12px;" onchange="onSiteFilterChange()">
+              <option value="__all__">🏢 All Sites / Projects</option>
+            </select>
+
+            <!-- Search Worker -->
+            <input type="text" id="attendanceSearchInput" class="search-input" style="width:145px; min-width:115px; max-width:145px; padding:5px 8px; font-size:12px;" placeholder="Search worker..." oninput="applyAttendanceSearch()">
+
+            <!-- Petty Cash Book selector (Active on Salary tab) -->
+            <select id="salaryPettyCashSelect" class="form-control" style="width:175px; max-width:175px; padding:5px 8px; font-size:12px; font-weight:600; display:none;" title="Credit Account (Petty Cash Book)">
+              <option value="">💳 Credit: Petty Cash Book</option>
+            </select>
+
+            <!-- All 4 Buttons on Single Line Next to Cash Book Dropdown -->
+            <button class="btn btn-outline btn-sm toolbar-btn" onclick="refreshCurrentAttendanceData()" title="Refresh Attendance Data">
+              <i class="fa-solid fa-arrows-rotate"></i> Refresh
+            </button>
+            <button id="printAttendanceBtn" class="btn btn-primary btn-sm toolbar-btn" onclick="printActiveAttendanceSheet()" title="Print Salary Sheet / Register" style="background:#16a34a;">
+              <i class="fa-solid fa-print"></i> Salary
+            </button>
+            <button id="batchVoucherBtn" class="btn btn-primary btn-sm toolbar-btn" onclick="openSelectedPaymentVouchers()" style="display:none; background:#2563eb;" title="Print Selected Payment Vouchers (Half A4)">
+              <i class="fa-solid fa-receipt"></i> Vouchers (<span id="selectedVoucherCount">0</span>)
+            </button>
+            <button class="btn btn-secondary btn-sm toolbar-btn" onclick="exportAttendanceJsonBackup()" title="Export JSON Backup">
+              <i class="fa-solid fa-cloud-arrow-down"></i> Backup
+            </button>
+          </div>
+        </div>
+
+        <!-- KPI Badges -->
+        <div class="kpi-row" id="attendanceKpiRow">
+          <div class="kpi-card">
+            <div class="kpi-icon" style="background:#e0f2fe; color:#0284c7;"><i class="fa-solid fa-users"></i></div>
+            <div>
+              <div class="kpi-value" id="kpiTotalEmployees">0</div>
+              <div class="kpi-label">Employees Active</div>
+            </div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-icon" style="background:#dcfce7; color:#16a34a;"><i class="fa-solid fa-calendar-check"></i></div>
+            <div>
+              <div class="kpi-value" id="kpiTotalLogs">0</div>
+              <div class="kpi-label">Duty Logs Recorded</div>
+            </div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-icon" style="background:#fef3c7; color:#d97706;"><i class="fa-solid fa-user-check"></i></div>
+            <div>
+              <div class="kpi-value" id="kpiTotalPresentDays">0</div>
+              <div class="kpi-label">Present Mandays</div>
+            </div>
+          </div>
+          <div class="kpi-card" id="kpiSalaryDueCard" style="display:none;">
+            <div class="kpi-icon" style="background:#fee2e2; color:#dc2626;"><i class="fa-solid fa-indian-rupee-sign"></i></div>
+            <div>
+              <div class="kpi-value" id="kpiTotalSalaryDue">₹0</div>
+              <div class="kpi-label">Net Salary Payable</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- SubView A: Attendance Muster Roll Matrix -->
+        <div id="viewAttendanceRegister">
+          <div class="table-container">
+            <div id="attendanceLoading" class="loading-wrap" style="display:none;">
+              <div class="spinner"></div>
+              <span>Fetching and compiling attendance matrix...</span>
+            </div>
+            <table class="data-table" id="attendanceMatrixTable">
+              <thead id="attendanceMatrixHead"></thead>
+              <tbody id="attendanceMatrixBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- SubView B: Salary Calculation Register -->
+        <div id="viewSalaryRegister" style="display:none;">
+          <div class="table-container">
+            <div id="salaryLoading" class="loading-wrap" style="display:none;">
+              <div class="spinner"></div>
+              <span>Calculating monthly payroll, earnings & deductions...</span>
+            </div>
+            <table class="data-table" id="salaryRegisterTable">
+              <thead>
+                <tr>
+                  <th style="width:36px; text-align:center;"><input type="checkbox" id="selectAllSalaryCheckbox" onclick="toggleSelectAllSalary(this)" title="Select All"></th>
+                  <th style="width:34px;">#</th>
+                  <th onclick="toggleSalarySort('site')" style="cursor:pointer; user-select:none;" title="Click to sort by Site Name (A-Z)">
+                    Site Name <i id="sortIconSite" class="fa-solid fa-arrow-down-a-z" style="font-size:11px; margin-left:4px; color:var(--primary);"></i>
+                  </th>
+                  <th style="text-align:right; width:85px;">Bill Rate (₹)</th>
+                  <th style="text-align:right; width:85px;">Pay Rate (₹)</th>
+                  <th style="text-align:center; width:65px;">Bill Days</th>
+                  <th onclick="toggleSalarySort('emp')" style="cursor:pointer; user-select:none;" title="Click to sort by Employee Name (A-Z)">
+                    Employee Name <i id="sortIconEmp" class="fa-solid fa-arrow-down-a-z" style="font-size:11px; margin-left:4px; color:#94a3b8;"></i>
+                  </th>
+                  <th style="text-align:right; width:85px;">Gross (₹)</th>
+                  <th style="text-align:right; width:85px; color:#d97706;">Adv Bal (₹)</th>
+                  <th style="text-align:center; width:95px; color:var(--danger);">Deduct Adv (₹)</th>
+                  <th style="text-align:right; width:95px; color:var(--primary); font-weight:800;">Net (₹)</th>
+                  <th style="text-align:center; width:45px;">Slip</th>
+                </tr>
+              </thead>
+              <tbody id="salaryRegisterBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========================================================================= -->
+      <!-- SECTION 2: UPDATE EMPLOYEE PROFILE                                         -->
+      <!-- ========================================================================= -->
+      <section id="section-employeeProfile" class="section-panel">
+        <div class="panel-header">
+          <div class="panel-header-left">
+            <button class="btn btn-secondary btn-sm" onclick="closeSection()">
+              <i class="fa-solid fa-arrow-left"></i> Dashboard
+            </button>
+            <h2>Staff & Employee Directory</h2>
+          </div>
+          <div>
+            <button class="btn btn-primary btn-sm" onclick="openAddEmployeeModal()">
+              <i class="fa-solid fa-user-plus"></i> Add New Employee
+            </button>
+          </div>
+        </div>
+
+        <div class="toolbar-box">
+          <div class="toolbar-left">
+            <input type="text" id="employeeSearchInput" class="search-input" placeholder="Search by name, EFN or mobile..." oninput="filterEmployees()">
+            <select id="employeeRoleFilter" class="form-control" style="width:170px; padding:7px 10px;" onchange="filterEmployees()">
+              <option value="__all__">All Designations</option>
+            </select>
+          </div>
+          <div class="toolbar-right">
+            <button class="btn btn-outline btn-sm" onclick="loadEmployees()">
+              <i class="fa-solid fa-arrows-rotate"></i> Refresh
+            </button>
+          </div>
+        </div>
+
+        <div class="table-container">
+          <div id="employeeLoading" class="loading-wrap" style="display:none;">
+            <div class="spinner"></div>
+            <span>Loading employee directory...</span>
+          </div>
+          <table class="data-table" id="employeeTable">
+            <thead>
+              <tr>
+                <th style="width:40px;">#</th>
+                <th>Employee</th>
+                <th>Enrollment (EFN)</th>
+                <th>Father's / Husband's Name</th>
+                <th>Designation / Role</th>
+                <th>Contact Mobile</th>
+                <th style="text-align:right;">Daily Rate</th>
+                <th style="text-align:right;">Monthly Rate</th>
+                <th>Status</th>
+                <th style="text-align:center;">Action</th>
+              </tr>
+            </thead>
+            <tbody id="employeeTableBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ========================================================================= -->
+      <!-- SECTION 3: PAYMENT VOUCHER                                                 -->
+      <!-- ========================================================================= -->
+      <section id="section-paymentVoucher" class="section-panel">
+        <div class="panel-header">
+          <div class="panel-header-left">
+            <button class="btn btn-secondary btn-sm" onclick="closeSection()">
+              <i class="fa-solid fa-arrow-left"></i> Dashboard
+            </button>
+            <h2>Payment & Expense Vouchers</h2>
+          </div>
+          <div style="display:flex; gap:8px;">
+            <button class="btn btn-secondary btn-sm" onclick="openAdvancedVoucherModal(null)">
+              <i class="fa-solid fa-file-pen"></i> Advanced Voucher Editor
+            </button>
+            <button class="btn btn-primary btn-sm" onclick="openCreateVoucherModal()">
+              <i class="fa-solid fa-plus"></i> New Payment Voucher
+            </button>
+          </div>
+        </div>
+
+        <div class="toolbar-box">
+          <div class="toolbar-left">
+            <input type="text" id="voucherSearchInput" class="search-input" placeholder="Search voucher number, ledger, narration..." oninput="filterVouchers()">
+          </div>
+          <div class="toolbar-right">
+            <button class="btn btn-outline btn-sm" onclick="loadVouchers()">
+              <i class="fa-solid fa-arrows-rotate"></i> Refresh Vouchers
+            </button>
+          </div>
+        </div>
+
+        <div class="table-container">
+          <div id="voucherLoading" class="loading-wrap" style="display:none;">
+            <div class="spinner"></div>
+            <span>Fetching payment records...</span>
+          </div>
+          <table class="data-table" id="voucherTable">
+            <thead>
+              <tr>
+                <th>Voucher #</th>
+                <th>Date</th>
+                <th>Paid To (Debit Ledger / Amount)</th>
+                <th>Payment Mode (Credit Ledger / Amount)</th>
+                <th style="text-align:right;">Total Amount</th>
+                <th>Narration / Remarks</th>
+                <th style="text-align:center;">Action</th>
+              </tr>
+            </thead>
+            <tbody id="voucherTableBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ========================================================================= -->
+      <!-- SECTION 4: PRINT REPORT                                                    -->
+      <!-- ========================================================================= -->
+      <section id="section-printReport" class="section-panel">
+        <div class="panel-header">
+          <div class="panel-header-left">
+            <button class="btn btn-secondary btn-sm" onclick="closeSection()">
+              <i class="fa-solid fa-arrow-left"></i> Dashboard
+            </button>
+            <h2>Print Report Webviews</h2>
+          </div>
+        </div>
+
+        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:20px;">
+          <!-- 1. Attendance Muster Roll -->
+          <div class="menu-card" style="text-align:left; align-items:flex-start; padding:24px;">
+            <div class="icon-box" style="background:#dcfce7; color:#16a34a; margin-bottom:6px;">
+              <i class="fa-solid fa-clipboard-user"></i>
+            </div>
+            <div class="title">Sitewise Attendance Sheet</div>
+            <div class="desc">Printable muster roll showing 1-31 monthly days, shift markings and worker signature blanks.</div>
+            <button class="btn btn-primary btn-sm" style="width:100%; margin-top:8px;" onclick="openSection('monthlyAttendance'); switchAttendanceSubTab('attendance');">
+              <i class="fa-solid fa-arrow-up-right-from-square"></i> Open Attendance Webview
+            </button>
+          </div>
+
+          <!-- 2. Monthly Salary Statement -->
+          <div class="menu-card" style="text-align:left; align-items:flex-start; padding:24px;">
+            <div class="icon-box" style="background:#e0f2fe; color:#0284c7; margin-bottom:6px;">
+              <i class="fa-solid fa-file-invoice"></i>
+            </div>
+            <div class="title">Monthly Salary Statement</div>
+            <div class="desc">Official payroll disbursement sheet with site breakdown, recoveries and net payable wages.</div>
+            <button class="btn btn-primary btn-sm" style="width:100%; margin-top:8px;" onclick="openSection('monthlyAttendance'); switchAttendanceSubTab('salary');">
+              <i class="fa-solid fa-arrow-up-right-from-square"></i> Open Salary Webview
+            </button>
+          </div>
+
+          <!-- 3. Penalty & Fine Register -->
+          <div class="menu-card" style="text-align:left; align-items:flex-start; padding:24px;">
+            <div class="icon-box" style="background:#fee2e2; color:#dc2626; margin-bottom:6px;">
+              <i class="fa-solid fa-triangle-exclamation"></i>
+            </div>
+            <div class="title">Penalty & Deduction Statement</div>
+            <div class="desc">Monthly listing of late arrival, early departure penalties, deductions and infractions.</div>
+            <button class="btn btn-outline btn-sm" style="width:100%; margin-top:8px;" onclick="openPenaltyReportModal()">
+              <i class="fa-solid fa-file-shield"></i> View Penalty Statement
+            </button>
+          </div>
+
+          <!-- 4. Employee Enrollment Cards -->
+          <div class="menu-card" style="text-align:left; align-items:flex-start; padding:24px;">
+            <div class="icon-box" style="background:#f3e8ff; color:#9333ea; margin-bottom:6px;">
+              <i class="fa-solid fa-id-card"></i>
+            </div>
+            <div class="title">Staff Enrollment (EFN) Forms</div>
+            <div class="desc">Standardized employee registration bio-data cards with photo placeholder and signature.</div>
+            <button class="btn btn-outline btn-sm" style="width:100%; margin-top:8px;" onclick="openSection('employeeProfile')">
+              <i class="fa-solid fa-address-book"></i> Browse Directory & Print
+            </button>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <!-- ========================================================================= -->
+  <!-- MODALS                                                                    -->
+  <!-- ========================================================================= -->
+
+  <!-- Modal 1: Edit Employee Profile -->
+  <div id="modalEditEmployee" class="modal-overlay">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3 id="modalEditEmployeeTitle">Edit Employee Profile</h3>
+        <button class="modal-close-btn" onclick="closeModal('modalEditEmployee')">&times;</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="editEmpId">
+        <div class="form-grid-2">
+          <div class="form-group">
+            <label>Full Name *</label>
+            <input type="text" id="editEmpName" class="form-control" required>
+          </div>
+          <div class="form-group">
+            <label>Enrollment (EFN)</label>
+            <input type="text" id="editEmpEnrollment" class="form-control" placeholder="e.g. 1012">
+          </div>
+        </div>
+
+        <div class="form-grid-2">
+          <div class="form-group">
+            <label>Father's / Husband's Name</label>
+            <input type="text" id="editEmpFather" class="form-control">
+          </div>
+          <div class="form-group">
+            <label>Mobile Number *</label>
+            <input type="tel" id="editEmpMobile" class="form-control" maxlength="10">
+          </div>
+        </div>
+
+        <div class="form-grid-2">
+          <div class="form-group">
+            <label>Designation / Role</label>
+            <input type="text" id="editEmpRole" class="form-control" placeholder="e.g. Worker, Electrician">
+          </div>
+          <div class="form-group">
+            <label>Aadhar Card Number</label>
+            <input type="text" id="editEmpAadhar" class="form-control" placeholder="12-digit UID">
+          </div>
+        </div>
+
+        <div class="form-grid-2">
+          <div class="form-group">
+            <label>Daily Rate (₹)</label>
+            <input type="number" id="editEmpDailyRate" class="form-control" placeholder="e.g. 500">
+          </div>
+          <div class="form-group">
+            <label>Monthly Rate (₹)</label>
+            <input type="number" id="editEmpMonthlyRate" class="form-control" placeholder="e.g. 15000">
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>Status</label>
+          <select id="editEmpStatus" class="form-control">
+            <option value="active">Active</option>
+            <option value="inactive">Inactive / Delinked</option>
+          </select>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeModal('modalEditEmployee')">Cancel</button>
+        <button class="btn btn-primary" onclick="saveEmployeeProfile()">Save Profile Changes</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal 2: Create Payment Voucher -->
+  <div id="modalCreateVoucher" class="modal-overlay">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3>Record Payment Voucher</h3>
+        <button class="modal-close-btn" onclick="closeModal('modalCreateVoucher')">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-grid-2">
+          <div class="form-group">
+            <label>Voucher Date *</label>
+            <input type="date" id="newVoucherDate" class="form-control">
+          </div>
+          <div class="form-group">
+            <label>Amount (₹) *</label>
+            <input type="number" id="newVoucherAmount" class="form-control" placeholder="0.00" min="1">
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>Paid To (Debit Account / Vendor / Staff / Expense) *</label>
+          <select id="newVoucherDebitLedger" class="form-control"></select>
+        </div>
+
+        <div class="form-group">
+          <label>Paid From (Credit Cash / Bank Account) *</label>
+          <select id="newVoucherCreditLedger" class="form-control"></select>
+        </div>
+
+        <div class="form-group">
+          <label>Narration / Description *</label>
+          <input type="text" id="newVoucherNarration" class="form-control" placeholder="Payment towards...">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeModal('modalCreateVoucher')">Cancel</button>
+        <button class="btn btn-primary" onclick="submitPaymentVoucher()">Create Voucher</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal 2b: Advanced Voucher Editor -->
+  <div id="modalAdvancedVoucher" class="modal-overlay">
+    <div class="modal-box" style="max-width: 980px; width: 95%;">
+      <div class="modal-header" style="background:#f8fafc; border-bottom:1px solid var(--border);">
+        <h3 id="advVoucherModalTitle" style="display:flex; align-items:center; gap:8px; font-size:18px;">
+          <i class="fa-solid fa-file-pen" style="color:var(--primary);"></i> Advanced Voucher Editor
+        </h3>
+        <button class="modal-close-btn" onclick="closeModal('modalAdvancedVoucher')">&times;</button>
+      </div>
+
+      <div class="modal-body" style="padding:20px 24px;">
+        <input type="hidden" id="advVoucherId">
+
+        <!-- Top Details Grid -->
+        <div style="display:grid; grid-template-columns: 1.2fr 1fr 1fr 1.2fr; gap:14px; margin-bottom:18px;">
+          <div class="form-group" style="margin-bottom:0;">
+            <label style="font-size:12px; font-weight:700; color:#475569;">Voucher No</label>
+            <input type="text" id="advVoucherNo" class="form-control" placeholder="Auto-generated" readonly style="background:#f1f5f9; font-weight:700; color:var(--primary);">
+          </div>
+          <div class="form-group" style="margin-bottom:0;">
+            <label style="font-size:12px; font-weight:700; color:#475569;">Voucher Type *</label>
+            <select id="advVoucherType" class="form-control" style="font-weight:700; color:#1e293b;">
+              <option value="Payment">Payment Voucher</option>
+              <option value="Receipt">Receipt Voucher</option>
+              <option value="Journal">Journal Voucher</option>
+              <option value="Contra">Contra Voucher</option>
+            </select>
+          </div>
+          <div class="form-group" style="margin-bottom:0;">
+            <label style="font-size:12px; font-weight:700; color:#475569;">Voucher Date *</label>
+            <input type="date" id="advVoucherDate" class="form-control" required style="font-weight:600;">
+          </div>
+          <div class="form-group" style="margin-bottom:0;">
+            <label style="font-size:12px; font-weight:700; color:#475569;">Reference / Bill #</label>
+            <input type="text" id="advVoucherRef" class="form-control" placeholder="e.g. Bill-104 / Chq#">
+          </div>
+        </div>
+
+        <!-- Line Entries Card -->
+        <div style="border:1px solid var(--border); border-radius:10px; overflow:hidden; margin-bottom:16px; box-shadow:0 1px 3px rgba(0,0,0,0.04);">
+          <div style="background:#f8fafc; padding:10px 16px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center;">
+            <div style="font-weight:800; font-size:13px; color:#1e293b; display:flex; align-items:center; gap:6px;">
+              <i class="fa-solid fa-scale-balanced" style="color:var(--primary);"></i> Double-Entry Accounting Lines
+            </div>
+            <button type="button" class="btn btn-outline btn-sm" onclick="addAdvVoucherRow()" style="padding:4px 10px; font-size:12px; font-weight:700; border-color:var(--primary); color:var(--primary);">
+              <i class="fa-solid fa-plus"></i> Add Line Entry
+            </button>
+          </div>
+
+          <div style="max-height:320px; overflow-y:auto;">
+            <table class="data-table" style="margin:0; width:100%;">
+              <thead>
+                <tr style="background:#f1f5f9; font-size:11px; text-transform:uppercase; letter-spacing:0.5px;">
+                  <th style="width:110px;">Type</th>
+                  <th>Ledger Account (Folio)</th>
+                  <th style="width:140px; text-align:right;">Debit (₹)</th>
+                  <th style="width:140px; text-align:right;">Credit (₹)</th>
+                  <th style="width:180px;">Line Remark</th>
+                  <th style="width:50px; text-align:center;">Action</th>
+                </tr>
+              </thead>
+              <tbody id="advVoucherEntriesBody"></tbody>
+              <tfoot>
+                <tr style="background:#f8fafc; font-weight:800; border-top:2px solid var(--border);">
+                  <td colspan="2" style="text-align:right; font-size:12px; text-transform:uppercase; color:#475569; padding:10px;">Total Amounts:</td>
+                  <td style="text-align:right; font-size:14px; color:#16a34a; padding:10px;" id="advTotalDebit">₹0</td>
+                  <td style="text-align:right; font-size:14px; color:#0284c7; padding:10px;" id="advTotalCredit">₹0</td>
+                  <td colspan="2"></td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
+
+        <!-- Live Balance Validation Box -->
+        <div id="advBalanceStatus" style="padding:10px 16px; border-radius:8px; font-size:13px; font-weight:600; margin-bottom:16px; display:flex; align-items:center; gap:8px;"></div>
+
+        <!-- Narration -->
+        <div class="form-group" style="margin-bottom:0;">
+          <label style="font-size:12px; font-weight:700; color:#475569;">Voucher Narration / Purpose *</label>
+          <textarea id="advVoucherNarration" class="form-control" rows="2" placeholder="State the reason or narration for this voucher..." required style="resize:vertical;"></textarea>
+        </div>
+      </div>
+
+      <div class="modal-footer" style="background:#f8fafc; border-top:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; padding:12px 24px;">
+        <button class="btn btn-secondary" onclick="closeModal('modalAdvancedVoucher')">Cancel</button>
+        <button id="advVoucherSaveBtn" class="btn btn-primary" onclick="saveAdvancedVoucher()" style="padding:10px 24px; font-weight:700;">
+          <i class="fa-solid fa-floppy-disk"></i> Save Voucher
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal 3: Day Attendance Toggle / Edit -->
+  <div id="modalAttendanceDay" class="modal-overlay">
+    <div class="modal-box" style="max-width:440px;">
+      <div class="modal-header">
+        <h3 id="modalDayTitle">Mark Attendance</h3>
+        <button class="modal-close-btn" onclick="closeModal('modalAttendanceDay')">&times;</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="dayWorkerId">
+        <input type="hidden" id="daySiteId">
+        <input type="hidden" id="dayNumber">
+        <input type="hidden" id="dayExistingLogId">
+
+        <p id="dayContextText" style="font-size:13px; color:var(--text-muted); margin-bottom:16px;"></p>
+
+        <div class="form-group">
+          <label>Status</label>
+          <select id="dayStatusSelect" class="form-control">
+            <option value="Present">Present (P)</option>
+            <option value="HD">Holiday / Half Day (HD)</option>
+            <option value="Absent">Absent (A)</option>
+            <option value="Leave">Leave (L)</option>
+          </select>
+        </div>
+
+        <div class="form-grid-2">
+          <div class="form-group">
+            <label>Hours Worked</label>
+            <input type="number" id="dayHoursInput" class="form-control" value="8" min="0" max="24">
+          </div>
+          <div class="form-group">
+            <label>Shift Code</label>
+            <input type="text" id="dayShiftInput" class="form-control" value="G">
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>Daily Rate (₹)</label>
+          <input type="number" id="dayRateInput" class="form-control" placeholder="Daily rate for log">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="dayDemarkBtn" class="btn btn-danger btn-sm" onclick="demarkAttendanceLog()" style="margin-right:auto; display:none;">
+          <i class="fa-solid fa-trash"></i> Delete Log
+        </button>
+        <button class="btn btn-secondary btn-sm" onclick="closeModal('modalAttendanceDay')">Cancel</button>
+        <button class="btn btn-primary btn-sm" onclick="saveDayAttendance()">Save Record</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal 4: Penalty Register Statement -->
+  <div id="modalPenaltyReport" class="modal-overlay">
+    <div class="modal-box modal-lg">
+      <div class="modal-header">
+        <h3>Penalty & Deduction Statement</h3>
+        <button class="modal-close-btn" onclick="closeModal('modalPenaltyReport')">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div id="penaltyLoading" class="loading-wrap" style="display:none;">
+          <div class="spinner"></div>
+          <span>Loading infraction logs...</span>
+        </div>
+        <table class="data-table" id="penaltyTable">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Employee Name</th>
+              <th>Site / Project</th>
+              <th>Violation Type</th>
+              <th>Details / Reason</th>
+              <th style="text-align:right;">Fine Amount</th>
+            </tr>
+          </thead>
+          <tbody id="penaltyTableBody"></tbody>
+        </table>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeModal('modalPenaltyReport')">Close</button>
+        <button class="btn btn-primary" onclick="printElement('modalPenaltyReport')">
+          <i class="fa-solid fa-print"></i> Print Statement
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal 5: Payslip / Payment Voucher View -->
+  <div id="modalPayslip" class="modal-overlay">
+    <div class="modal-box modal-lg" style="max-width:850px;">
+      <div class="modal-header">
+        <h3 id="modalPayslipTitle"><i class="fa-solid fa-receipt" style="color:var(--primary); margin-right:8px;"></i> Salary Payment Voucher (Half-A4)</h3>
+        <button class="modal-close-btn" onclick="closeModal('modalPayslip')">&times;</button>
+      </div>
+      <div class="modal-body" id="payslipPrintArea" style="background:#f8fafc; padding:16px;"></div>
+      <div class="modal-footer" style="display:flex; justify-content:space-between; align-items:center;">
+        <div style="font-size:12px; color:var(--text-muted);">
+          <i class="fa-solid fa-circle-info"></i> Formatted for Half-A4 printing (2 vouchers per sheet with QR verification).
+        </div>
+        <div style="display:flex; gap:10px;">
+          <button class="btn btn-secondary" onclick="closeModal('modalPayslip')">Close</button>
+          <button class="btn btn-primary" onclick="printPayslipVouchers()">
+            <i class="fa-solid fa-print"></i> Print Voucher Slip(s)
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================================================= -->
+  <!-- APPLICATION SCRIPTS                                                       -->
+  <!-- ========================================================================= -->
+  <script>
+    // API Configuration
+    const API_BASE = 'https://hipk.onrender.com/api';
+    const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+    // Global Session State
+    let sessionUser = JSON.parse(localStorage.getItem('sessionUser') || 'null');
+
+    // Attendance & Salary State
+    const now = new Date();
+    let selectedYear = now.getFullYear();
+    let selectedMonth = now.getMonth();
+    let activeAttendanceSubTab = 'attendance'; // 'attendance' or 'salary'
+    let rawAttendanceLogs = [];
+    let allEmployees = [];
+    let allLeads = [];
+    let allLedgers = [];
+    let recentVouchers = [];
+
+    // ── Toast Notifications ──────────────────────────────────────────────────
+    function showToast(message, type = 'info') {
+      const container = document.getElementById('toastContainer');
+      const toast = document.createElement('div');
+      toast.className = `toast toast-${type}`;
+      const icon = type === 'success' ? 'circle-check' : type === 'error' ? 'triangle-exclamation' : 'circle-info';
+      toast.innerHTML = `<i class="fa-solid fa-${icon}"></i> <span>${message}</span>`;
+      container.appendChild(toast);
+      setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(10px)';
+        setTimeout(() => toast.remove(), 250);
+      }, 3200);
+    }
+
+    // ── HTTP API Client ──────────────────────────────────────────────────────
+    async function apiRequest(endpoint, options = {}) {
+      if (!sessionUser?.token) {
+        doLogout();
+        throw new Error('Session expired');
+      }
+      const url = `${API_BASE}/${endpoint.replace(/^\//, '')}`;
+      const headers = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${sessionUser.token}`,
+        ...(sessionUser.selectedDbName ? { 'x-tenant-id': sessionUser.selectedDbName } : {}),
+        ...(options.headers || {})
+      };
+
+      try {
+        const res = await fetch(url, { ...options, headers });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.message || data.error || `HTTP ${res.status}`);
+        }
+        return data;
+      } catch (err) {
+        console.error(`API Error [${endpoint}]:`, err);
+        throw err;
+      }
+    }
+
+    // ── Authentication & Login ───────────────────────────────────────────────
+    async function doLogin() {
+      const mobile = document.getElementById('loginMobile').value.trim();
+      const password = document.getElementById('loginPassword').value;
+      const errorEl = document.getElementById('loginError');
+      errorEl.textContent = '';
+
+      if (!mobile || !password) {
+        errorEl.textContent = 'Please enter both mobile number and password.';
+        return;
+      }
+
+      try {
+        const res = await fetch(`${API_BASE}/auth/login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mobile, password })
+        });
+        const data = await res.json();
+
+        if (!res.ok || !data.success) {
+          errorEl.textContent = data.message || data.error || 'Login failed. Please check credentials.';
+          return;
+        }
+
+        const s = data.userSession || {};
+        const role = (s.userRole || s.role || '').toLowerCase();
+        if (role !== 'corpadmin') {
+          errorEl.textContent = 'Access restricted: Only CorpAdmin role users are authorized to log in.';
+          return;
+        }
+
+        sessionUser = {
+          token: data.token,
+          userId: s.userId,
+          userRole: s.userRole || 'corpAdmin',
+          userDisplayName: s.userDisplayName || s.name || 'User',
+          userEmail: s.userEmail,
+          mobile: s.mobile,
+          userProfileImage: s.userProfileImage || s.profileImage || s.photo || s.photo_url || '',
+          CorpProfileImage: s.CorpProfileImage || s.corpProfileImage || s.logo || '',
+          accessCorporate: s.accessCorporate || [],
+          selectedDbName: s.dbName,
+          selectedCorporateName: s.corporateName || 'Corporate Office'
+        };
+        localStorage.setItem('sessionUser', JSON.stringify(sessionUser));
+        enterApp();
+        showToast(`Welcome back, ${sessionUser.userDisplayName}!`, 'success');
+      } catch (err) {
+        errorEl.textContent = 'Could not reach server: ' + err.message;
+      }
+    }
+
+    function doLogout() {
+      sessionUser = null;
+      localStorage.removeItem('sessionUser');
+      document.getElementById('appContent').style.display = 'none';
+      document.getElementById('loginScreen').style.display = 'flex';
+      document.getElementById('loginPassword').value = '';
+      closeSection();
+    }
+
+    function resolveImageUrl(url) {
+      if (!url) return '';
+      if (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('data:')) return url;
+      return `https://hipk.onrender.com/${url.startsWith('/') ? url.slice(1) : url}`;
+    }
+
+    function updateHeaderProfiles() {
+      if (!sessionUser) return;
+
+      // 1. Corporate Profile Image & Logo
+      const currentCorp = (sessionUser.accessCorporate || []).find(c => c.dbName === sessionUser.selectedDbName) || {};
+      const rawCorpImg = currentCorp.CorpProfileImage || currentCorp.corpProfileImage || sessionUser.CorpProfileImage || currentCorp.logo || '';
+      const corpImgUrl = resolveImageUrl(rawCorpImg);
+
+      const corpImgEl = document.getElementById('headerCorpImg');
+      const corpFallbackEl = document.getElementById('headerCorpFallback');
+      if (corpImgEl && corpFallbackEl) {
+        if (corpImgUrl) {
+          corpImgEl.src = corpImgUrl;
+          corpImgEl.style.display = 'block';
+          corpFallbackEl.style.display = 'none';
+        } else {
+          corpImgEl.style.display = 'none';
+          corpFallbackEl.style.display = 'flex';
+        }
+      }
+
+      // 2. User Profile Image & Name
+      const userName = sessionUser.userDisplayName || 'User';
+      const userNameEl = document.getElementById('userDisplayName');
+      if (userNameEl) userNameEl.textContent = userName;
+
+      const rawUserImg = sessionUser.userProfileImage || '';
+      const userImgUrl = resolveImageUrl(rawUserImg);
+
+      const userImgEl = document.getElementById('headerUserImg');
+      const userFallbackEl = document.getElementById('headerUserFallback');
+      const userAvatarEl = document.getElementById('userAvatar');
+      if (userAvatarEl) userAvatarEl.textContent = userName.charAt(0).toUpperCase();
+
+      if (userImgEl && userFallbackEl) {
+        if (userImgUrl) {
+          userImgEl.src = userImgUrl;
+          userImgEl.style.display = 'block';
+          userFallbackEl.style.display = 'none';
+        } else {
+          userImgEl.style.display = 'none';
+          userFallbackEl.style.display = 'flex';
+        }
+      }
+    }
+
+    function enterApp() {
+      document.getElementById('loginScreen').style.display = 'none';
+      document.getElementById('appContent').style.display = 'block';
+      document.getElementById('userDisplayName').textContent = sessionUser.userDisplayName;
+      document.getElementById('userAvatar').textContent = (sessionUser.userDisplayName || 'U').charAt(0).toUpperCase();
+
+      populateCorporateDropdown();
+      updateMonthYearLabel();
+      updateHeaderProfiles();
+
+      // Pre-fetch basic master data
+      loadSitesList();
+    }
+
+    function populateCorporateDropdown() {
+      const select = document.getElementById('corporateSelect');
+      select.innerHTML = '';
+      const list = sessionUser.accessCorporate || [];
+      if (list.length === 0) {
+        const opt = document.createElement('option');
+        opt.value = sessionUser.selectedDbName || '';
+        opt.textContent = sessionUser.selectedCorporateName || 'Default Corporate';
+        select.appendChild(opt);
+        return;
+      }
+      list.forEach(c => {
+        const opt = document.createElement('option');
+        opt.value = c.dbName;
+        opt.textContent = c.corporateName;
+        if (c.dbName === sessionUser.selectedDbName) opt.selected = true;
+        select.appendChild(opt);
+      });
+    }
+
+    function onCorporateChange(dbName) {
+      const corp = (sessionUser.accessCorporate || []).find(c => c.dbName === dbName);
+      sessionUser.selectedDbName = dbName;
+      sessionUser.selectedCorporateName = corp ? corp.corporateName : sessionUser.selectedCorporateName;
+      sessionUser.CorpProfileImage = corp ? (corp.CorpProfileImage || corp.corpProfileImage || corp.logo) : sessionUser.CorpProfileImage;
+      localStorage.setItem('sessionUser', JSON.stringify(sessionUser));
+      updateHeaderProfiles();
+      showToast(`Switched corporate to ${sessionUser.selectedCorporateName}`, 'info');
+      // Refresh current open view
+      refreshCurrentAttendanceData();
+    }
+
+    // ── Navigation & Sections ────────────────────────────────────────────────
+    function openSection(name) {
+      document.getElementById('menuGrid').style.display = 'none';
+      document.querySelectorAll('.section-panel').forEach(p => p.classList.remove('visible'));
+      const target = document.getElementById(`section-${name}`);
+      if (target) {
+        target.classList.add('visible');
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+
+        if (name === 'monthlyAttendance') {
+          refreshCurrentAttendanceData();
+        } else if (name === 'employeeProfile') {
+          loadEmployees();
+        } else if (name === 'paymentVoucher') {
+          loadVouchers();
+        }
+      }
+    }
+
+    function closeSection() {
+      document.querySelectorAll('.section-panel').forEach(p => p.classList.remove('visible'));
+      document.getElementById('menuGrid').style.display = 'grid';
+    }
+
+    // ── Modal Helper ─────────────────────────────────────────────────────────
+    function openModal(id) {
+      const el = document.getElementById(id);
+      if (el) el.classList.add('open');
+    }
+    function closeModal(id) {
+      const el = document.getElementById(id);
+      if (el) el.classList.remove('open');
+    }
+
+    // ── Month & Year Navigator ───────────────────────────────────────────────
+    function updateMonthYearLabel() {
+      document.getElementById('currentMonthYearDisplay').textContent = `${MONTH_NAMES[selectedMonth]} ${selectedYear}`;
+    }
+
+    function changeMonth(delta) {
+      selectedMonth += delta;
+      if (selectedMonth > 11) {
+        selectedMonth = 0;
+        selectedYear += 1;
+      } else if (selectedMonth < 0) {
+        selectedMonth = 11;
+        selectedYear -= 1;
+      }
+      updateMonthYearLabel();
+      refreshCurrentAttendanceData();
+    }
+
+    // ── Sites List Fetcher ───────────────────────────────────────────────────
+    async function loadSitesList() {
+      try {
+        const res = await apiRequest('service/leads/list');
+        allLeads = (res.data || []).sort((a, b) => {
+          const nameA = (a.sender_name || a.displayName || a.product_name || '').toLowerCase();
+          const nameB = (b.sender_name || b.displayName || b.product_name || '').toLowerCase();
+          return nameA.localeCompare(nameB);
+        });
+        const siteSelect = document.getElementById('attendanceSiteFilter');
+        siteSelect.innerHTML = '<option value="__all__">🏢 All Sites / Projects</option>';
+        allLeads.forEach(lead => {
+          const opt = document.createElement('option');
+          opt.value = lead._id;
+          opt.textContent = lead.sender_name || lead.displayName || lead.product_name || 'Site #' + (lead.lead_no || '');
+          siteSelect.appendChild(opt);
+        });
+      } catch (err) {
+        console.warn('Could not load sites:', err);
+      }
+    }
+
+    // =========================================================================
+    // NUMBER TO WORDS (INDIAN RUPEES)
+    // =========================================================================
+    function numberToWordsIndian(num) {
+      if (!num || isNaN(num) || num <= 0) return 'Zero';
+      const a = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
+      const b = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
+
+      function inWords(n) {
+        if (n < 20) return a[n];
+        if (n < 100) return b[Math.floor(n / 10)] + (n % 10 !== 0 ? ' ' + a[n % 10] : '');
+        if (n < 1000) return a[Math.floor(n / 100)] + ' Hundred' + (n % 100 !== 0 ? ' and ' + inWords(n % 100) : '');
+        if (n < 100000) return inWords(Math.floor(n / 1000)) + ' Thousand' + (n % 1000 !== 0 ? ' ' + inWords(n % 1000) : '');
+        if (n < 10000000) return inWords(Math.floor(n / 100000)) + ' Lakh' + (n % 100000 !== 0 ? ' ' + inWords(n % 100000) : '');
+        return inWords(Math.floor(n / 10000000)) + ' Crore' + (n % 10000000 !== 0 ? ' ' + inWords(n % 10000000) : '');
+      }
+      return inWords(Math.round(num)).trim();
+    }
+
+    // =========================================================================
+    // MONTHLY ATTENDANCE & SALARY REGISTER LOGIC
+    // =========================================================================
+    window.salaryRowData = [];
+
+    function switchAttendanceSubTab(tab) {
+      activeAttendanceSubTab = tab;
+      const attBtn = document.getElementById('subTabAttendanceBtn');
+      const salBtn = document.getElementById('subTabSalaryBtn');
+      const viewAtt = document.getElementById('viewAttendanceRegister');
+      const viewSal = document.getElementById('viewSalaryRegister');
+      const kpiSalCard = document.getElementById('kpiSalaryDueCard');
+      const printBtn = document.getElementById('printAttendanceBtn');
+      const batchBtn = document.getElementById('batchVoucherBtn');
+      const pettySelect = document.getElementById('salaryPettyCashSelect');
+
+      if (tab === 'attendance') {
+        attBtn.classList.add('active');
+        salBtn.classList.remove('active');
+        viewAtt.style.display = 'block';
+        viewSal.style.display = 'none';
+        kpiSalCard.style.display = 'none';
+        printBtn.style.display = 'inline-flex';
+        printBtn.innerHTML = '<i class="fa-solid fa-print"></i> Muster Roll';
+        if (batchBtn) batchBtn.style.display = 'none';
+        if (pettySelect) pettySelect.style.display = 'none';
+      } else {
+        salBtn.classList.add('active');
+        attBtn.classList.remove('active');
+        viewAtt.style.display = 'none';
+        viewSal.style.display = 'block';
+        kpiSalCard.style.display = 'flex';
+        printBtn.style.display = 'inline-flex';
+        printBtn.innerHTML = '<i class="fa-solid fa-print"></i> Salary';
+        if (batchBtn) {
+          batchBtn.style.display = 'inline-flex';
+          const checkedCount = document.querySelectorAll('.salary-row-cb:checked').length;
+          batchBtn.innerHTML = `<i class="fa-solid fa-receipt"></i> Vouchers (<span id="selectedVoucherCount">${checkedCount}</span>)`;
+        }
+        if (pettySelect) pettySelect.style.display = 'inline-flex';
+        populatePettyCashDropdown();
+      }
+      refreshCurrentAttendanceData();
+    }
+
+    function populatePettyCashDropdown() {
+      const sel = document.getElementById('salaryPettyCashSelect');
+      if (!sel) return;
+      const currentVal = sel.value;
+      sel.innerHTML = '<option value="">💳 Credit: Petty Cash Book</option>';
+
+      const userDisplayName = (sessionUser?.userDisplayName || '').toLowerCase();
+      const cashLedgers = allLedgers.filter(l => {
+        const name = (l.ledgerName || l.name || '').toLowerCase();
+        const group = (l.groupName || l.group || '').toLowerCase();
+        return name.includes('petty') || name.includes('cash') || group.includes('cash') || group.includes('bank');
+      });
+
+      let defaultId = '';
+      cashLedgers.forEach(l => {
+        const opt = document.createElement('option');
+        opt.value = l._id;
+        const name = l.ledgerName || l.name;
+        const bal = Number(l.currentBalance || l.balance || 0);
+        opt.textContent = `${name} (₹${Math.abs(bal).toLocaleString('en-IN')})`;
+        sel.appendChild(opt);
+
+        if (!defaultId && userDisplayName && name.toLowerCase().includes(userDisplayName)) {
+          defaultId = l._id;
+        }
+      });
+
+      if (currentVal && cashLedgers.some(l => l._id === currentVal)) {
+        sel.value = currentVal;
+      } else if (defaultId) {
+        sel.value = defaultId;
+      } else if (cashLedgers.length > 0) {
+        sel.value = cashLedgers[0]._id;
+      }
+    }
+
+    async function refreshCurrentAttendanceData() {
+      const attLoading = document.getElementById('attendanceLoading');
+      const salLoading = document.getElementById('salaryLoading');
+      attLoading.style.display = 'block';
+      salLoading.style.display = 'block';
+
+      try {
+        const startOfMonth = new Date(selectedYear, selectedMonth, 1, 0, 0, 0, 0).toISOString();
+        const endOfMonth = new Date(selectedYear, selectedMonth + 1, 0, 23, 59, 59, 999).toISOString();
+
+        // Parallel Fetch: Attendance, Employees, Ledgers, and Site Leads
+        const [attRes, empRes, masterRes, leadsRes] = await Promise.all([
+          apiRequest(`service/hr/attendance?from_date=${startOfMonth}&to_date=${endOfMonth}`),
+          apiRequest('service/hr/employees?all=true'),
+          apiRequest('finance/master').catch(() => ({ data: { ledgers: [] } })),
+          apiRequest('service/leads/list').catch(() => ({ data: [] }))
+        ]);
+
+        rawAttendanceLogs = attRes.data || [];
+        allEmployees = empRes.data || [];
+        allLedgers = masterRes.data?.ledgers || masterRes.data || [];
+        if (leadsRes.data && leadsRes.data.length > 0) {
+          allLeads = leadsRes.data;
+        }
+
+        populatePettyCashDropdown();
+        renderAttendanceKpis();
+        renderAttendanceMatrix();
+        renderSalaryRegister();
+      } catch (err) {
+        showToast('Failed to load attendance records: ' + err.message, 'error');
+      } finally {
+        attLoading.style.display = 'none';
+        salLoading.style.display = 'none';
+      }
+    }
+
+    function isCorpAdminOrAdmin(role) {
+      if (!role) return false;
+      const r = String(role).toLowerCase().trim();
+      return r === 'corpadmin' || r === 'admin' || r === 'corporateadmin' || r === 'useradmin';
+    }
+
+    function isHdStatus(status) {
+      const s = String(status || '').toLowerCase().trim();
+      return s === 'hd' || s === 'half day' || s === 'halfday' || s === 'holiday' || s === 'h';
+    }
+
+    function isAbsentStatus(status) {
+      const s = String(status || '').toLowerCase().trim();
+      return s === 'absent' || s === 'a';
+    }
+
+    function isLeaveStatus(status) {
+      const s = String(status || '').toLowerCase().trim();
+      return s === 'leave' || s === 'l';
+    }
+
+    function renderAttendanceKpis() {
+      const activeEmpIds = new Set();
+      let totalMandays = 0;
+
+      // Group logs by worker and day to identify double duties and HD
+      const empDayLogs = {};
+      rawAttendanceLogs.forEach(l => {
+        if (isAbsentStatus(l.status) || isLeaveStatus(l.status)) return;
+        const eId = (l.employeeId && typeof l.employeeId === 'object') ? String(l.employeeId._id || l.employeeId.id) : String(l.employeeId || '');
+        if (!eId) return;
+
+        // Skip corpAdmin and Admin
+        const emp = allEmployees.find(e => String(e._id || e.id) === eId);
+        if (emp && isCorpAdminOrAdmin(emp.role)) return;
+
+        activeEmpIds.add(eId);
+
+        const d = new Date(l.date || l.dutyStart).getDate();
+        const key = `${eId}_${d}`;
+        if (!empDayLogs[key]) empDayLogs[key] = [];
+        empDayLogs[key].push(l);
+      });
+
+      // Count mandays: HD counts as 1 day, regular P is 1 day, double duty PP is 2 days (1 regular + 1 extra)
+      Object.values(empDayLogs).forEach(logs => {
+        const isHd = logs.some(l => isHdStatus(l.status));
+        if (isHd) {
+          totalMandays += 1;
+        } else if (logs.length > 1) {
+          totalMandays += 2;
+        } else {
+          totalMandays += 1;
+        }
+      });
+
+      document.getElementById('kpiTotalEmployees').textContent = activeEmpIds.size;
+      document.getElementById('kpiTotalLogs').textContent = rawAttendanceLogs.length;
+      document.getElementById('kpiTotalPresentDays').textContent = totalMandays;
+    }
+
+    function onSiteFilterChange() {
+      renderAttendanceMatrix();
+      renderSalaryRegister();
+    }
+
+    function applyAttendanceSearch() {
+      renderAttendanceMatrix();
+      renderSalaryRegister();
+    }
+
+    // Helper: Map log to site ID (supports MongoDB $oid, object, or string)
+    function getLogSiteId(log) {
+      if (!log) return '';
+      if (log.leadId) {
+        if (typeof log.leadId === 'object') {
+          return String(log.leadId['$oid'] || log.leadId._id || log.leadId.id || '');
+        }
+        return String(log.leadId);
+      }
+      if (log.siteId) {
+        if (typeof log.siteId === 'object') {
+          return String(log.siteId['$oid'] || log.siteId._id || log.siteId.id || '');
+        }
+        return String(log.siteId);
+      }
+      if (log.lead_id) return String(log.lead_id);
+      if (log.site_id) return String(log.site_id);
+      return '';
+    }
+
+    // Helper: Get clean ID string from lead object or BSON
+    function getLeadId(ld) {
+      if (!ld) return '';
+      if (ld._id && typeof ld._id === 'object') return String(ld._id['$oid'] || ld._id.id || '');
+      return String(ld._id || ld.id || '');
+    }
+
+    // Helper: Find lead matching by ID, exact site name, or normalized site name
+    function findLeadForSite(sId, siteName, leadsList) {
+      const list = leadsList || allLeads || [];
+      if (sId) {
+        const sIdStr = String(sId).trim();
+        const found = list.find(ld => getLeadId(ld) === sIdStr);
+        if (found) return found;
+      }
+      if (siteName) {
+        const norm = String(siteName).trim().toLowerCase();
+        // Exact name match
+        const exact = list.find(ld => {
+          const c1 = (ld.sender_name || '').trim().toLowerCase();
+          const c2 = (ld.displayName || '').trim().toLowerCase();
+          const c3 = (ld.product_name || '').trim().toLowerCase();
+          const c4 = (ld.name || '').trim().toLowerCase();
+          return (c1 && c1 === norm) || (c2 && c2 === norm) || (c3 && c3 === norm) || (c4 && c4 === norm);
+        });
+        if (exact) return exact;
+
+        // Substring / partial match
+        const partial = list.find(ld => {
+          const c1 = (ld.sender_name || ld.displayName || ld.product_name || ld.name || '').trim().toLowerCase();
+          return c1 && (norm.includes(c1) || c1.includes(norm));
+        });
+        if (partial) return partial;
+      }
+      return null;
+    }
+
+    // Helper: Compute employee base monthly rate safely from employees and userMaster documents (matches Directory Monthly Rate)
+    function computeEmpBaseMonthlyRate(emp, daysInMonth) {
+      if (!emp) return 0;
+      const ae = (emp.employmentHistory || []).find(e => e.active) || (emp.employmentHistory || []).slice(-1)[0] || null;
+      // 1. Direct monthly rate fields (from active history or root employee, exactly as in Directory)
+      const m = Number(ae?.monthly_rate || ae?.monthlyRate || ae?.salary || ae?.salaryRate || emp.monthly_rate || emp.monthlyRate || emp.salary || emp.salaryRate || 0);
+      if (m > 0) return m;
+
+      // 2. Generic rate or daily_rate fields (calculated on standard 30-day base if only daily rate exists)
+      const d = Number(ae?.daily_rate || ae?.dailyRate || emp.daily_rate || emp.dailyRate || emp.rate || ae?.rate || 0);
+      if (d > 0) {
+        if (d >= 1000) return d;
+        return Math.round(d * 30);
+      }
+      return 0;
+    }
+
+    // Helper: Resolve both Bill Rate and Pay Rate for a site from leads and employees
+    function resolveSiteRates(emp, sId, siteLogs, defaultMRate, daysInMonth, leadsList, siteName) {
+      let payRate = 0;
+      let billRate = 0;
+
+      const lead = findLeadForSite(sId, siteName, leadsList);
+      let logShift = '';
+      for (const l of (siteLogs || [])) {
+        if (l.shiftCode || l.shift_code) { logShift = l.shiftCode || l.shift_code; break; }
+      }
+
+      // 1. Bill Rate from siteShifts / shifts in Lead / Site
+      const shiftsArr = (lead && Array.isArray(lead.siteShifts) && lead.siteShifts.length > 0) ? lead.siteShifts : ((lead && Array.isArray(lead.shifts)) ? lead.shifts : []);
+      if (shiftsArr.length > 0) {
+        let matchedShift = logShift ? shiftsArr.find(s => s.shiftCode === logShift) : null;
+        if (!matchedShift) matchedShift = shiftsArr[0];
+
+        if (matchedShift) {
+          const br = Number(matchedShift.billRate || matchedShift.bill_rate || matchedShift.billingRate || matchedShift.billing_rate || matchedShift.rate || 0);
+          if (br >= 1000) billRate = br;
+          else if (br >= 100 && br < 1000) billRate = Math.round(br * daysInMonth);
+          else if (br > 0) billRate = br;
+        }
+      }
+
+      // Fallback for Bill Rate from top-level lead fields
+      if (!billRate && lead) {
+        const lbr = Number(lead.billing_rate || lead.billingRate || lead.bill_rate || lead.billRate || lead.rate || lead.monthly_rate || lead.quotation_amount || lead.estimated_amount || lead.budget || lead.amount || 0);
+        if (lbr >= 1000) billRate = lbr;
+        else if (lbr >= 100 && lbr < 1000) billRate = Math.round(lbr * daysInMonth);
+        else if (lbr > 0) billRate = lbr;
+      }
+
+      // Fallback from attendance logs themselves if logged with a rate
+      if (!billRate && Array.isArray(siteLogs)) {
+        for (const l of siteLogs) {
+          const lbr = Number(l.billRate || l.bill_rate || l.billingRate || l.billing_rate || 0);
+          if (lbr >= 1000) { billRate = lbr; break; }
+          else if (lbr >= 100 && lbr < 1000) { billRate = Math.round(lbr * daysInMonth); break; }
+        }
+      }
+
+      // 2. PAY RATE: Pay Rate MUST BE identical to the employee's Monthly Rate
+      // First check if employee has a site-specific monthly rate in employmentHistory
+      if (emp && Array.isArray(emp.employmentHistory) && (sId || siteName)) {
+        const siteHist = emp.employmentHistory.find(h => (String(h.leadId || h.siteId || '') === String(sId) || (siteName && h.siteName === siteName)) && h.active)
+          || emp.employmentHistory.find(h => String(h.leadId || h.siteId || '') === String(sId) || (siteName && h.siteName === siteName));
+        if (siteHist) {
+          const sm = Number(siteHist.monthly_rate || siteHist.monthlyRate || siteHist.salary || 0);
+          if (sm > 0) payRate = sm;
+        }
+      }
+
+      // If no site-specific monthly rate, use the employee's standard Monthly Rate (same as in Directory)
+      if (!payRate) {
+        payRate = defaultMRate;
+      }
+
+      // Fallback only if employee has no monthly rate defined at all:
+      if (!payRate) {
+        if (shiftsArr.length > 0) {
+          let matchedShift = logShift ? shiftsArr.find(s => s.shiftCode === logShift) : null;
+          if (!matchedShift) matchedShift = shiftsArr[0];
+          if (matchedShift) {
+            const sr = Number(matchedShift.salaryRate || matchedShift.salary_rate || 0);
+            if (sr >= 1000) payRate = sr;
+            else if (sr > 0) payRate = Math.round(sr * 30);
+          }
+        }
+      }
+
+      return { payRate, billRate };
+    }
+
+    // ── 1. Attendance Matrix (Muster Roll) ────────────────────────────────────
+    // Displays ONLY count of Present (P), Leave (L), Absent (A), and Holiday (H).
+    // Rate and Total columns are completely removed.
+    // Blank days are assumed as Absent (A).
+    function renderAttendanceMatrix() {
+      const siteFilter = document.getElementById('attendanceSiteFilter').value;
+      const search = (document.getElementById('attendanceSearchInput').value || '').toLowerCase().trim();
+
+      const daysInMonth = new Date(selectedYear, selectedMonth + 1, 0).getDate();
+      const thead = document.getElementById('attendanceMatrixHead');
+      const tbody = document.getElementById('attendanceMatrixBody');
+
+      // Table Head: # Name, Site, Days 1..31, P, L, A, H
+      let headHtml = `<tr>
+        <th class="sticky-col col-worker"># Name</th>
+        <th style="min-width:85px; width:95px; font-size:11px; padding:6px 6px;">Site</th>`;
+      for (let d = 1; d <= daysInMonth; d++) {
+        headHtml += `<th class="matrix-cell">${d}</th>`;
+      }
+      headHtml += `<th class="col-p-th" style="text-align:center; width:36px; font-size:11px; padding:6px 2px;" title="Present (P)">P</th>
+        <th class="col-l-th" style="text-align:center; width:36px; font-size:11px; padding:6px 2px;" title="Leave (L)">L</th>
+        <th class="col-a-th" style="text-align:center; width:36px; font-size:11px; padding:6px 2px;" title="Absent (A)">A</th>
+        <th class="col-h-th" style="text-align:center; width:36px; font-size:11px; padding:6px 2px;" title="Holiday (H)">H</th>
+      </tr>`;
+      thead.innerHTML = headHtml;
+
+      // Filter employees: exclude corpAdmin/Admin, and filter by search, sorted A-Z
+      const filteredEmployees = allEmployees.filter(emp => {
+        if (isCorpAdminOrAdmin(emp.role)) return false;
+        if (!search) return true;
+        const name = (emp.name || '').toLowerCase();
+        const efn = String(emp.enrollment_no || '').toLowerCase();
+        return name.includes(search) || efn.includes(search);
+      }).sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' }));
+
+      let bodyHtml = '';
+      let renderedCount = 0;
+
+      filteredEmployees.forEach(emp => {
+        const empId = String(emp._id || emp.id || '');
+
+        let empLogs = rawAttendanceLogs.filter(l => {
+          const lEmpId = (l.employeeId && typeof l.employeeId === 'object') ? String(l.employeeId._id || l.employeeId.id) : String(l.employeeId || '');
+          return lEmpId === empId;
+        });
+
+        if (siteFilter !== '__all__') {
+          empLogs = empLogs.filter(l => getLogSiteId(l) === siteFilter);
+        }
+
+        if (empLogs.length === 0) return;
+
+        // Group employee logs by site
+        const siteGroups = new Map();
+        empLogs.forEach(l => {
+          const sId = getLogSiteId(l);
+          const lead = allLeads.find(ld => String(ld._id) === sId);
+          const siteName = lead?.sender_name || lead?.displayName || lead?.product_name || l.site_name || (sId ? 'Site #' + sId.slice(-4) : 'HQ Duty');
+          const siteKey = sId || siteName;
+          if (!siteGroups.has(siteKey)) {
+            siteGroups.set(siteKey, { siteId: sId, siteName: siteName, logs: [] });
+          }
+          siteGroups.get(siteKey).logs.push(l);
+        });
+
+        const validSiteRows = [];
+
+        siteGroups.forEach(sg => {
+          const dayMap = {};
+          sg.logs.forEach(l => {
+            const d = new Date(l.date || l.dutyStart).getDate();
+            if (!dayMap[d]) dayMap[d] = [];
+            dayMap[d].push(l);
+          });
+
+          let countP = 0;
+          let countL = 0;
+          let countA = 0;
+          let countH = 0;
+          let rowCellsHtml = '';
+
+          for (let d = 1; d <= daysInMonth; d++) {
+            const logsForDay = dayMap[d] || [];
+            if (logsForDay.length === 0) {
+              // Blank day -> assume absent!
+              countA += 1;
+              rowCellsHtml += `<td class="matrix-cell">
+                <span class="day-badge day-empty" title="Absent (Unmarked)" onclick="openMarkDayModal('${empId}', '${(emp.name || '').replace(/'/g, "\\'")}', ${d}, null, '${sg.siteId}')">-</span>
+              </td>`;
+            } else {
+              const firstLog = logsForDay[0];
+              const isAbsent = isAbsentStatus(firstLog.status);
+              const isLeave = isLeaveStatus(firstLog.status);
+              const isHd = isHdStatus(firstLog.status);
+              const isDouble = !isAbsent && !isLeave && !isHd && logsForDay.length > 1;
+
+              let badgeClass = 'day-p';
+              let label = 'P';
+              if (isAbsent) {
+                badgeClass = 'day-a';
+                label = 'A';
+                countA += 1;
+              } else if (isLeave) {
+                badgeClass = 'day-l';
+                label = 'L';
+                countL += 1;
+              } else if (isHd) {
+                badgeClass = 'day-hd';
+                label = 'H';
+                countH += 1;
+              } else if (isDouble) {
+                badgeClass = 'day-dd';
+                label = 'PP';
+                countP += 2; // Double duty counts as 2 duties
+              } else {
+                badgeClass = 'day-p';
+                label = 'P';
+                countP += 1;
+              }
+
+              rowCellsHtml += `<td class="matrix-cell">
+                <span class="day-badge ${badgeClass}" title="${label === 'PP' ? 'Double Duty (2 P)' : label === 'H' ? 'Holiday (H)' : label}" onclick="openMarkDayModal('${empId}', '${(emp.name || '').replace(/'/g, "\\'")}', ${d}, '${firstLog._id}', '${sg.siteId}')">${label}</span>
+              </td>`;
+            }
+          }
+
+          if ((countP + countH + countL) > 0) {
+            validSiteRows.push({
+              siteId: sg.siteId,
+              siteName: sg.siteName,
+              rowCellsHtml,
+              countP,
+              countL,
+              countA,
+              countH
+            });
+          }
+        });
+
+        if (validSiteRows.length === 0) return;
+
+        renderedCount++;
+        const rowSpan = validSiteRows.length;
+
+        validSiteRows.forEach((sr, rIdx) => {
+          const isLast = rIdx === rowSpan - 1;
+          bodyHtml += `<tr class="${isLast ? 'emp-row-end' : ''}">`;
+          if (rIdx === 0) {
+            bodyHtml += `
+              <td class="sticky-col col-worker" rowspan="${rowSpan}" style="vertical-align:middle; background:#ffffff;">
+                <div style="font-weight:700; font-size:12px; color:var(--text-main); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${renderedCount}. ${emp.name || 'Worker'}">
+                  <span style="color:#64748b; font-weight:700; font-size:11px; margin-right:3px;">${renderedCount}.</span>${emp.name || 'Worker'}
+                </div>
+                <div style="font-size:10px; color:var(--text-muted); margin-left:14px;">#${emp.enrollment_no || '-'}</div>
+              </td>`;
+          }
+          bodyHtml += `
+            <td style="white-space:nowrap; font-size:11px; font-weight:600; color:#334155; padding:5px 6px;" title="${sr.siteName}">
+              ${sr.siteName}
+            </td>
+            ${sr.rowCellsHtml}
+            <td class="col-p-cell">${sr.countP}</td>
+            <td class="col-l-cell">${sr.countL}</td>
+            <td class="col-a-cell">${sr.countA}</td>
+            <td class="col-h-cell">${sr.countH}</td>
+          </tr>`;
+        });
+      });
+
+      if (renderedCount === 0) {
+        tbody.innerHTML = `<tr><td colspan="${daysInMonth + 6}" style="text-align:center; padding:30px; color:#94a3b8;">No active workers with attendance found for this period.</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = bodyHtml;
+    }
+
+    // ── 2. Salary Register ───────────────────────────────────────────────────
+    // Columns: [Select] | # | Site Name | Bill Rate | Pay Rate | Bill Days | Employee Name | Gross | Adv Bal | Deduct Adv | Net | Slip
+    // Bill Days = P + H + L only.
+    // Advance deduction is live on screen without saving to database.
+    function renderSalaryRegister() {
+      const search = (document.getElementById('attendanceSearchInput').value || '').toLowerCase().trim();
+      const siteFilter = document.getElementById('attendanceSiteFilter').value;
+      const tbody = document.getElementById('salaryRegisterBody');
+      const daysInMonth = new Date(selectedYear, selectedMonth + 1, 0).getDate();
+
+      window.salaryRowData = [];
+      let grandTotalNet = 0;
+      let rowsHtml = '';
+      let rowIdx = 1;
+
+      allEmployees.forEach(emp => {
+        if (isCorpAdminOrAdmin(emp.role)) return;
+
+        const empId = String(emp._id || emp.id || '');
+        if (search) {
+          const name = (emp.name || '').toLowerCase();
+          const efn = String(emp.enrollment_no || '').toLowerCase();
+          if (!name.includes(search) && !efn.includes(search)) return;
+        }
+
+        let empLogs = rawAttendanceLogs.filter(l => {
+          const lEmpId = (l.employeeId && typeof l.employeeId === 'object') ? String(l.employeeId._id || l.employeeId.id) : String(l.employeeId || '');
+          return lEmpId === empId;
+        });
+
+        if (siteFilter !== '__all__') {
+          empLogs = empLogs.filter(l => getLogSiteId(l) === siteFilter);
+        }
+
+        if (empLogs.length === 0) return;
+
+        const defaultMRate = computeEmpBaseMonthlyRate(emp, daysInMonth);
+
+        // Group employee logs by site (matched by lead ID or site name)
+        const siteGroups = new Map();
+        empLogs.forEach(l => {
+          const sId = getLogSiteId(l);
+          const rawSiteName = l.site_name || l.siteName || '';
+          const lead = findLeadForSite(sId, rawSiteName, allLeads);
+          const siteName = lead?.sender_name || lead?.displayName || lead?.product_name || lead?.name || rawSiteName || (sId ? 'Site #' + sId.slice(-4) : 'HQ Duty');
+          const siteKey = (lead ? getLeadId(lead) : '') || sId || siteName;
+
+          if (!siteGroups.has(siteKey)) {
+            siteGroups.set(siteKey, { siteId: sId || (lead ? getLeadId(lead) : ''), siteName: siteName, logs: [] });
+          }
+          siteGroups.get(siteKey).logs.push(l);
+        });
+
+        // Find employee ledger in allLedgers for Advance balance
+        const empLedgerId = String(emp.ledgerId || '');
+        let staffLedger = null;
+        if (empLedgerId) {
+          staffLedger = allLedgers.find(l => String(l._id) === empLedgerId);
+        }
+        if (!staffLedger) {
+          staffLedger = allLedgers.find(l =>
+            (l.refType === 'Staff' || l.refType === 'User') &&
+            (String(l.refId) === empId || (emp.user_id && String(l.refId) === String(emp.user_id)))
+          );
+        }
+        if (!staffLedger) {
+          const empNorm = (emp.name || '').toLowerCase().trim();
+          staffLedger = allLedgers.find(l => (l.ledgerName || l.name || '').toLowerCase().trim() === empNorm);
+        }
+        const advBalance = staffLedger ? Math.abs(Number(staffLedger.currentBalance || staffLedger.balance || 0)) : 0;
+
+        siteGroups.forEach(sg => {
+          const dayMap = {};
+          sg.logs.forEach(l => {
+            const d = new Date(l.date || l.dutyStart).getDate();
+            if (!dayMap[d]) dayMap[d] = [];
+            dayMap[d].push(l);
+          });
+
+          let countP = 0;
+          let countL = 0;
+          let countA = 0;
+          let countH = 0;
+
+          for (let d = 1; d <= daysInMonth; d++) {
+            const dLogs = dayMap[d] || [];
+            if (dLogs.length === 0) {
+              countA += 1;
+            } else {
+              const firstLog = dLogs[0];
+              const isAbsent = isAbsentStatus(firstLog.status);
+              const isLeave = isLeaveStatus(firstLog.status);
+              const isHd = isHdStatus(firstLog.status);
+              const isDouble = !isAbsent && !isLeave && !isHd && dLogs.length > 1;
+
+              if (isAbsent) {
+                countA += 1;
+              } else if (isLeave) {
+                countL += 1;
+              } else if (isHd) {
+                countH += 1;
+              } else if (isDouble) {
+                countP += 2;
+              } else {
+                countP += 1;
+              }
+            }
+          }
+
+          // Salary calculation uses sum of P, H, L only!
+          const billDays = countP + countH + countL;
+          if (billDays === 0) return;
+
+          // Sourced rates from siteShifts, leads, employees, and userMaster
+          const { billRate, payRate } = resolveSiteRates(emp, sg.siteId, sg.logs, defaultMRate, daysInMonth, allLeads, sg.siteName);
+          const gross = daysInMonth > 0 ? Math.round((payRate * billDays) / daysInMonth) : 0;
+
+          const rowData = {
+            rowId: window.salaryRowData.length,
+            empId,
+            empName: emp.name,
+            enrollmentNo: emp.enrollment_no || '',
+            mobile: emp.mobile || '',
+            siteId: sg.siteId,
+            siteName: sg.siteName,
+            billRate,
+            payRate,
+            billDays,
+            pCount: countP,
+            hCount: countH,
+            lCount: countL,
+            aCount: countA,
+            gross,
+            advBal: advBalance,
+            empTotalAdvBal: advBalance,
+            isSharedAdv: false,
+            deductAdv: 0,
+            netPayable: gross,
+            ledgerId: staffLedger?._id || null,
+            ledgerName: staffLedger?.ledgerName || staffLedger?.name || emp.name
+          };
+          window.salaryRowData.push(rowData);
+        });
+      });
+
+      // Sort salary rows A-Z by Site Name, then Employee Name
+      sortSalaryRowData();
+
+      // Render sorted rows to table
+      renderSalaryTableRowsFromData();
+    }
+
+    let salarySortState = { col: 'site', dir: 'asc' };
+
+    function tagSharedAdvanceRows() {
+      const seenAdvEmpIds = new Set();
+      (window.salaryRowData || []).forEach(r => {
+        if (!seenAdvEmpIds.has(r.empId)) {
+          seenAdvEmpIds.add(r.empId);
+          r.isSharedAdv = false;
+        } else {
+          r.isSharedAdv = true;
+        }
+      });
+    }
+
+    function sortSalaryRowData() {
+      window.salaryRowData.sort((a, b) => {
+        if (salarySortState.col === 'site') {
+          const siteCmp = (a.siteName || '').localeCompare(b.siteName || '', undefined, { sensitivity: 'base' });
+          if (siteCmp !== 0) return salarySortState.dir === 'asc' ? siteCmp : -siteCmp;
+          return (a.empName || '').localeCompare(b.empName || '', undefined, { sensitivity: 'base' });
+        } else if (salarySortState.col === 'emp') {
+          const empCmp = (a.empName || '').localeCompare(b.empName || '', undefined, { sensitivity: 'base' });
+          if (empCmp !== 0) return salarySortState.dir === 'asc' ? empCmp : -empCmp;
+          return (a.siteName || '').localeCompare(b.siteName || '', undefined, { sensitivity: 'base' });
+        }
+        return 0;
+      });
+      window.salaryRowData.forEach((r, idx) => {
+        r.rowId = idx;
+      });
+      tagSharedAdvanceRows();
+    }
+
+    function toggleSalarySort(col) {
+      if (salarySortState.col === col) {
+        salarySortState.dir = salarySortState.dir === 'asc' ? 'desc' : 'asc';
+      } else {
+        salarySortState.col = col;
+        salarySortState.dir = 'asc';
+      }
+      sortSalaryRowData();
+      renderSalaryTableRowsFromData();
+    }
+
+    function renderSalaryTableRowsFromData() {
+      const tbody = document.getElementById('salaryRegisterBody');
+      if (!tbody) return;
+
+      if (!window.salaryRowData || window.salaryRowData.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="12" style="text-align:center; padding:30px; color:#94a3b8;">No attendance shifts logged for salary calculation in this period.</td></tr>`;
+        document.getElementById('kpiTotalSalaryDue').textContent = '₹0';
+        return;
+      }
+
+      let grandTotalNet = 0;
+      let rowsHtml = '';
+      window.salaryRowData.forEach((rowData, idx) => {
+        grandTotalNet += rowData.netPayable;
+        const displayBillRate = rowData.billRate > 0 ? `₹${Math.round(rowData.billRate).toLocaleString('en-IN')}` : '<span style="color:#94a3b8;">-</span>';
+        const displayPayRate = `₹${Math.round(rowData.payRate).toLocaleString('en-IN')}`;
+
+        let displayAdvBal = '<span style="color:#94a3b8;">-</span>';
+        if (rowData.isSharedAdv) {
+          displayAdvBal = `<span style="color:#94a3b8; font-size:11px; font-weight:600;" title="Employee Ledger Balance is ₹${Math.round(rowData.empTotalAdvBal).toLocaleString('en-IN')} (Shared across site duties)">— (Shared)</span>`;
+        } else if (rowData.empTotalAdvBal > 0) {
+          displayAdvBal = `₹${Math.round(rowData.empTotalAdvBal).toLocaleString('en-IN')}`;
+        }
+
+        rowsHtml += `<tr>
+          <td style="text-align:center;">
+            <input type="checkbox" class="salary-row-cb" data-row-id="${rowData.rowId}" data-emp-id="${rowData.empId}" onchange="onSalaryRowCheckboxChange(this)">
+          </td>
+          <td style="color:#94a3b8; font-size:12px;">${idx + 1}</td>
+          <td style="font-weight:600; font-size:12px; color:#1e293b;" title="${rowData.siteName}">${rowData.siteName}</td>
+          <td style="text-align:right; font-size:12px; color:#475569; font-weight:600;">${displayBillRate}</td>
+          <td style="text-align:right; font-size:12px; font-weight:700; color:#0f172a;">${displayPayRate}</td>
+          <td style="text-align:center; font-weight:800; color:var(--primary); font-size:12.5px;" title="Present: ${rowData.pCount} | Holiday: ${rowData.hCount} | Leave: ${rowData.lCount}">
+            ${rowData.billDays}
+          </td>
+          <td>
+            <div style="font-weight:700; font-size:12.5px; color:var(--text-main);">${rowData.empName}</div>
+            <div style="font-size:10px; color:var(--text-muted);">${rowData.enrollmentNo ? '#' + rowData.enrollmentNo : ''} ${rowData.mobile ? '• ' + rowData.mobile : ''}</div>
+          </td>
+          <td style="text-align:right; font-weight:700; font-size:12.5px;">₹${rowData.gross.toLocaleString('en-IN')}</td>
+          <td style="text-align:right; font-weight:700; font-size:12px; color:#d97706;">${displayAdvBal}</td>
+          <td style="text-align:center;">
+            <input type="number" min="0" placeholder="0" value="${rowData.deductAdv || ''}" class="deduct-adv-input" id="deductAdv_${rowData.rowId}" oninput="onDeductAdvanceInput(${rowData.rowId})" style="width:75px; text-align:right; padding:3px 6px; border:1px solid #cbd5e1; border-radius:4px; font-size:12px; font-weight:700; color:#dc2626;">
+          </td>
+          <td style="text-align:right;">
+            <span id="netAmount_${rowData.rowId}" style="color:#15803d; font-weight:800; font-size:13px;">₹${rowData.netPayable.toLocaleString('en-IN')}</span>
+          </td>
+          <td style="text-align:center;">
+            <button class="btn btn-outline btn-sm" onclick="openSinglePaymentVoucher(${rowData.rowId})" title="View / Print Voucher" style="padding:4px 8px; font-size:11px;">
+              <i class="fa-solid fa-receipt"></i>
+            </button>
+          </td>
+        </tr>`;
+      });
+
+      tbody.innerHTML = rowsHtml;
+      document.getElementById('kpiTotalSalaryDue').textContent = `₹${grandTotalNet.toLocaleString('en-IN')}`;
+
+      // Update sort icons
+      const iconSite = document.getElementById('sortIconSite');
+      const iconEmp = document.getElementById('sortIconEmp');
+      if (iconSite && iconEmp) {
+        if (salarySortState.col === 'site') {
+          iconSite.className = salarySortState.dir === 'asc' ? 'fa-solid fa-arrow-down-a-z' : 'fa-solid fa-arrow-up-z-a';
+          iconSite.style.color = 'var(--primary)';
+          iconEmp.className = 'fa-solid fa-sort';
+          iconEmp.style.color = '#94a3b8';
+        } else if (salarySortState.col === 'emp') {
+          iconEmp.className = salarySortState.dir === 'asc' ? 'fa-solid fa-arrow-down-a-z' : 'fa-solid fa-arrow-up-z-a';
+          iconEmp.style.color = 'var(--primary)';
+          iconSite.className = 'fa-solid fa-sort';
+          iconSite.style.color = '#94a3b8';
+        }
+      }
+
+      const selectAll = document.getElementById('selectAllSalaryCheckbox');
+      if (selectAll) selectAll.checked = false;
+      onSalaryRowCheckboxChange();
+    }
+
+    // ── Live On-Screen Advance Deduction (Pooled across worker's site rows, capped at employee ledger balance) ──
+    function onDeductAdvanceInput(rowId) {
+      const row = window.salaryRowData.find(r => r.rowId === rowId);
+      if (!row) return;
+
+      const input = document.getElementById(`deductAdv_${rowId}`);
+      let val = Math.max(0, parseFloat(input.value) || 0);
+
+      // Check other deductions already allocated to other sites of this same employee
+      const empRows = window.salaryRowData.filter(r => r.empId === row.empId);
+      let otherDeductions = 0;
+      empRows.forEach(r => {
+        if (r.rowId !== rowId) {
+          otherDeductions += (r.deductAdv || 0);
+        }
+      });
+
+      const maxAllowed = Math.max(0, (row.empTotalAdvBal || 0) - otherDeductions);
+      if (row.empTotalAdvBal > 0 && val > maxAllowed) {
+        val = maxAllowed;
+        input.value = val;
+        showToast(`Advance deduction capped at remaining ledger balance (₹${maxAllowed.toLocaleString('en-IN')})`, 'warning');
+      }
+
+      if (val > row.gross) {
+        val = row.gross;
+        input.value = val;
+      }
+
+      row.deductAdv = val;
+      row.netPayable = Math.max(0, row.gross - val);
+
+      const netEl = document.getElementById(`netAmount_${rowId}`);
+      if (netEl) {
+        netEl.textContent = `₹${row.netPayable.toLocaleString('en-IN')}`;
+      }
+      updateTotalSalaryKpi();
+    }
+
+    function updateTotalSalaryKpi() {
+      let total = 0;
+      window.salaryRowData.forEach(r => { total += (r.netPayable || 0); });
+      document.getElementById('kpiTotalSalaryDue').textContent = `₹${total.toLocaleString('en-IN')}`;
+    }
+
+    // ── Batch Selection: Auto-check all sites of worker on site check, allow selective uncheck ──
+    function toggleSelectAllSalary(masterCb) {
+      const cbs = document.querySelectorAll('.salary-row-cb');
+      cbs.forEach(cb => { cb.checked = masterCb.checked; });
+      onSalaryRowCheckboxChange();
+    }
+
+    function onSalaryRowCheckboxChange(changedCb) {
+      if (changedCb && changedCb.checked) {
+        const empId = changedCb.getAttribute('data-emp-id');
+        if (empId) {
+          // Auto-check all other site salary rows for this same worker
+          const siblingCbs = document.querySelectorAll(`.salary-row-cb[data-emp-id="${empId}"]`);
+          siblingCbs.forEach(cb => { cb.checked = true; });
+        }
+      }
+      // If changedCb is unchecked, we allow this individual site to uncheck without unchecking the worker's other sites,
+      // enabling the user to uncheck any site and reduce the consolidated salary!
+
+      const checkedBoxes = document.querySelectorAll('.salary-row-cb:checked');
+      const selectedEmpIds = new Set();
+      checkedBoxes.forEach(cb => {
+        const empId = cb.getAttribute('data-emp-id');
+        if (empId) selectedEmpIds.add(empId);
+      });
+
+      const badge = document.getElementById('selectedVoucherCount');
+      if (badge) {
+        badge.textContent = selectedEmpIds.size > 0 ? `${selectedEmpIds.size} Worker${selectedEmpIds.size > 1 ? 's' : ''} (${checkedBoxes.length} Sites)` : '0';
+      }
+
+      const masterCb = document.getElementById('selectAllSalaryCheckbox');
+      const allBoxes = document.querySelectorAll('.salary-row-cb');
+      if (masterCb && allBoxes.length > 0) {
+        masterCb.checked = (checkedBoxes.length === allBoxes.length);
+      }
+    }
+
+    // ── Consolidated Voucher Builder ─────────────────────────────────────────
+    // Combines all checked site rows of an employee into ONE single consolidated payment voucher!
+    function buildConsolidatedVouchers(selectedRows) {
+      const empMap = new Map();
+
+      selectedRows.forEach(r => {
+        if (!empMap.has(r.empId)) {
+          empMap.set(r.empId, {
+            empId: r.empId,
+            empName: r.empName,
+            enrollmentNo: r.enrollmentNo,
+            mobile: r.mobile,
+            payRate: r.payRate,
+            billRate: r.billRate,
+            ledgerId: r.ledgerId,
+            ledgerName: r.ledgerName,
+            sites: [],
+            totalBillDays: 0,
+            totalP: 0,
+            totalH: 0,
+            totalL: 0,
+            totalA: 0,
+            totalGross: 0,
+            totalDeductAdv: 0,
+            netPayable: 0,
+            rowId: r.rowId
+          });
+        }
+
+        const group = empMap.get(r.empId);
+        group.sites.push({
+          siteId: r.siteId,
+          siteName: r.siteName,
+          billRate: r.billRate,
+          billDays: r.billDays,
+          pCount: r.pCount,
+          hCount: r.hCount,
+          lCount: r.lCount,
+          aCount: r.aCount,
+          gross: r.gross,
+          deductAdv: r.deductAdv || 0,
+          netPayable: r.netPayable
+        });
+        group.totalBillDays += r.billDays;
+        group.totalP += r.pCount;
+        group.totalH += r.hCount;
+        group.totalL += r.lCount;
+        group.totalA += r.aCount;
+        group.totalGross += r.gross;
+        group.totalDeductAdv += (r.deductAdv || 0);
+      });
+
+      const consolidatedList = [];
+      empMap.forEach(v => {
+        v.netPayable = Math.max(0, v.totalGross - v.totalDeductAdv);
+        consolidatedList.push(v);
+      });
+
+      return consolidatedList;
+    }
+
+    // ── 3. Payment Voucher Generation & Half-A4 Printing ─────────────────────
+    // One consolidated half-A4 voucher per employee itemizing all checked site calculations!
+    function renderHalfA4Vouchers(rows) {
+      const printArea = document.getElementById('payslipPrintArea');
+      printArea.innerHTML = '';
+
+      const pettySelect = document.getElementById('salaryPettyCashSelect');
+      const selectedPettyCashId = pettySelect ? pettySelect.value : '';
+      const pettyLedger = allLedgers.find(l => l._id === selectedPettyCashId);
+      const pettyCashName = pettyLedger?.ledgerName || pettyLedger?.name || (sessionUser?.userDisplayName ? `Petty Cash - ${sessionUser.userDisplayName}` : 'Petty Cash Book');
+
+      const corpName = sessionUser?.selectedCorporateName || 'Our Company';
+      const monthYearText = `${MONTH_NAMES[selectedMonth]} ${selectedYear}`;
+      const printDateStr = new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+
+      let fullHtml = '';
+      rows.forEach((r, idx) => {
+        const voucherNo = `PMT-${selectedYear}${String(selectedMonth + 1).padStart(2, '0')}-${r.enrollmentNo || r.rowId + 101}`;
+        const qrContainerId = `qrContainer_${idx}`;
+        const amountWords = numberToWordsIndian(r.netPayable);
+
+        // Build itemized site particulars
+        const isMultiSite = Array.isArray(r.sites) && r.sites.length > 1;
+        let siteParticularsHtml = '';
+        if (isMultiSite) {
+          siteParticularsHtml = `
+            <div style="margin-top:2px; font-size:10px; color:#1e293b; line-height:1.4;">
+              ${r.sites.map(s => `
+                <div style="margin-bottom:2px;">
+                  • <strong>${s.siteName}</strong>: ${s.billDays} Bill Days (P: ${s.pCount}, H: ${s.hCount}, L: ${s.lCount}) &bull; Gross: <strong>₹${s.gross.toLocaleString('en-IN')}</strong>${s.deductAdv > 0 ? ` &bull; Adv Ded: ₹${s.deductAdv.toLocaleString('en-IN')}` : ''}
+                </div>
+              `).join('')}
+              <div style="margin-top:3px; font-weight:700; color:#0f172a; border-top:1px dashed #94a3b8; padding-top:2px;">
+                Consolidated Total: <strong>${r.totalBillDays} Bill Days</strong> &bull; Monthly Rate: <strong>₹${r.payRate.toLocaleString('en-IN')}</strong> &bull; Gross: <strong>₹${r.totalGross.toLocaleString('en-IN')}</strong>${r.totalDeductAdv > 0 ? ` &bull; Total Adv Ded: <strong>₹${r.totalDeductAdv.toLocaleString('en-IN')}</strong>` : ''}
+              </div>
+            </div>
+          `;
+        } else {
+          const singleSite = (Array.isArray(r.sites) && r.sites.length === 1) ? r.sites[0] : r;
+          siteParticularsHtml = `
+            <div style="font-size:10px; color:#475569; margin-top:2px;">
+              Site: <strong>${singleSite.siteName}</strong> • Bill Days: <strong>${r.totalBillDays || singleSite.billDays}</strong> (P: ${singleSite.pCount}, H: ${singleSite.hCount}, L: ${singleSite.lCount}) • Rate: ₹${r.payRate.toLocaleString('en-IN')}/m • Gross: ₹${(r.totalGross || singleSite.gross).toLocaleString('en-IN')}${r.totalDeductAdv > 0 ? ` • Adv Ded: ₹${r.totalDeductAdv.toLocaleString('en-IN')}` : ''}
+            </div>
+          `;
+        }
+
+        fullHtml += `
+          <div class="voucher-half-page">
+            <!-- Voucher Header -->
+            <div style="border-bottom:2px solid #0f172a; padding-bottom:6px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:flex-start;">
+              <div>
+                <h2 style="font-size:16px; font-weight:800; color:#0f172a; text-transform:uppercase; margin:0; letter-spacing:0.5px;">${corpName}</h2>
+                <div style="font-size:11px; font-weight:700; color:var(--primary); margin-top:2px;">SALARY PAYMENT VOUCHER ${isMultiSite ? '<span style="color:#0284c7; font-weight:800;">(CONSOLIDATED)</span>' : ''}</div>
+              </div>
+              <div style="text-align:center;">
+                <span style="display:inline-block; border:1.5px solid #0f172a; padding:2px 10px; font-size:11px; font-weight:800; border-radius:4px; background:#f1f5f9;">
+                  FOR: ${monthYearText.toUpperCase()}
+                </span>
+              </div>
+              <div style="text-align:right; font-size:11px;">
+                <div><strong>Voucher No:</strong> <span style="font-weight:700; color:#2563eb;">${voucherNo}</span></div>
+                <div><strong>Date:</strong> ${printDateStr}</div>
+              </div>
+            </div>
+
+            <!-- Double-Entry Accounting Grid & QR Code -->
+            <div style="display:flex; gap:12px; margin-bottom:8px;">
+              <!-- Accounting Ledger Table (Debit Employee, Credit Petty Cash) -->
+              <div style="flex:1;">
+                <table style="width:100%; border-collapse:collapse; font-size:11px; border:1px solid #cbd5e1;">
+                  <thead>
+                    <tr style="background:#f1f5f9; text-transform:uppercase; font-size:10px;">
+                      <th style="border:1px solid #cbd5e1; padding:4px 6px; text-align:left; width:55px;">Type</th>
+                      <th style="border:1px solid #cbd5e1; padding:4px 6px; text-align:left;">Particulars / Ledger Folio</th>
+                      <th style="border:1px solid #cbd5e1; padding:4px 6px; text-align:right; width:80px;">Amount (₹)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td style="border:1px solid #cbd5e1; padding:4px 6px; font-weight:800; color:#15803d;">Dr.</td>
+                      <td style="border:1px solid #cbd5e1; padding:4px 6px;">
+                        <div style="font-weight:700; color:#0f172a; font-size:12px;">${r.empName} ${r.enrollmentNo ? '(#' + r.enrollmentNo + ')' : ''}</div>
+                        ${siteParticularsHtml}
+                      </td>
+                      <td style="border:1px solid #cbd5e1; padding:4px 6px; text-align:right; font-weight:800; color:#15803d;">₹${r.netPayable.toLocaleString('en-IN')}</td>
+                    </tr>
+                    <tr>
+                      <td style="border:1px solid #cbd5e1; padding:4px 6px; font-weight:800; color:#0284c7;">Cr.</td>
+                      <td style="border:1px solid #cbd5e1; padding:4px 6px;">
+                        <div style="font-weight:700; color:#0f172a;">${pettyCashName}</div>
+                        <div style="font-size:10px; color:#64748b;">Disbursement of ${isMultiSite ? 'Consolidated ' : ''}Monthly Net Wages (${monthYearText})</div>
+                      </td>
+                      <td style="border:1px solid #cbd5e1; padding:4px 6px; text-align:right; font-weight:800; color:#0284c7;">₹${r.netPayable.toLocaleString('en-IN')}</td>
+                    </tr>
+                    <tr style="background:#f8fafc; font-weight:800;">
+                      <td colspan="2" style="border:1px solid #cbd5e1; padding:4px 6px; text-align:right; text-transform:uppercase; font-size:10px;">Net Payable:</td>
+                      <td style="border:1px solid #cbd5e1; padding:4px 6px; text-align:right; font-size:12px; color:#15803d;">₹${r.netPayable.toLocaleString('en-IN')}</td>
+                    </tr>
+                  </tbody>
+                </table>
+                <div style="font-size:10.5px; font-weight:600; color:#334155; margin-top:4px;">
+                  Amount in Words: <em>Rupees ${amountWords} Only</em>
+                </div>
+              </div>
+
+              <!-- Scannable QR Code for HiBiz Mobile Scanner -->
+              <div style="width:105px; text-align:center; border:1px solid #cbd5e1; border-radius:4px; padding:4px; background:#ffffff; display:flex; flex-direction:column; align-items:center; justify-content:center;">
+                <div id="${qrContainerId}" style="width:80px; height:80px; display:flex; align-items:center; justify-content:center;"></div>
+                <div style="font-size:8px; font-weight:700; color:#475569; margin-top:3px; letter-spacing:0.3px;">SCAN VIA APP</div>
+              </div>
+            </div>
+
+            <!-- Signatures Section -->
+            <div style="display:flex; justify-content:space-between; margin-top:14px; font-size:10px; color:#334155; border-top:1px dashed #cbd5e1; padding-top:6px;">
+              <div style="text-align:center; width:28%;">
+                <div style="height:14px;"></div>
+                <div style="border-top:1px solid #94a3b8; padding-top:2px;">Employee Signature</div>
+              </div>
+              <div style="text-align:center; width:28%;">
+                <div style="height:14px;"></div>
+                <div style="border-top:1px solid #94a3b8; padding-top:2px;">Site Supervisor</div>
+              </div>
+              <div style="text-align:center; width:28%;">
+                <div style="height:14px;"></div>
+                <div style="border-top:1px solid #94a3b8; padding-top:2px;">Accountant / Cashier</div>
+              </div>
+            </div>
+          </div>
+        `;
+
+        if (idx + 1 < rows.length) {
+          fullHtml += `
+            <div style="height:14px;" class="no-print"></div>
+          `;
+        }
+      });
+
+      printArea.innerHTML = fullHtml;
+
+      // Render scannable QR Code for each consolidated voucher
+      rows.forEach((r, idx) => {
+        const qrContainer = document.getElementById(`qrContainer_${idx}`);
+        if (!qrContainer) return;
+        const voucherNo = `PMT-${selectedYear}${String(selectedMonth + 1).padStart(2, '0')}-${r.enrollmentNo || r.rowId + 101}`;
+        const qrPayload = JSON.stringify({
+          action: 'SALARY_PAYMENT_VERIFY',
+          voucherNo,
+          empId: r.empId,
+          name: r.empName,
+          efn: r.enrollmentNo,
+          net: r.netPayable,
+          month: `${MONTH_NAMES[selectedMonth]} ${selectedYear}`,
+          sites: (r.sites || []).map(s => `${s.siteName} (${s.billDays}d)`).join('; '),
+          date: new Date().toISOString().slice(0, 10)
+        });
+
+        qrContainer.innerHTML = '';
+        if (typeof QRCode !== 'undefined') {
+          try {
+            new QRCode(qrContainer, {
+              text: qrPayload,
+              width: 78,
+              height: 78,
+              colorDark: '#0f172a',
+              colorLight: '#ffffff',
+              correctLevel: QRCode.CorrectLevel.M
+            });
+          } catch (e) {
+            renderFallbackQR(qrContainer, voucherNo);
+          }
+        } else {
+          renderFallbackQR(qrContainer, voucherNo);
+        }
+      });
+    }
+
+    function renderFallbackQR(container, text) {
+      container.innerHTML = `
+        <div style="border:1.5px solid #0f172a; width:74px; height:74px; display:flex; flex-direction:column; align-items:center; justify-content:center; background:#f8fafc;">
+          <i class="fa-solid fa-qrcode" style="font-size:36px; color:#0f172a;"></i>
+          <span style="font-size:7px; font-weight:800; margin-top:2px;">${text.slice(-8)}</span>
+        </div>`;
+    }
+
+    function openSinglePaymentVoucher(rowId) {
+      const clickedRow = window.salaryRowData.find(r => r.rowId === rowId);
+      if (!clickedRow) return;
+
+      // Find if this worker has other checked site rows in the table
+      const checkedBoxes = Array.from(document.querySelectorAll(`.salary-row-cb[data-emp-id="${clickedRow.empId}"]:checked`));
+      let rowsToVoucher = [];
+      if (checkedBoxes.length > 0) {
+        const checkedRowIds = checkedBoxes.map(cb => parseInt(cb.getAttribute('data-row-id')));
+        rowsToVoucher = window.salaryRowData.filter(r => checkedRowIds.includes(r.rowId));
+      } else {
+        rowsToVoucher = [clickedRow];
+      }
+
+      const consolidated = buildConsolidatedVouchers(rowsToVoucher);
+      document.getElementById('modalPayslipTitle').innerHTML = `<i class="fa-solid fa-receipt" style="color:var(--primary); margin-right:8px;"></i> Salary Payment Voucher - ${clickedRow.empName}`;
+      renderHalfA4Vouchers(consolidated);
+      openModal('modalPayslip');
+    }
+
+    function openSelectedPaymentVouchers() {
+      const checkedBoxes = document.querySelectorAll('.salary-row-cb:checked');
+      if (checkedBoxes.length === 0) {
+        showToast('Please select at least one site salary row using the checkboxes.', 'info');
+        return;
+      }
+      const selectedRowIds = Array.from(checkedBoxes).map(cb => parseInt(cb.getAttribute('data-row-id')));
+      const selectedRows = window.salaryRowData.filter(r => selectedRowIds.includes(r.rowId));
+
+      const consolidatedVouchers = buildConsolidatedVouchers(selectedRows);
+      document.getElementById('modalPayslipTitle').innerHTML = `<i class="fa-solid fa-receipt" style="color:var(--primary); margin-right:8px;"></i> Print Payment Vouchers (${consolidatedVouchers.length} Worker${consolidatedVouchers.length > 1 ? 's' : ''}, ${selectedRows.length} Sites)`;
+      renderHalfA4Vouchers(consolidatedVouchers);
+      openModal('modalPayslip');
+    }
+
+    function printPayslipVouchers() {
+      document.body.classList.add('printing-voucher-mode');
+      let styleElem = document.getElementById('voucher-print-page-style');
+      if (!styleElem) {
+        styleElem = document.createElement('style');
+        styleElem.id = 'voucher-print-page-style';
+        document.head.appendChild(styleElem);
+      }
+      // Half of A4 Page: 210mm width x 148.5mm height (1 page = half of A4 page)
+      styleElem.textContent = '@page { size: 210mm 148.5mm; margin: 4mm 6mm; }';
+      window.print();
+      setTimeout(() => {
+        document.body.classList.remove('printing-voucher-mode');
+        const se = document.getElementById('voucher-print-page-style');
+        if (se) se.remove();
+      }, 1500);
+    }
+
+    window.addEventListener('beforeprint', () => {
+      const payslipModal = document.getElementById('modalPayslip');
+      if (payslipModal && (payslipModal.classList.contains('open') || payslipModal.classList.contains('active') || payslipModal.style.display === 'flex' || payslipModal.style.display === 'block')) {
+        document.body.classList.add('printing-voucher-mode');
+        let styleElem = document.getElementById('voucher-print-page-style');
+        if (!styleElem) {
+          styleElem = document.createElement('style');
+          styleElem.id = 'voucher-print-page-style';
+          document.head.appendChild(styleElem);
+        }
+        styleElem.textContent = '@page { size: 210mm 148.5mm; margin: 4mm 6mm; }';
+      }
+    });
+
+    window.addEventListener('afterprint', () => {
+      document.body.classList.remove('printing-voucher-mode');
+      const se = document.getElementById('voucher-print-page-style');
+      if (se) se.remove();
+    });
+
+    // ── 4. Day Modal (Mark / Edit Day) ───────────────────────────────────────
+    function openMarkDayModal(empId, empName, day, logId, siteId) {
+      document.getElementById('dayWorkerId').value = empId;
+      document.getElementById('daySiteId').value = siteId || '';
+      document.getElementById('dayNumber').value = day;
+      document.getElementById('dayExistingLogId').value = logId || '';
+      const siteObj = allLeads.find(l => String(l._id) === String(siteId));
+      const siteTxt = siteObj ? ` (${siteObj.sender_name || siteObj.displayName})` : '';
+      document.getElementById('dayContextText').textContent = `Editing attendance for ${empName} on Day ${day}${siteTxt} - ${MONTH_NAMES[selectedMonth]} ${selectedYear}`;
+
+      const demarkBtn = document.getElementById('dayDemarkBtn');
+      if (logId) {
+        demarkBtn.style.display = 'inline-flex';
+        const log = rawAttendanceLogs.find(l => l._id === logId);
+        if (log) {
+          if (log.leadId) {
+            const lSite = typeof log.leadId === 'object' ? log.leadId._id : log.leadId;
+            document.getElementById('daySiteId').value = lSite || siteId || '';
+          }
+          document.getElementById('dayStatusSelect').value = log.status || 'Present';
+          document.getElementById('dayHoursInput').value = log.hoursWorked || 8;
+          document.getElementById('dayShiftInput').value = log.shiftCode || 'G';
+          document.getElementById('dayRateInput').value = log.rate || log.dailyRate || '';
+        }
+      } else {
+        demarkBtn.style.display = 'none';
+        document.getElementById('dayStatusSelect').value = 'Present';
+        document.getElementById('dayHoursInput').value = 8;
+        document.getElementById('dayShiftInput').value = 'G';
+        document.getElementById('dayRateInput').value = '';
+      }
+      openModal('modalAttendanceDay');
+    }
+
+    async function saveDayAttendance() {
+      const empId = document.getElementById('dayWorkerId').value;
+      const day = parseInt(document.getElementById('dayNumber').value);
+      const logId = document.getElementById('dayExistingLogId').value;
+      const status = document.getElementById('dayStatusSelect').value;
+      const hours = parseFloat(document.getElementById('dayHoursInput').value) || 8;
+      const shiftCode = document.getElementById('dayShiftInput').value || 'G';
+      const rate = parseFloat(document.getElementById('dayRateInput').value) || 0;
+      const siteIdFromModal = document.getElementById('daySiteId').value;
+      const siteFilter = document.getElementById('attendanceSiteFilter').value;
+      const targetSiteId = (siteIdFromModal && siteIdFromModal !== '__all__') ? siteIdFromModal : (siteFilter !== '__all__' ? siteFilter : null);
+
+      const targetDate = new Date(selectedYear, selectedMonth, day, 12, 0, 0);
+
+      try {
+        if (logId) {
+          await apiRequest(`service/hr/attendance/${logId}`, {
+            method: 'PUT',
+            body: JSON.stringify({
+              status,
+              hoursWorked: hours,
+              shiftCode,
+              rate,
+              dailyRate: rate,
+              ...(targetSiteId ? { leadId: targetSiteId } : {})
+            })
+          });
+          showToast('Attendance log updated', 'success');
+        } else {
+          const payload = {
+            employeeId: empId,
+            employeeType: 'Employees',
+            leadId: targetSiteId,
+            status,
+            hoursWorked: hours,
+            shiftCode,
+            rate,
+            dailyRate: rate,
+            date: targetDate.toISOString(),
+            dutyStart: targetDate.toISOString(),
+            dutyEnd: targetDate.toISOString()
+          };
+          await apiRequest('service/hr/attendance', {
+            method: 'POST',
+            body: JSON.stringify(payload)
+          });
+          showToast('Attendance marked successfully', 'success');
+        }
+        closeModal('modalAttendanceDay');
+        refreshCurrentAttendanceData();
+      } catch (err) {
+        showToast('Error saving attendance: ' + err.message, 'error');
+      }
+    }
+
+    async function demarkAttendanceLog() {
+      const logId = document.getElementById('dayExistingLogId').value;
+      if (!logId) return;
+      if (!confirm('Are you sure you want to remove this attendance record?')) return;
+      try {
+        await apiRequest(`service/hr/attendance/${logId}`, { method: 'DELETE' });
+        showToast('Attendance removed', 'success');
+        closeModal('modalAttendanceDay');
+        refreshCurrentAttendanceData();
+      } catch (err) {
+        showToast('Failed to delete log: ' + err.message, 'error');
+      }
+    }
+
+    // ── 5. Print Sheets & Export JSON ────────────────────────────────────────
+    function printActiveAttendanceSheet() {
+      window.print();
+    }
+
+    function exportAttendanceJsonBackup() {
+      if (rawAttendanceLogs.length === 0) {
+        showToast('No attendance logs found to export.', 'info');
+        return;
+      }
+      const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(rawAttendanceLogs, null, 2));
+      const a = document.createElement('a');
+      a.href = dataStr;
+      a.download = `attendance_backup_${MONTH_NAMES[selectedMonth]}_${selectedYear}.json`;
+      a.click();
+      showToast('Attendance JSON downloaded', 'success');
+    }
+
+    // =========================================================================
+    // SECTION 2: EMPLOYEE PROFILE LOGIC
+    // =========================================================================
+    async function loadEmployees() {
+      const loader = document.getElementById('employeeLoading');
+      loader.style.display = 'block';
+      try {
+        const res = await apiRequest('service/hr/employees?all=true');
+        allEmployees = res.data || [];
+        populateEmployeeRoleFilter();
+        renderEmployeeTable(allEmployees);
+      } catch (err) {
+        showToast('Error loading employees: ' + err.message, 'error');
+      } finally {
+        loader.style.display = 'none';
+      }
+    }
+
+    function populateEmployeeRoleFilter() {
+      const select = document.getElementById('employeeRoleFilter');
+      const roles = new Set();
+      allEmployees.forEach(e => { if (e.role) roles.add(e.role); });
+      select.innerHTML = '<option value="__all__">All Designations</option>';
+      roles.forEach(r => {
+        const opt = document.createElement('option');
+        opt.value = r;
+        opt.textContent = r;
+        select.appendChild(opt);
+      });
+    }
+
+    function filterEmployees() {
+      const search = (document.getElementById('employeeSearchInput').value || '').toLowerCase();
+      const roleFilter = document.getElementById('employeeRoleFilter').value;
+
+      const filtered = allEmployees.filter(e => {
+        const matchRole = roleFilter === '__all__' || e.role === roleFilter;
+        const name = (e.name || '').toLowerCase();
+        const efn = String(e.enrollment_no || '').toLowerCase();
+        const mob = String(e.mobile || '').toLowerCase();
+        const matchSearch = !search || name.includes(search) || efn.includes(search) || mob.includes(search);
+        return matchRole && matchSearch;
+      });
+      renderEmployeeTable(filtered);
+    }
+
+    function renderEmployeeTable(list) {
+      const tbody = document.getElementById('employeeTableBody');
+      if (list.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="10" style="text-align:center; padding:30px; color:#94a3b8;">No employees found.</td></tr>`;
+        return;
+      }
+
+      let html = '';
+      list.forEach((e, idx) => {
+        const ae = (e.employmentHistory || []).find(h => h.active) || (e.employmentHistory || []).slice(-1)[0] || null;
+        const dRate = ae?.daily_rate || ae?.dailyRate || e.daily_rate || e.dailyRate || e.rate || ae?.rate || 0;
+        const mRate = ae?.monthly_rate || ae?.monthlyRate || ae?.salary || ae?.salaryRate || e.monthly_rate || e.monthlyRate || e.salary || e.salaryRate || 0;
+        const isDelinked = e.status === 'delinked' || e.status === 'inactive';
+
+        html += `<tr>
+          <td style="color:#94a3b8;">${idx + 1}</td>
+          <td>
+            <div style="font-weight:700; color:var(--text-main);">${e.name}</div>
+            <div style="font-size:11px; color:var(--text-muted);">UID: ${e.aadhar_number || e.aadharNumber || 'N/A'}</div>
+          </td>
+          <td><span style="font-weight:700; color:var(--primary);">EFN# ${e.enrollment_no || 'N/A'}</span></td>
+          <td style="color:#475569;">${e.fatherName || e.father_name || 'N/A'}</td>
+          <td><span style="background:#f1f5f9; padding:3px 8px; border-radius:6px; font-weight:600; font-size:11px;">${e.role || 'Worker'}</span></td>
+          <td><i class="fa-solid fa-phone" style="font-size:11px; color:#94a3b8; margin-right:4px;"></i>${e.mobile || 'N/A'}</td>
+          <td style="text-align:right; font-weight:600;">₹${Number(dRate).toLocaleString()}</td>
+          <td style="text-align:right; font-weight:600;">₹${Number(mRate).toLocaleString()}</td>
+          <td>
+            <span style="padding:3px 8px; border-radius:10px; font-size:11px; font-weight:700; background:${isDelinked ? '#fee2e2; color:#dc2626;' : '#dcfce7; color:#15803d;'}">
+              ${isDelinked ? 'Inactive' : 'Active'}
+            </span>
+          </td>
+          <td style="text-align:center;">
+            <button class="btn btn-outline btn-sm" onclick="openEditEmployeeModal('${e._id}')">
+              <i class="fa-solid fa-pen-to-square"></i> Edit
+            </button>
+          </td>
+        </tr>`;
+      });
+      tbody.innerHTML = html;
+    }
+
+    function openAddEmployeeModal() {
+      document.getElementById('modalEditEmployeeTitle').textContent = 'Add New Employee';
+      document.getElementById('editEmpId').value = '';
+      document.getElementById('editEmpName').value = '';
+      document.getElementById('editEmpEnrollment').value = '';
+      document.getElementById('editEmpFather').value = '';
+      document.getElementById('editEmpMobile').value = '';
+      document.getElementById('editEmpRole').value = 'Worker';
+      document.getElementById('editEmpAadhar').value = '';
+      document.getElementById('editEmpDailyRate').value = '';
+      document.getElementById('editEmpMonthlyRate').value = '';
+      document.getElementById('editEmpStatus').value = 'active';
+      openModal('modalEditEmployee');
+    }
+
+    function openEditEmployeeModal(id) {
+      const e = allEmployees.find(emp => String(emp._id || emp.id) === String(id));
+      if (!e) return;
+      const ae = (e.employmentHistory || []).find(h => h.active) || (e.employmentHistory || []).slice(-1)[0] || null;
+
+      document.getElementById('modalEditEmployeeTitle').textContent = `Edit Profile: ${e.name}`;
+      document.getElementById('editEmpId').value = e._id || e.id || '';
+      document.getElementById('editEmpName').value = e.name || '';
+      document.getElementById('editEmpEnrollment').value = e.enrollment_no || '';
+      document.getElementById('editEmpFather').value = e.fatherName || e.father_name || '';
+      document.getElementById('editEmpMobile').value = e.mobile || '';
+      document.getElementById('editEmpRole').value = e.role || '';
+      document.getElementById('editEmpAadhar').value = e.aadhar_number || e.aadharNumber || '';
+      document.getElementById('editEmpDailyRate').value = ae?.daily_rate || ae?.dailyRate || e.daily_rate || e.dailyRate || e.rate || ae?.rate || '';
+      document.getElementById('editEmpMonthlyRate').value = ae?.monthly_rate || ae?.monthlyRate || ae?.salary || ae?.salaryRate || e.monthly_rate || e.monthlyRate || e.salary || e.salaryRate || '';
+      document.getElementById('editEmpStatus').value = e.status === 'delinked' || e.status === 'inactive' ? 'inactive' : 'active';
+
+      openModal('modalEditEmployee');
+    }
+
+    async function saveEmployeeProfile() {
+      const id = document.getElementById('editEmpId').value;
+      const name = document.getElementById('editEmpName').value.trim();
+      const enrollment_no = document.getElementById('editEmpEnrollment').value.trim();
+      const fatherName = document.getElementById('editEmpFather').value.trim();
+      const mobile = document.getElementById('editEmpMobile').value.trim();
+      const role = document.getElementById('editEmpRole').value.trim();
+      const aadhar_number = document.getElementById('editEmpAadhar').value.trim();
+      const daily_rate = parseFloat(document.getElementById('editEmpDailyRate').value) || 0;
+      const monthly_rate = parseFloat(document.getElementById('editEmpMonthlyRate').value) || 0;
+      const status = document.getElementById('editEmpStatus').value;
+
+      if (!name || !mobile) {
+        showToast('Name and Mobile Number are required.', 'error');
+        return;
+      }
+
+      const rateVal = daily_rate || (monthly_rate ? Math.round(monthly_rate / 30) : 0);
+      const payload = {
+        name,
+        enrollment_no,
+        fatherName,
+        father_name: fatherName,
+        mobile,
+        role,
+        aadhar_number,
+        aadharNumber: aadhar_number,
+        daily_rate,
+        dailyRate: daily_rate,
+        monthly_rate,
+        monthlyRate: monthly_rate,
+        salary: monthly_rate,
+        salaryRate: monthly_rate,
+        rate: rateVal,
+        status
+      };
+
+      // Sync active entry in employmentHistory
+      const existingEmp = id ? allEmployees.find(emp => String(emp._id || emp.id) === String(id)) : null;
+      if (existingEmp && Array.isArray(existingEmp.employmentHistory) && existingEmp.employmentHistory.length > 0) {
+        const histCopy = JSON.parse(JSON.stringify(existingEmp.employmentHistory));
+        let activeEntry = histCopy.find(h => h.active) || histCopy.slice(-1)[0];
+        if (activeEntry) {
+          activeEntry.daily_rate = daily_rate;
+          activeEntry.dailyRate = daily_rate;
+          activeEntry.monthly_rate = monthly_rate;
+          activeEntry.monthlyRate = monthly_rate;
+          activeEntry.salary = monthly_rate;
+          activeEntry.rate = rateVal;
+        }
+        payload.employmentHistory = histCopy;
+      } else {
+        payload.employmentHistory = [{
+          active: true,
+          daily_rate,
+          dailyRate: daily_rate,
+          monthly_rate,
+          monthlyRate: monthly_rate,
+          salary: monthly_rate,
+          rate: rateVal,
+          role: role,
+          startDate: new Date().toISOString()
+        }];
+      }
+
+      try {
+        if (id) {
+          await apiRequest(`service/hr/employees/${id}`, {
+            method: 'PUT',
+            body: JSON.stringify(payload)
+          });
+          showToast('Employee profile updated successfully', 'success');
+
+          // Sync rate to userMaster / linked user record if exists
+          const userId = existingEmp?.user_id || existingEmp?.userId;
+          if (userId) {
+            apiRequest(`service/users/${userId}`, {
+              method: 'PUT',
+              body: JSON.stringify({
+                rate: rateVal,
+                dailyRate: daily_rate,
+                daily_rate: daily_rate,
+                monthlyRate: monthly_rate,
+                monthly_rate: monthly_rate,
+                salary: monthly_rate
+              })
+            }).catch(() => {});
+          }
+        } else {
+          const res = await apiRequest('service/hr/employees', {
+            method: 'POST',
+            body: JSON.stringify(payload)
+          });
+          showToast('New employee created successfully', 'success');
+          const newUserId = res?.data?.user_id || res?.data?.userId;
+          if (newUserId) {
+            apiRequest(`service/users/${newUserId}`, {
+              method: 'PUT',
+              body: JSON.stringify({
+                rate: rateVal,
+                dailyRate: daily_rate,
+                daily_rate: daily_rate,
+                monthlyRate: monthly_rate,
+                monthly_rate: monthly_rate,
+                salary: monthly_rate
+              })
+            }).catch(() => {});
+          }
+        }
+        closeModal('modalEditEmployee');
+        loadEmployees();
+      } catch (err) {
+        showToast('Failed to save profile: ' + err.message, 'error');
+      }
+    }
+
+    // =========================================================================
+    // SECTION 3: PAYMENT VOUCHER LOGIC
+    // =========================================================================
+    async function loadVouchers() {
+      const loader = document.getElementById('voucherLoading');
+      loader.style.display = 'block';
+      try {
+        const [vouchRes, mastRes] = await Promise.all([
+          apiRequest('finance/vouchers?type=Payment'),
+          apiRequest('finance/master').catch(() => ({ data: {} }))
+        ]);
+        recentVouchers = vouchRes.data || [];
+        allLedgers = mastRes.data?.ledgers || [];
+        renderVoucherTable(recentVouchers);
+      } catch (err) {
+        showToast('Error loading vouchers: ' + err.message, 'error');
+      } finally {
+        loader.style.display = 'none';
+      }
+    }
+
+    function renderVoucherTable(list) {
+      const tbody = document.getElementById('voucherTableBody');
+      if (list.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; padding:30px; color:#94a3b8;">No payment vouchers recorded.</td></tr>`;
+        return;
+      }
+
+      let html = '';
+      list.forEach(v => {
+        const dateStr = v.date ? new Date(v.date).toLocaleDateString('en-IN') : 'N/A';
+        const entries = v.entries || v.rows || [];
+
+        const debitEntries = entries.filter(e => (Number(e.debit) > 0) || (e.type === 'Dr'));
+        const creditEntries = entries.filter(e => (Number(e.credit) > 0) || (e.type === 'Cr'));
+
+        const debitTotal = debitEntries.reduce((sum, e) => sum + (Number(e.debit) || Number(e.amount) || 0), 0);
+        const creditTotal = creditEntries.reduce((sum, e) => sum + (Number(e.credit) || Number(e.amount) || 0), 0);
+        const totalAmount = Number(v.amount) || debitTotal || creditTotal || 0;
+
+        const debitLedgerText = debitEntries.map(e => e.ledgerName || e.account || 'Staff / Vendor').join(', ') || 'Staff / Vendor';
+        const creditLedgerText = creditEntries.map(e => e.ledgerName || e.account || 'Cash / Bank').join(', ') || 'Cash in Hand';
+
+        html += `<tr>
+          <td>
+            <span style="font-weight:700; color:var(--primary);">${v.voucherNo || v.voucherNumber || v._id.slice(-6)}</span>
+            ${v.voucherType ? `<div style="font-size:10px; color:#64748b; text-transform:uppercase; font-weight:700;">${v.voucherType}</div>` : ''}
+          </td>
+          <td>${dateStr}</td>
+          <td>
+            <div style="font-weight:700; color:var(--text-main);">${debitLedgerText}</div>
+            <div style="font-size:11px; font-weight:700; color:#16a34a; margin-top:2px;">
+              <i class="fa-solid fa-arrow-down-left"></i> Dr: ₹${debitTotal.toLocaleString('en-IN')}
+            </div>
+          </td>
+          <td>
+            <div style="font-weight:700; color:var(--text-main);">${creditLedgerText}</div>
+            <div style="font-size:11px; font-weight:700; color:#0284c7; margin-top:2px;">
+              <i class="fa-solid fa-arrow-up-right"></i> Cr: ₹${creditTotal.toLocaleString('en-IN')}
+            </div>
+          </td>
+          <td style="text-align:right; font-weight:800; font-size:14px; color:var(--text-main);">₹${totalAmount.toLocaleString('en-IN')}</td>
+          <td style="font-size:12px; color:var(--text-muted); max-width:220px;">${v.narration || '-'}</td>
+          <td style="text-align:center;">
+            <div style="display:inline-flex; gap:6px; align-items:center;">
+              <button class="btn btn-outline btn-sm" onclick="openAdvancedVoucherModal('${v._id}')" title="Edit Voucher in Advanced Format" style="color:var(--primary); border-color:var(--primary); font-weight:600; padding:4px 10px; font-size:12px;">
+                <i class="fa-solid fa-pen-to-square"></i> Edit
+              </button>
+              <button class="btn btn-outline btn-sm" onclick="printVoucherSlip('${v._id}')" title="Print Slip" style="padding:4px 8px; font-size:12px; color:#64748b;">
+                <i class="fa-solid fa-print"></i>
+              </button>
+            </div>
+          </td>
+        </tr>`;
+      });
+      tbody.innerHTML = html;
+    }
+
+    function filterVouchers() {
+      const search = (document.getElementById('voucherSearchInput').value || '').toLowerCase();
+      const filtered = recentVouchers.filter(v => {
+        const no = String(v.voucherNo || v.voucherNumber || v._id || '').toLowerCase();
+        const narr = (v.narration || '').toLowerCase();
+        const entries = v.entries || v.rows || [];
+        const ledgers = entries.map(e => e.ledgerName || e.account || '').join(' ').toLowerCase();
+        return no.includes(search) || narr.includes(search) || ledgers.includes(search);
+      });
+      renderVoucherTable(filtered);
+    }
+
+    function openCreateVoucherModal() {
+      document.getElementById('newVoucherDate').value = new Date().toISOString().slice(0, 10);
+      document.getElementById('newVoucherAmount').value = '';
+      document.getElementById('newVoucherNarration').value = '';
+
+      const drSelect = document.getElementById('newVoucherDebitLedger');
+      const crSelect = document.getElementById('newVoucherCreditLedger');
+
+      drSelect.innerHTML = '';
+      crSelect.innerHTML = '';
+
+      allLedgers.forEach(l => {
+        const opt1 = document.createElement('option');
+        opt1.value = l._id;
+        opt1.textContent = `${l.ledgerName || l.name} (${l.groupName || 'Ledger'})`;
+        drSelect.appendChild(opt1);
+
+        const opt2 = document.createElement('option');
+        opt2.value = l._id;
+        opt2.textContent = `${l.ledgerName || l.name} (${l.groupName || 'Ledger'})`;
+        crSelect.appendChild(opt2);
+      });
+
+      openModal('modalCreateVoucher');
+    }
+
+    async function submitPaymentVoucher() {
+      const date = document.getElementById('newVoucherDate').value;
+      const amount = parseFloat(document.getElementById('newVoucherAmount').value);
+      const drId = document.getElementById('newVoucherDebitLedger').value;
+      const crId = document.getElementById('newVoucherCreditLedger').value;
+      const narration = document.getElementById('newVoucherNarration').value.trim();
+
+      if (!date || !amount || amount <= 0 || !narration) {
+        showToast('Please fill all mandatory voucher fields.', 'error');
+        return;
+      }
+
+      const drLedger = allLedgers.find(l => l._id === drId);
+      const crLedger = allLedgers.find(l => l._id === crId);
+
+      const payload = {
+        date,
+        voucherType: 'Payment',
+        amount,
+        narration,
+        entries: [
+          { ledgerId: drId, ledgerName: drLedger?.ledgerName || drLedger?.name || 'Debit', debit: amount, credit: 0 },
+          { ledgerId: crId, ledgerName: crLedger?.ledgerName || crLedger?.name || 'Credit', debit: 0, credit: amount }
+        ]
+      };
+
+      try {
+        await apiRequest('finance/vouchers', {
+          method: 'POST',
+          body: JSON.stringify(payload)
+        });
+        showToast('Payment voucher created successfully', 'success');
+        closeModal('modalCreateVoucher');
+        loadVouchers();
+      } catch (err) {
+        showToast('Failed to create voucher: ' + err.message, 'error');
+      }
+    }
+
+    // =========================================================================
+    // ADVANCED VOUCHER EDITOR LOGIC
+    // =========================================================================
+    function openAdvancedVoucherModal(id) {
+      if (!allLedgers || allLedgers.length === 0) {
+        apiRequest('finance/master').then(m => {
+          allLedgers = m.data?.ledgers || [];
+          openAdvancedVoucherModal(id);
+        }).catch(e => {
+          showToast('Could not load ledgers: ' + e.message, 'error');
+        });
+        return;
+      }
+
+      const modalTitle = document.getElementById('advVoucherModalTitle');
+      const vIdEl = document.getElementById('advVoucherId');
+      const vNoEl = document.getElementById('advVoucherNo');
+      const vTypeEl = document.getElementById('advVoucherType');
+      const vDateEl = document.getElementById('advVoucherDate');
+      const vRefEl = document.getElementById('advVoucherRef');
+      const vNarrEl = document.getElementById('advVoucherNarration');
+      const tbody = document.getElementById('advVoucherEntriesBody');
+      tbody.innerHTML = '';
+
+      if (id) {
+        const v = (recentVouchers || []).find(item => item._id === id);
+        if (!v) {
+          showToast('Voucher details not found.', 'error');
+          return;
+        }
+        modalTitle.innerHTML = `<i class="fa-solid fa-file-pen" style="color:var(--primary);"></i> Edit Voucher: ${v.voucherNo || v.voucherNumber || v._id.slice(-6)}`;
+        vIdEl.value = v._id;
+        vNoEl.value = v.voucherNo || v.voucherNumber || v._id;
+        vTypeEl.value = v.voucherType || 'Payment';
+        vDateEl.value = v.date ? new Date(v.date).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10);
+        vRefEl.value = v.refDocNo || '';
+        vNarrEl.value = v.narration || '';
+
+        const entries = v.entries || v.rows || [];
+        if (entries.length > 0) {
+          entries.forEach(e => {
+            const isDr = (Number(e.debit) > 0) || (e.type === 'Dr');
+            addAdvVoucherRow({
+              type: isDr ? 'Dr' : 'Cr',
+              ledgerId: e.ledgerId?._id || e.ledgerId || '',
+              debit: Number(e.debit) || (isDr ? Number(e.amount) : 0) || 0,
+              credit: Number(e.credit) || (!isDr ? Number(e.amount) : 0) || 0,
+              narration: e.narration || e.remarks || ''
+            });
+          });
+        } else {
+          addAdvVoucherRow({ type: 'Dr' });
+          addAdvVoucherRow({ type: 'Cr' });
+        }
+      } else {
+        modalTitle.innerHTML = `<i class="fa-solid fa-file-pen" style="color:var(--primary);"></i> Advanced Voucher Editor`;
+        vIdEl.value = '';
+        vNoEl.value = 'Auto-generated on Save';
+        vTypeEl.value = 'Payment';
+        vDateEl.value = new Date().toISOString().slice(0, 10);
+        vRefEl.value = '';
+        vNarrEl.value = '';
+        addAdvVoucherRow({ type: 'Dr' });
+        addAdvVoucherRow({ type: 'Cr' });
+      }
+
+      openModal('modalAdvancedVoucher');
+      recalcAdvVoucherBalance();
+    }
+
+    function addAdvVoucherRow(entry = { type: 'Dr', ledgerId: '', debit: 0, credit: 0, narration: '' }) {
+      const tbody = document.getElementById('advVoucherEntriesBody');
+      const tr = document.createElement('tr');
+      tr.className = 'adv-entry-row';
+
+      // Group ledgers by groupName
+      const grouped = {};
+      allLedgers.forEach(l => {
+        const grp = l.groupName || 'General Accounts';
+        if (!grouped[grp]) grouped[grp] = [];
+        grouped[grp].push(l);
+      });
+
+      let ledgerOptions = '<option value="">-- Select Ledger Account --</option>';
+      Object.keys(grouped).sort().forEach(grp => {
+        ledgerOptions += `<optgroup label="${grp}">`;
+        grouped[grp].sort((a,b) => (a.ledgerName||a.name||'').localeCompare(b.ledgerName||b.name||'')).forEach(l => {
+          const lId = String(l._id || '');
+          const entryLId = String(entry.ledgerId?._id || entry.ledgerId || '');
+          const selected = (lId && entryLId && lId === entryLId) ? 'selected' : '';
+          const name = l.ledgerName || l.name || 'Account';
+          ledgerOptions += `<option value="${l._id}" ${selected}>${name}</option>`;
+        });
+        ledgerOptions += `</optgroup>`;
+      });
+
+      const isDr = entry.type === 'Dr' || Number(entry.debit) > 0;
+      const drVal = Number(entry.debit) > 0 ? entry.debit : (isDr && Number(entry.amount) ? entry.amount : '');
+      const crVal = Number(entry.credit) > 0 ? entry.credit : (!isDr && Number(entry.amount) ? entry.amount : '');
+
+      tr.innerHTML = `
+        <td style="width:110px;">
+          <select class="form-control adv-row-type" onchange="onAdvRowTypeChange(this)" style="font-weight:700; color:${isDr ? '#16a34a' : '#0284c7'};">
+            <option value="Dr" ${isDr ? 'selected' : ''}>Dr (Debit)</option>
+            <option value="Cr" ${!isDr ? 'selected' : ''}>Cr (Credit)</option>
+          </select>
+        </td>
+        <td>
+          <select class="form-control adv-row-ledger" required>
+            ${ledgerOptions}
+          </select>
+        </td>
+        <td style="width:140px;">
+          <input type="number" class="form-control adv-row-debit" min="0" step="any" placeholder="0.00" value="${drVal || ''}" ${isDr ? '' : 'disabled'} oninput="recalcAdvVoucherBalance()" style="text-align:right; font-weight:700;">
+        </td>
+        <td style="width:140px;">
+          <input type="number" class="form-control adv-row-credit" min="0" step="any" placeholder="0.00" value="${crVal || ''}" ${!isDr ? '' : 'disabled'} oninput="recalcAdvVoucherBalance()" style="text-align:right; font-weight:700;">
+        </td>
+        <td style="width:180px;">
+          <input type="text" class="form-control adv-row-narration" placeholder="Line remark..." value="${entry.narration || entry.remarks || ''}">
+        </td>
+        <td style="width:50px; text-align:center;">
+          <button type="button" class="btn btn-outline btn-sm" onclick="removeAdvVoucherRow(this)" style="color:var(--danger); border-color:#fee2e2; padding:6px 10px;" title="Remove Entry">
+            <i class="fa-solid fa-trash-can"></i>
+          </button>
+        </td>
+      `;
+      tbody.appendChild(tr);
+      recalcAdvVoucherBalance();
+    }
+
+    function onAdvRowTypeChange(selectEl) {
+      const tr = selectEl.closest('tr');
+      const isDr = selectEl.value === 'Dr';
+      selectEl.style.color = isDr ? '#16a34a' : '#0284c7';
+      const drInput = tr.querySelector('.adv-row-debit');
+      const crInput = tr.querySelector('.adv-row-credit');
+
+      if (isDr) {
+        drInput.disabled = false;
+        if (crInput.value) {
+          drInput.value = crInput.value;
+          crInput.value = '';
+        }
+        crInput.disabled = true;
+      } else {
+        crInput.disabled = false;
+        if (drInput.value) {
+          crInput.value = drInput.value;
+          drInput.value = '';
+        }
+        drInput.disabled = true;
+      }
+      recalcAdvVoucherBalance();
+    }
+
+    function removeAdvVoucherRow(btn) {
+      const rows = document.querySelectorAll('#advVoucherEntriesBody tr.adv-entry-row');
+      if (rows.length <= 2) {
+        showToast('A double-entry voucher must contain at least 2 entries.', 'warning');
+        return;
+      }
+      btn.closest('tr').remove();
+      recalcAdvVoucherBalance();
+    }
+
+    function recalcAdvVoucherBalance() {
+      let totalDebit = 0;
+      let totalCredit = 0;
+
+      document.querySelectorAll('#advVoucherEntriesBody tr.adv-entry-row').forEach(tr => {
+        const isDr = tr.querySelector('.adv-row-type').value === 'Dr';
+        const drInput = tr.querySelector('.adv-row-debit');
+        const crInput = tr.querySelector('.adv-row-credit');
+        const dVal = parseFloat(drInput.value) || 0;
+        const cVal = parseFloat(crInput.value) || 0;
+        if (isDr) totalDebit += dVal;
+        else totalCredit += cVal;
+      });
+
+      const drEl = document.getElementById('advTotalDebit');
+      const crEl = document.getElementById('advTotalCredit');
+      const statusEl = document.getElementById('advBalanceStatus');
+      const saveBtn = document.getElementById('advVoucherSaveBtn');
+
+      if (drEl) drEl.textContent = `₹${totalDebit.toLocaleString('en-IN')}`;
+      if (crEl) crEl.textContent = `₹${totalCredit.toLocaleString('en-IN')}`;
+
+      const diff = Math.abs(totalDebit - totalCredit);
+      const isBalanced = diff < 0.01 && totalDebit > 0;
+
+      if (statusEl) {
+        if (totalDebit === 0 && totalCredit === 0) {
+          statusEl.innerHTML = `<i class="fa-solid fa-circle-info"></i> Enter debit and credit amounts to balance voucher.`;
+          statusEl.style.background = '#f1f5f9';
+          statusEl.style.color = '#475569';
+        } else if (isBalanced) {
+          statusEl.innerHTML = `<i class="fa-solid fa-circle-check"></i> <strong>Balanced:</strong> Total ₹${totalDebit.toLocaleString('en-IN')} (Debit matches Credit)`;
+          statusEl.style.background = '#dcfce7';
+          statusEl.style.color = '#15803d';
+        } else {
+          statusEl.innerHTML = `<i class="fa-solid fa-triangle-exclamation"></i> <strong>Unbalanced:</strong> Debit ₹${totalDebit.toLocaleString('en-IN')} vs Credit ₹${totalCredit.toLocaleString('en-IN')} (Difference: ₹${diff.toLocaleString('en-IN')})`;
+          statusEl.style.background = '#fee2e2';
+          statusEl.style.color = '#b91c1c';
+        }
+      }
+
+      if (saveBtn) {
+        saveBtn.disabled = !isBalanced;
+        saveBtn.style.opacity = isBalanced ? '1' : '0.5';
+        saveBtn.style.cursor = isBalanced ? 'pointer' : 'not-allowed';
+      }
+    }
+
+    async function saveAdvancedVoucher() {
+      const vId = document.getElementById('advVoucherId').value;
+      const voucherType = document.getElementById('advVoucherType').value;
+      const date = document.getElementById('advVoucherDate').value;
+      const refDocNo = document.getElementById('advVoucherRef').value.trim();
+      const narration = document.getElementById('advVoucherNarration').value.trim();
+
+      if (!date) {
+        showToast('Please specify a voucher date.', 'error');
+        return;
+      }
+      if (!narration) {
+        showToast('Please provide a narration/remark.', 'error');
+        return;
+      }
+
+      const rows = document.querySelectorAll('#advVoucherEntriesBody tr.adv-entry-row');
+      if (rows.length < 2) {
+        showToast('A voucher must have at least two entries.', 'error');
+        return;
+      }
+
+      const entries = [];
+      let totalDr = 0;
+      let totalCr = 0;
+
+      for (const tr of rows) {
+        const isDr = tr.querySelector('.adv-row-type').value === 'Dr';
+        const ledgerId = tr.querySelector('.adv-row-ledger').value;
+        const debit = isDr ? (parseFloat(tr.querySelector('.adv-row-debit').value) || 0) : 0;
+        const credit = !isDr ? (parseFloat(tr.querySelector('.adv-row-credit').value) || 0) : 0;
+        const lineNarr = tr.querySelector('.adv-row-narration').value.trim();
+
+        if (!ledgerId) {
+          showToast('Please select a ledger account for every entry row.', 'error');
+          return;
+        }
+        if (isDr && debit <= 0) {
+          showToast('Debit amount must be greater than 0.', 'error');
+          return;
+        }
+        if (!isDr && credit <= 0) {
+          showToast('Credit amount must be greater than 0.', 'error');
+          return;
+        }
+
+        const ledgerDoc = allLedgers.find(l => String(l._id) === String(ledgerId));
+        entries.push({
+          ledgerId,
+          ledgerName: ledgerDoc?.ledgerName || ledgerDoc?.name || '',
+          debit,
+          credit,
+          narration: lineNarr
+        });
+
+        totalDr += debit;
+        totalCr += credit;
+      }
+
+      if (Math.abs(totalDr - totalCr) > 0.01) {
+        showToast(`Voucher unbalanced! Debit: ₹${totalDr}, Credit: ₹${totalCr}`, 'error');
+        return;
+      }
+
+      const payload = {
+        voucherType,
+        date,
+        narration,
+        refDocNo,
+        entries
+      };
+
+      const saveBtn = document.getElementById('advVoucherSaveBtn');
+      saveBtn.disabled = true;
+      saveBtn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> Saving...`;
+
+      try {
+        let res;
+        if (vId) {
+          res = await apiRequest(`finance/vouchers/${vId}`, {
+            method: 'PUT',
+            body: JSON.stringify(payload)
+          });
+        } else {
+          res = await apiRequest('finance/vouchers', {
+            method: 'POST',
+            body: JSON.stringify(payload)
+          });
+        }
+        showToast(vId ? 'Voucher updated successfully!' : 'Voucher created successfully!', 'success');
+        closeModal('modalAdvancedVoucher');
+        loadVouchers();
+      } catch (err) {
+        showToast('Failed to save voucher: ' + err.message, 'error');
+      } finally {
+        saveBtn.disabled = false;
+        saveBtn.innerHTML = `<i class="fa-solid fa-floppy-disk"></i> Save Voucher`;
+        recalcAdvVoucherBalance();
+      }
+    }
+
+    function printVoucherSlip(id) {
+      const v = (recentVouchers || []).find(item => item._id === id);
+      if (!v) {
+        showToast('Voucher details not found.', 'warning');
+        return;
+      }
+      const dateStr = v.date ? new Date(v.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : new Date().toLocaleDateString('en-IN');
+      const entries = v.entries || v.rows || [];
+      const debitEntries = entries.filter(e => (Number(e.debit) > 0) || (e.type === 'Dr'));
+      const creditEntries = entries.filter(e => (Number(e.credit) > 0) || (e.type === 'Cr'));
+      const debitTotal = debitEntries.reduce((sum, e) => sum + (Number(e.debit) || Number(e.amount) || 0), 0);
+      const creditTotal = creditEntries.reduce((sum, e) => sum + (Number(e.credit) || Number(e.amount) || 0), 0);
+      const totalAmount = Number(v.amount) || debitTotal || creditTotal || 0;
+      const debitLedgerText = debitEntries.map(e => e.ledgerName || e.account || 'Particulars').join(', ') || 'Particulars';
+      const creditLedgerText = creditEntries.map(e => e.ledgerName || e.account || 'Cash / Bank').join(', ') || 'Cash in Hand';
+      const amountWords = numberToWordsIndian(totalAmount);
+      const corpName = sessionUser?.selectedCorporateName || 'Our Company';
+      const voucherNo = v.voucherNo || v.voucherNumber || v._id.slice(-8).toUpperCase();
+
+      const printArea = document.getElementById('payslipPrintArea');
+      printArea.innerHTML = `
+        <div class="voucher-half-page">
+          <div style="border-bottom:2px solid #0f172a; padding-bottom:6px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:flex-start;">
+            <div>
+              <h2 style="font-size:15px; font-weight:800; color:#0f172a; text-transform:uppercase; margin:0; letter-spacing:0.5px;">${corpName}</h2>
+              <div style="font-size:11px; font-weight:700; color:var(--primary); margin-top:2px;">PAYMENT VOUCHER</div>
+            </div>
+            <div style="text-align:right; font-size:11px;">
+              <div><strong>Voucher No:</strong> <span style="font-weight:700; color:#2563eb;">${voucherNo}</span></div>
+              <div><strong>Date:</strong> ${dateStr}</div>
+            </div>
+          </div>
+          <div style="display:flex; gap:12px; margin-bottom:8px; flex:1;">
+            <div style="flex:1;">
+              <table style="width:100%; border-collapse:collapse; font-size:11px; border:1px solid #cbd5e1;">
+                <thead>
+                  <tr style="background:#f1f5f9; text-transform:uppercase; font-size:10px;">
+                    <th style="border:1px solid #cbd5e1; padding:4px 6px; text-align:left; width:50px;">Type</th>
+                    <th style="border:1px solid #cbd5e1; padding:4px 6px; text-align:left;">Particulars / Ledger</th>
+                    <th style="border:1px solid #cbd5e1; padding:4px 6px; text-align:right; width:85px;">Amount (₹)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td style="border:1px solid #cbd5e1; padding:4px 6px; font-weight:800; color:#15803d;">Dr.</td>
+                    <td style="border:1px solid #cbd5e1; padding:4px 6px;">
+                      <div style="font-weight:700; color:#0f172a;">${debitLedgerText}</div>
+                      <div style="font-size:10px; color:#475569; margin-top:2px;">${v.narration || 'Payment disbursement'}</div>
+                    </td>
+                    <td style="border:1px solid #cbd5e1; padding:4px 6px; text-align:right; font-weight:800; color:#15803d;">₹${totalAmount.toLocaleString('en-IN')}</td>
+                  </tr>
+                  <tr>
+                    <td style="border:1px solid #cbd5e1; padding:4px 6px; font-weight:800; color:#0284c7;">Cr.</td>
+                    <td style="border:1px solid #cbd5e1; padding:4px 6px;">
+                      <div style="font-weight:700; color:#0f172a;">${creditLedgerText}</div>
+                    </td>
+                    <td style="border:1px solid #cbd5e1; padding:4px 6px; text-align:right; font-weight:800; color:#0284c7;">₹${totalAmount.toLocaleString('en-IN')}</td>
+                  </tr>
+                  <tr style="background:#f8fafc; font-weight:800;">
+                    <td colspan="2" style="border:1px solid #cbd5e1; padding:4px 6px; text-align:right; text-transform:uppercase; font-size:10px;">Total Amount:</td>
+                    <td style="border:1px solid #cbd5e1; padding:4px 6px; text-align:right; font-size:12px; color:#15803d;">₹${totalAmount.toLocaleString('en-IN')}</td>
+                  </tr>
+                </tbody>
+              </table>
+              <div style="font-size:10.5px; font-weight:600; color:#334155; margin-top:4px;">
+                Amount in Words: <em>Rupees ${amountWords} Only</em>
+              </div>
+            </div>
+            <div style="width:100px; text-align:center; border:1px solid #cbd5e1; border-radius:4px; padding:4px; background:#ffffff; display:flex; flex-direction:column; align-items:center; justify-content:center;">
+              <div id="qrContainer_singleSlip" style="width:78px; height:78px; display:flex; align-items:center; justify-content:center;"></div>
+              <div style="font-size:8px; font-weight:700; color:#475569; margin-top:2px;">HI-BIZ VOUCHER</div>
+            </div>
+          </div>
+          <div style="display:flex; justify-content:space-between; margin-top:14px; font-size:10px; color:#334155; border-top:1px dashed #cbd5e1; padding-top:6px;">
+            <div style="text-align:center; width:28%;">
+              <div style="height:14px;"></div>
+              <div style="border-top:1px solid #94a3b8; padding-top:2px;">Receiver's Signature</div>
+            </div>
+            <div style="text-align:center; width:28%;">
+              <div style="height:14px;"></div>
+              <div style="border-top:1px solid #94a3b8; padding-top:2px;">Checked By</div>
+            </div>
+            <div style="text-align:center; width:28%;">
+              <div style="height:14px;"></div>
+              <div style="border-top:1px solid #94a3b8; padding-top:2px;">Authorized Signatory</div>
+            </div>
+          </div>
+        </div>
+      `;
+      const qrBox = document.getElementById('qrContainer_singleSlip');
+      if (qrBox && typeof QRCode !== 'undefined') {
+        try {
+          new QRCode(qrBox, {
+            text: JSON.stringify({ action: 'VOUCHER_VERIFY', no: voucherNo, amt: totalAmount, date: dateStr }),
+            width: 76,
+            height: 76,
+            colorDark: '#0f172a',
+            colorLight: '#ffffff'
+          });
+        } catch(e) {
+          renderFallbackQR(qrBox, voucherNo);
+        }
+      }
+      document.getElementById('modalPayslipTitle').innerHTML = `<i class="fa-solid fa-receipt" style="color:var(--primary); margin-right:8px;"></i> Payment Voucher Slip - ${voucherNo}`;
+      openModal('modalPayslip');
+    }
+
+    // =========================================================================
+    // SECTION 4: PENALTY STATEMENT & PRINT UTILITIES
+    // =========================================================================
+    async function openPenaltyReportModal() {
+      openModal('modalPenaltyReport');
+      const loader = document.getElementById('penaltyLoading');
+      const tbody = document.getElementById('penaltyTableBody');
+      loader.style.display = 'block';
+
+      try {
+        const startOfMonth = new Date(selectedYear, selectedMonth, 1).toISOString();
+        const endOfMonth = new Date(selectedYear, selectedMonth + 1, 0).toISOString();
+        const res = await apiRequest(`service/hr/attendance?from_date=${startOfMonth}&to_date=${endOfMonth}`);
+        const logs = res.data || [];
+
+        const penalties = logs.filter(l => {
+          const rem = (l.remarks || '').toLowerCase();
+          const force = (l.forcedOffReason || '').toLowerCase();
+          const early = (l.emergencyReason || '').toLowerCase();
+          return rem.includes('late') || rem.includes('early') || force || early;
+        });
+
+        if (penalties.length === 0) {
+          tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; padding:30px; color:#94a3b8;">No penalties or early departures recorded this month.</td></tr>`;
+        } else {
+          let html = '';
+          penalties.forEach(p => {
+            const dateStr = p.date ? new Date(p.date).toLocaleDateString('en-IN') : 'N/A';
+            const name = p.employeeId?.name || p.markedByUserName || 'Worker';
+            const type = (p.forcedOffReason || p.emergencyReason) ? 'Early Departure' : 'Late Arrival';
+            const fine = type === 'Early Departure' ? 200 : 100;
+            html += `<tr>
+              <td>${dateStr}</td>
+              <td style="font-weight:700;">${name}</td>
+              <td>${p.site_name || 'Field Duty'}</td>
+              <td><span style="font-weight:700; color:${type === 'Early Departure' ? 'var(--danger)' : '#d97706'}">${type}</span></td>
+              <td style="font-size:12px; color:var(--text-muted);">${p.remarks || p.forcedOffReason || p.emergencyReason || 'Shift violation'}</td>
+              <td style="text-align:right; font-weight:800; color:var(--danger);">- ₹${fine}</td>
+            </tr>`;
+          });
+          tbody.innerHTML = html;
+        }
+      } catch (err) {
+        tbody.innerHTML = `<tr><td colspan="6" style="color:var(--danger); text-align:center;">Failed to load penalty records: ${err.message}</td></tr>`;
+      } finally {
+        loader.style.display = 'none';
+      }
+    }
+
+    function printElement(elemId) {
+      window.print();
+    }
+
+    // Auto-login on load if session is present (restricted to corpAdmin)
+    if (sessionUser?.token) {
+      const role = (sessionUser.userRole || sessionUser.role || '').toLowerCase();
+      if (role !== 'corpadmin') {
+        sessionUser = null;
+        localStorage.removeItem('sessionUser');
+        document.getElementById('loginError').textContent = 'Access restricted: Only CorpAdmin role users are authorized to log in.';
+      } else {
+        enterApp();
+      }
+    }
+  </script>
+</body>
+</html>

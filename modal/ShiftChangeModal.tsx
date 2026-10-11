@@ -974,6 +974,7 @@ export const ShiftChangeModal: React.FC<Props> = ({
                   'Success'
                 );
                 onRefresh();
+                onClose();
               } else {
                 appService.showToast(res.data?.message || 'Failed to start duty', 'Error');
               }
@@ -1175,6 +1176,9 @@ export const ShiftChangeModal: React.FC<Props> = ({
             setSelectedEmployeeIds((prev) => ({ ...prev, [leadId]: [] }));
             setShowEmployeeSelectorForSite((prev) => ({ ...prev, [leadId]: false }));
             onRefresh();
+            if (count > 0) {
+              onClose();
+            }
           },
         },
       ]
@@ -1275,6 +1279,9 @@ export const ShiftChangeModal: React.FC<Props> = ({
           setLoading(false);
           appService.showToast(`Ended duty for ${successCount} workers`, 'Success');
           onRefresh();
+          if (successCount > 0) {
+            onClose();
+          }
         },
       },
     ]);
@@ -1359,6 +1366,7 @@ export const ShiftChangeModal: React.FC<Props> = ({
                       'Success'
                     );
                     onRefresh();
+                    onClose();
                   } else {
                     appService.showToast(
                       startRes.data?.message || 'Failed to start reliever duty',
@@ -1368,6 +1376,7 @@ export const ShiftChangeModal: React.FC<Props> = ({
                 } else {
                   appService.showToast(`Duty ended successfully for ${activeNameWithEnr}`, 'Success');
                   onRefresh();
+                  onClose();
                 }
               } else {
                 appService.showToast(
@@ -1478,6 +1487,9 @@ export const ShiftChangeModal: React.FC<Props> = ({
           setLoading(false);
           appService.showToast(`Processed ${successCount} shift changes`, 'Success');
           onRefresh();
+          if (successCount > 0) {
+            onClose();
+          }
         },
       },
     ]);

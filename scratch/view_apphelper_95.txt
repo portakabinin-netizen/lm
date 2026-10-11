@@ -1,0 +1,143 @@
+Created At: 2026-09-20T15:53:18+05:30
+Completed At: 2026-09-20T15:53:18+05:30
+File Path: `file:///c:/hipk/UtilServices/appHelper.tsx`
+Total Lines: 832
+Total Bytes: 29378
+Showing lines 1 to 135
+The following code has been modified to include a line number before every line, in the format: <line_number>: <original_line>. Please note that any changes targeting the original code should remove the line number, colon, and leading space.
+1: import api_url, { isLocalMachine, local_api_url } from '@/backend/routes/base_url';
+2: import AsyncStorage from '@react-native-async-storage/async-storage';
+3: import axios, { AxiosInstance } from 'axios';
+4: import { readAsStringAsync } from 'expo-file-system/legacy';
+5: import * as SMS from 'expo-sms';
+6: import { jwtDecode } from 'jwt-decode';
+7: import { Alert, Platform, ToastAndroid } from 'react-native';
+8: 
+9: // ─── Types & Constants
+10: type NotificationType = 'Success' | 'Error' | 'Info' | 'Warning';
+11: 
+12: const MONTHS: Record<string, number> = {
+13:   jan: 0,
+14:   feb: 1,
+15:   mar: 2,
+16:   apr: 3,
+17:   may: 4,
+18:   jun: 5,
+19:   jul: 6,
+20:   aug: 7,
+21:   sep: 8,
+22:   sept: 8,
+23:   oct: 9,
+24:   nov: 10,
+25:   dec: 11,
+26: };
+27: 
+28: // ─── AppService
+29: class AppService {
+30:   private static instance: AppService;
+31:   public httpClient: AxiosInstance;
+32:   private currentUrlIndex = 0;
+33:   private baseURLs: string[];
+34: 
+35:   private constructor() {
+36:     this.baseURLs = this.buildCandidateURLs();
+37:     this.httpClient = axios.create({
+38:       baseURL: this.baseURLs[0] || api_url,
+39:       headers: { 'Content-Type': 'application/json' },
+40:       timeout: 15000,
+41:     });
+42:     this.setupInterceptors();
+43:   }
+44: 
+45:   public isLocal(url: string): boolean {
+46:     return /https?:\/\/(localhost|127\.0\.0\.1|10\.0\.2\.2|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|10\.\d+\.\d+\.\d+|.*\.local)/i.test(
+47:       url
+48:     );
+49:   }
+50: 
+51:   private buildCandidateURLs(): string[] {
+52:     const normalize = (url: string) => {
+53:       const clean = url.trim().replace(/\/+$/, '');
+54:       return clean.endsWith('/api') ? clean + '/' : clean + '/api/';
+55:     };
+56: 
+57:     const seen = new Set<string>();
+58:     const urls: string[] = [];
+59:     const urlPattern = /^https?:\/\//i;
+60: 
+61:     // 🚀 Statically list all EXPO_PUBLIC_* env vars so Metro/Babel inlines them into the APK Hermes bundle
+62:     const rawCandidates: (string | undefined)[] = [
+63:       process.env.EXPO_PUBLIC_ONRENDER_DBC1,
+64:       process.env.EXPO_PUBLIC_ORACLE_DBC1,
+65:       process.env.EXPO_PUBLIC_ONRENDER_DBC2,
+66:       process.env.EXPO_PUBLIC_CF_DBC1,
+67:     ];
+68: 
+69:     if (isLocalMachine) {
+70:       rawCandidates.push(local_api_url);
+71:     }
+72: 
+73:     let idx = 0;
+74:     do {
+75:       if (idx >= rawCandidates.length) break;
+76:       const val = rawCandidates[idx];
+77:       if (
+78:         val &&
+79:         typeof val === 'string' &&
+80:         urlPattern.test(val.trim()) &&
+81:         !val.includes('hibiz-nine.vercel.app') &&
+82:         (isLocalMachine || !this.isLocal(val.trim()))
+83:       ) {
+84:         const n = normalize(val);
+85:         if (!seen.has(n)) {
+86:           seen.add(n);
+87:           urls.push(n);
+88:         }
+89:       }
+90:       idx++;
+91:     } while (idx < rawCandidates.length);
+92: 
+93:     // Hard fallback — always ensure working live server is present
+94:     const fallback = normalize('https://hipk-gsz6.onrender.com/api');
+95:     if (!seen.has(fallback)) urls.push(fallback);
+96: 
+97:     return urls;
+98:   }
+99: 
+100:   public getBaseURLs(): string[] {
+101:     return [...this.baseURLs];
+102:   }
+103: 
+104:   public getHostList(): string[] {
+105:     const seen = new Set<string>();
+106:     const merged: string[] = [];
+107:     const add = (u: string | undefined) => {
+108:       if (u && typeof u === 'string') {
+109:         const clean = u.trim().replace(/\/+$/, '');
+110:         if (clean.includes('hibiz-nine.vercel.app')) return; // Skip dead Vercel
+111:         if (!isLocalMachine && this.isLocal(clean)) return; // Skip local on APK
+112:         const normalized = clean.endsWith('/api') ? clean + '/' : clean + '/api/';
+113:         if (!seen.has(normalized)) {
+114:           seen.add(normalized);
+115:           merged.push(normalized);
+116:         }
+117:       }
+118:     };
+119:     this.baseURLs.forEach(add);
+120:     if (api_url) add(api_url);
+121:     // 🚀 Local API URL is only added when actually running on a local machine
+122:     if (isLocalMachine && local_api_url) {
+123:       add(local_api_url);
+124:     }
+125:     return merged;
+126:   }
+127: 
+128:   public getCurrentBaseURL(): string {
+129:     return this.httpClient.defaults.baseURL || this.baseURLs[this.currentUrlIndex] || api_url;
+130:   }
+131: 
+132:   public static getInstance(): AppService {
+133:     if (!AppService.instance) AppService.instance = new AppService();
+134:     return AppService.instance;
+135:   }
+The above content does NOT show the entire file contents. If you need to view any lines of the file which were not shown to complete your task, call this tool again to view those lines.

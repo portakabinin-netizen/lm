@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Monthly Salary Register - HiBiz Report</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <style>
+    :root {
+      --primary: #16a34a;
+      --text-main: #0f172a;
+      --text-muted: #64748b;
+      --border: #e2e8f0;
+      --danger: #dc2626;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Inter', system-ui, sans-serif;
+      background: #f8fafc;
+      color: var(--text-main);
+      padding: 24px;
+    }
+    .report-card {
+      max-width: 1300px;
+      margin: 0 auto;
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 28px;
+      box-shadow: 0 4px 6px -1px rgba(0,0,0,0.07);
+    }
+    .report-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      border-bottom: 2px solid var(--primary);
+      padding-bottom: 18px;
+      margin-bottom: 20px;
+    }
+    .company-title {
+      font-size: 24px;
+      font-weight: 800;
+      color: var(--text-main);
+    }
+    .report-subtitle {
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+    .controls-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 20px;
+      background: #f8fafc;
+      padding: 12px 16px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+    }
+    .btn {
+      padding: 8px 16px;
+      border-radius: 6px;
+      font-weight: 600;
+      font-size: 13px;
+      border: none;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .btn-primary { background: var(--primary); color: #fff; }
+    .btn-secondary { background: #e2e8f0; color: var(--text-main); }
+    .filter-select {
+      padding: 6px 12px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      font-size: 13px;
+      font-weight: 600;
+    }
+    table.report-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+      margin-bottom: 24px;
+      border: 1px solid #cbd5e1;
+      background: #ffffff;
+    }
+    table.report-table th, table.report-table td {
+      border: 1px solid #cbd5e1;
+      padding: 6px 8px;
+      vertical-align: middle;
+    }
+    table.report-table th {
+      background: #f1f5f9;
+      font-weight: 700;
+      color: #334155;
+      text-transform: uppercase;
+      font-size: 11px;
+      border: 1px solid #cbd5e1;
+    }
+    .totals-row td {
+      background: #f1f5f9;
+      font-weight: 800;
+      font-size: 13px;
+      border-top: 2px solid #64748b;
+    }
+    .adv-input {
+      width: 75px;
+      padding: 3px 6px;
+      font-size: 11px;
+      font-weight: 700;
+      text-align: right;
+      border: 1px solid #cbd5e1;
+      border-radius: 4px;
+      outline: none;
+      background: #ffffff;
+      color: #0f172a;
+    }
+    .adv-input:focus {
+      border-color: #2563eb;
+      box-shadow: 0 0 0 1.5px rgba(37, 99, 235, 0.2);
+    }
+    .signature-row {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 60px;
+      padding-top: 14px;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text-muted);
+    }
+    @page {
+      size: A4 landscape;
+      margin: 8mm 6mm;
+    }
+    @media print {
+      body { background: #fff; padding: 0; -webkit-print-color-adjust: exact; print-color-adjust: exact; font-size: 8.5px; }
+      .controls-bar, .no-print { display: none !important; }
+      .report-card { border: none; box-shadow: none; padding: 0; max-width: 100%; width: 100%; }
+      table.report-table { font-size: 8px; width: 100%; }
+      table.report-table th, table.report-table td { padding: 3px 4px; }
+      .adv-input {
+        border: none !important;
+        background: transparent !important;
+        padding: 0 !important;
+        font-size: 8px !important;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="report-card">
+    <div class="report-header">
+      <div>
+        <h1 class="company-title" id="companyNameDisplay">HiBiz Operations</h1>
+        <p class="report-subtitle">Monthly Wages & Salary Statement (Form Register of Wages)</p>
+      </div>
+      <div style="text-align:right;">
+        <div style="font-size:16px; font-weight:800; color:var(--primary);" id="periodDisplay">Month Year</div>
+        <div style="font-size:12px; color:var(--text-muted);">Status: Computed from Verified Muster Logs</div>
+      </div>
+    </div>
+
+    <div class="controls-bar no-print">
+      <div style="display:flex; align-items:center; gap:10px;">
+        <label style="font-size:13px; font-weight:700;">Month:</label>
+        <input type="month" id="monthInput" class="filter-select" onchange="onPeriodChange()">
+      </div>
+      <div style="display:flex; gap:10px;">
+        <button class="btn btn-secondary" onclick="window.close()"><i class="fa-solid fa-arrow-left"></i> Back</button>
+        <button class="btn btn-primary" onclick="window.print()"><i class="fa-solid fa-print"></i> Print Statement</button>
+      </div>
+    </div>
+
+    <div id="loading" style="text-align:center; padding:40px; color:#94a3b8;">
+      <i class="fa-solid fa-spinner fa-spin" style="font-size:24px; margin-bottom:8px;"></i>
+      <div>Compiling salary calculations...</div>
+    </div>
+
+    <div style="overflow-x:auto;">
+      <table class="report-table" id="reportTable" style="display:none;">
+        <thead>
+          <tr>
+            <th style="width:32px;">#</th>
+            <th style="text-align:left;">Site Name</th>
+            <th style="text-align:right; width:95px;">Bill Rate (₹)</th>
+            <th style="text-align:right; width:95px;">Pay Rate (₹)</th>
+            <th style="text-align:center; width:75px;">Bill Days</th>
+            <th style="text-align:left;">Employee Name</th>
+            <th style="text-align:right; width:100px;">Gross (₹)</th>
+            <th style="text-align:right; width:95px; color:#d97706;">Adv Bal (₹)</th>
+            <th style="text-align:right; width:105px; color:var(--danger);">Deduct Adv (₹)</th>
+            <th style="text-align:right; width:105px; color:var(--primary);">Net (₹)</th>
+            <th style="width:85px;">Signature</th>
+          </tr>
+        </thead>
+        <tbody id="tableBody"></tbody>
+        <tfoot id="tableFoot"></tfoot>
+      </table>
+    </div>
+
+    <div class="signature-row">
+      <div>Prepared By (Accountant)</div>
+      <div>Verified By (Site In-Charge)</div>
+      <div>Authorized Signatory / MD</div>
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = 'https://hipk.onrender.com/api';
+    const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+    const urlParams = new URLSearchParams(window.location.search);
+    const sessionUser = JSON.parse(localStorage.getItem('sessionUser') || 'null') || {};
+    const token = urlParams.get('token') || sessionUser.token || '';
+    const dbName = urlParams.get('dbName') || sessionUser.selectedDbName || '';
+    const corpName = sessionUser.selectedCorporateName || 'Our Company';
+
+    let currentYear = new Date().getFullYear();
+    let currentMonth = new Date().getMonth();
+    let allLeads = [];
+    let allLedgers = [];
+    window.salaryRowData = [];
+
+    document.getElementById('companyNameDisplay').textContent = corpName;
+    document.getElementById('monthInput').value = `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}`;
+
+    async function apiGet(endpoint) {
+      const res = await fetch(`${API_BASE}/${endpoint.replace(/^\//, '')}`, {
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+          ...(dbName ? { 'x-tenant-id': dbName } : {})
+        }
+      });
+      return await res.json();
+    }
+
+    async function loadSalaryData() {
+      document.getElementById('loading').style.display = 'block';
+      document.getElementById('reportTable').style.display = 'none';
+      document.getElementById('periodDisplay').textContent = `${MONTH_NAMES[currentMonth]} ${currentYear}`;
+
+      const start = new Date(currentYear, currentMonth, 1).toISOString();
+      const end = new Date(currentYear, currentMonth + 1, 0, 23, 59, 59).toISOString();
+
+      try {
+        const [attRes, empRes, leadRes, finRes] = await Promise.all([
+          apiGet(`service/hr/attendance?from_date=${start}&to_date=${end}`),
+          apiGet('service/hr/employees?all=true'),
+          apiGet('service/leads').catch(() => ({ data: [] })),
+          apiGet('service/finance/master').catch(() => ({ data: { ledgers: [] } }))
+        ]);
+        const logs = attRes.data || [];
+        const employees = empRes.data || [];
+        allLeads = leadRes?.data || [];
+        allLedgers = finRes?.data?.ledgers || [];
+
+        renderTable(logs, employees, allLedgers);
+      } catch (err) {
+        alert('Failed to load salary statement: ' + err.message);
+      } finally {
+        document.getElementById('loading').style.display = 'none';
+        document.getElementById('reportTable').style.display = 'table';
+      }
+    }
+
+    function onPeriodChange() {
+      const val = document.getElementById('monthInput').value;
+      if (val) {
+        const parts = val.split('-');
+        currentYear = parseInt(parts[0]);
+        currentMonth = parseInt(parts[1]) - 1;
+        loadSalaryData();
+      }
+    }
+
+    function isCorpAdminOrAdmin(role) {
+      if (!role) return false;
+      const r = String(role).toLowerCase().trim();
+      return r === 'corpadmin' || r === 'admin' || r === 'corporateadmin' || r === 'useradmin';
+    }
+
+    function isHdStatus(status) {
+      const s = String(status || '').toLowerCase().trim();
+      return s === 'hd' || s === 'half day' || s === 'halfday' || s === 'holiday' || s === 'h';
+    }
+
+    function isAbsentStatus(status) {
+      const s = String(status || '').toLowerCase().trim();
+      return s === 'absent' || s === 'a';
+    }
+
+    function isLeaveStatus(status) {
+      const s = String(status || '').toLowerCase().trim();
+      return s === 'leave' || s === 'l';
+    }
+
+    function computeEmpBaseMonthlyRate(emp, daysInMonth) {
+      if (!emp) return 0;
+      const ae = (emp.employmentHistory || []).find(e => e.active) || (emp.employmentHistory || []).slice(-1)[0] || null;
+      const m = Number(ae?.monthly_rate || emp.monthly_rate || emp.monthlyRate || 0);
+      if (m >= 1000) return m;
+
+      const r = Number(ae?.rate || emp.rate || emp.salary || 0);
+      if (r >= 1000) return r;
+
+      const d = Number(ae?.daily_rate || emp.daily_rate || emp.dailyRate || 0);
+      if (d >= 1000) return d;
+
+      if (d >= 100 && d < 1000) return Math.round(d * daysInMonth);
+      if (r >= 100 && r < 1000) return Math.round(r * daysInMonth);
+
+      if (m > 0) return m;
+      if (r >= 100) return r;
+      if (d >= 100) return d;
+      return r || d || 0;
+    }
+
+    function resolveSiteMonthlyRate(emp, sId, siteLogs, defaultMRate, daysInMonth, leadsList) {
+      if (leadsList && sId) {
+        const lead = leadsList.find(ld => String(ld._id || ld.id || '') === String(sId));
+        if (lead && Array.isArray(lead.siteShifts) && lead.siteShifts.length > 0) {
+          let logShift = '';
+          for (const l of (siteLogs || [])) {
+            if (l.shiftCode || l.shift_code) { logShift = l.shiftCode || l.shift_code; break; }
+          }
+          if (logShift) {
+            const shiftDetail = lead.siteShifts.find(s => s.shiftCode === logShift);
+            const sr = Number(shiftDetail?.salaryRate || 0);
+            if (sr >= 1000) return sr;
+            if (sr >= 100 && sr < 1000) return Math.round(sr * daysInMonth);
+          }
+          const firstShiftRate = Number(lead.siteShifts[0]?.salaryRate || 0);
+          if (firstShiftRate >= 1000) return firstShiftRate;
+          if (firstShiftRate >= 100 && firstShiftRate < 1000) return Math.round(firstShiftRate * daysInMonth);
+        }
+      }
+
+      if (emp && emp.employmentHistory && sId) {
+        const siteHist = emp.employmentHistory.find(h => String(h.leadId || h.siteId || '') === String(sId) && h.active)
+          || emp.employmentHistory.find(h => String(h.leadId || h.siteId || '') === String(sId));
+        if (siteHist) {
+          const sm = Number(siteHist.monthly_rate || siteHist.monthlyRate || 0);
+          if (sm >= 1000) return sm;
+          const sr = Number(siteHist.rate || 0);
+          if (sr >= 1000) return sr;
+          const sd = Number(siteHist.daily_rate || siteHist.dailyRate || 0);
+          if (sd >= 1000) return sd;
+          if (sm >= 100) return sm;
+          if (sr >= 100 && sr < 1000) return Math.round(sr * daysInMonth);
+          if (sd >= 100 && sd < 1000) return Math.round(sd * daysInMonth);
+        }
+      }
+
+      for (const l of (siteLogs || [])) {
+        const lr = Number(l.rate || l.dailyRate || l.daily_rate || 0);
+        if (lr >= 1000) return lr;
+        if (lr >= 100 && lr < 1000) return Math.round(lr * daysInMonth);
+      }
+
+      return defaultMRate;
+    }
+
+    function resolveSiteBillRate(lead, siteLogs, daysInMonth) {
+      if (!lead) return 0;
+      if (Array.isArray(lead.siteShifts) && lead.siteShifts.length > 0) {
+        let logShift = '';
+        for (const l of (siteLogs || [])) {
+          if (l.shiftCode || l.shift_code) { logShift = l.shiftCode || l.shift_code; break; }
+        }
+        if (logShift) {
+          const shiftDetail = lead.siteShifts.find(s => s.shiftCode === logShift);
+          const br = Number(shiftDetail?.billRate || shiftDetail?.billingRate || 0);
+          if (br >= 1000) return br;
+          if (br >= 100 && br < 1000) return Math.round(br * daysInMonth);
+        }
+        const firstBr = Number(lead.siteShifts[0]?.billRate || lead.siteShifts[0]?.billingRate || 0);
+        if (firstBr >= 1000) return firstBr;
+        if (firstBr >= 100 && firstBr < 1000) return Math.round(firstBr * daysInMonth);
+      }
+      const topBr = Number(lead.billing_rate || lead.billRate || lead.rate || 0);
+      if (topBr >= 1000) return topBr;
+      if (topBr >= 100 && topBr < 1000) return Math.round(topBr * daysInMonth);
+      return topBr || 0;
+    }
+
+    function getEmployeeAdvanceBalance(emp, ledgers) {
+      if (!emp || !ledgers || ledgers.length === 0) return 0;
+      const empId = String(emp._id || emp.id || '');
+      const empName = String(emp.name || emp.displayName || '').toLowerCase().trim();
+
+      const matched = ledgers.find(l => {
+        if (l.employeeId && String(l.employeeId._id || l.employeeId) === empId) return true;
+        const lName = String(l.ledgerName || l.name || '').toLowerCase().trim();
+        if (lName === empName || lName.includes(empName)) return true;
+        return false;
+      });
+
+      if (!matched) return 0;
+      const bal = Number(matched.closing_balance || matched.closingBalance || matched.opening_balance || matched.openingBalance || 0);
+      const balType = matched.balance_type || matched.opening_type || 'Dr';
+      return balType === 'Dr' ? Math.max(0, bal) : 0;
+    }
+
+    function renderTable(logs, employees, ledgers) {
+      const tbody = document.getElementById('tableBody');
+      const daysInMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
+
+      window.salaryRowData = [];
+      let rowCounter = 0;
+
+      employees.forEach(emp => {
+        if (isCorpAdminOrAdmin(emp.role)) return;
+
+        const empId = String(emp._id || emp.id || '');
+        const empLogs = logs.filter(l => {
+          const lId = (l.employeeId && typeof l.employeeId === 'object') ? String(l.employeeId._id || l.employeeId.id) : String(l.employeeId || '');
+          return lId === empId;
+        });
+
+        if (empLogs.length === 0) return;
+
+        const defaultMRate = computeEmpBaseMonthlyRate(emp, daysInMonth);
+        const empAdvBal = getEmployeeAdvanceBalance(emp, ledgers);
+
+        // Group employee attendance by site
+        const siteGroups = new Map();
+        empLogs.forEach(l => {
+          const sId = (l.leadId && typeof l.leadId === 'object') ? String(l.leadId._id) : String(l.leadId || '');
+          const lead = allLeads.find(ld => String(ld._id) === sId);
+          const sName = lead?.sender_name || lead?.displayName || lead?.product_name || l.site_name || (sId ? 'Site #' + sId.slice(-4) : 'HQ Duty');
+          const siteKey = sId || sName;
+
+          if (!siteGroups.has(siteKey)) {
+            siteGroups.set(siteKey, { siteId: sId, siteName: sName, lead, logs: [] });
+          }
+          siteGroups.get(siteKey).logs.push(l);
+        });
+
+        let empSiteIdx = 0;
+        siteGroups.forEach(sg => {
+          const dayMap = {};
+          sg.logs.forEach(l => {
+            const d = new Date(l.date || l.dutyStart).getDate();
+            if (!dayMap[d]) dayMap[d] = [];
+            dayMap[d].push(l);
+          });
+
+          let pCount = 0;
+          let hCount = 0;
+          let lCount = 0;
+
+          Object.values(dayMap).forEach(dLogs => {
+            const firstLog = dLogs[0];
+            const isAbsent = isAbsentStatus(firstLog.status);
+            const isLeave = isLeaveStatus(firstLog.status);
+            const isHd = isHdStatus(firstLog.status);
+            const isDouble = !isAbsent && !isLeave && !isHd && dLogs.length > 1;
+
+            if (isAbsent) {
+              // Unpaid
+            } else if (isLeave) {
+              lCount += 1;
+            } else if (isHd) {
+              hCount += 1;
+            } else if (isDouble) {
+              pCount += 2;
+            } else {
+              pCount += 1;
+            }
+          });
+
+          // Salary calculation uses sum of P, H, L only
+          const billDays = pCount + hCount + lCount;
+          if (billDays === 0) return;
+
+          const payRate = resolveSiteMonthlyRate(emp, sg.siteId, sg.logs, defaultMRate, daysInMonth, allLeads);
+          const billRate = resolveSiteBillRate(sg.lead, sg.logs, daysInMonth);
+          const gross = daysInMonth > 0 ? Math.round((payRate * billDays) / daysInMonth) : 0;
+          const displayAdv = (empSiteIdx === 0) ? empAdvBal : 0;
+
+          window.salaryRowData.push({
+            rowId: rowCounter++,
+            empId,
+            empName: emp.name,
+            enrollmentNo: emp.enrollment_no || '',
+            siteName: sg.siteName,
+            billRate,
+            payRate,
+            billDays,
+            pCount,
+            hCount,
+            lCount,
+            gross,
+            advBal: displayAdv,
+            deductAdv: 0,
+            netPayable: gross
+          });
+
+          empSiteIdx++;
+        });
+      });
+
+      let bodyHtml = '';
+      window.salaryRowData.forEach((r, idx) => {
+        bodyHtml += `
+          <tr>
+            <td style="color:#94a3b8; text-align:center;">${idx + 1}</td>
+            <td style="font-weight:600; color:#334155;">${r.siteName}</td>
+            <td style="text-align:right; color:#64748b;">${r.billRate > 0 ? '₹' + Math.round(r.billRate).toLocaleString() : '-'}</td>
+            <td style="text-align:right; font-weight:600; color:#0f172a;">₹${Math.round(r.payRate).toLocaleString()}</td>
+            <td style="text-align:center; font-weight:800; color:var(--primary); font-size:13px;">${r.billDays}</td>
+            <td style="font-weight:700; color:#0f172a;">
+              ${r.empName} ${r.enrollmentNo ? '<span style="color:#64748b; font-weight:500; font-size:11px;">(#' + r.enrollmentNo + ')</span>' : ''}
+            </td>
+            <td style="text-align:right; font-weight:700;">₹${r.gross.toLocaleString()}</td>
+            <td style="text-align:right; font-weight:600; color:#d97706;">
+              ${r.advBal > 0 ? '₹' + r.advBal.toLocaleString() : '-'}
+            </td>
+            <td style="text-align:right;">
+              <input type="number" min="0" max="${r.gross}" step="1"
+                class="adv-input"
+                data-row-id="${r.rowId}"
+                placeholder="0"
+                oninput="onDeductAdvanceInput(${r.rowId}, this.value)"
+              />
+            </td>
+            <td style="text-align:right; font-weight:800; color:#15803d; font-size:13px;" id="netCell_${r.rowId}">
+              ₹${r.netPayable.toLocaleString()}
+            </td>
+            <td style="border-bottom:1px solid #cbd5e1;"></td>
+          </tr>
+        `;
+      });
+
+      tbody.innerHTML = bodyHtml || '<tr><td colspan="11" style="text-align:center; padding:30px; color:#94a3b8;">No salary rows to display.</td></tr>';
+      recalculateTotals();
+    }
+
+    function onDeductAdvanceInput(rowId, val) {
+      const row = window.salaryRowData.find(r => r.rowId === rowId);
+      if (!row) return;
+      const deductVal = Math.max(0, Math.min(row.gross, parseFloat(val) || 0));
+      row.deductAdv = deductVal;
+      row.netPayable = Math.max(0, row.gross - deductVal);
+
+      const netCell = document.getElementById(`netCell_${rowId}`);
+      if (netCell) {
+        netCell.textContent = `₹${row.netPayable.toLocaleString()}`;
+      }
+      recalculateTotals();
+    }
+
+    function recalculateTotals() {
+      const tfoot = document.getElementById('tableFoot');
+      let totalBillDays = 0;
+      let totalGross = 0;
+      let totalAdvDed = 0;
+      let totalNet = 0;
+
+      window.salaryRowData.forEach(r => {
+        totalBillDays += r.billDays;
+        totalGross += r.gross;
+        totalAdvDed += r.deductAdv;
+        totalNet += r.netPayable;
+      });
+
+      tfoot.innerHTML = `
+        <tr class="totals-row">
+          <td colspan="4" style="text-align:right;">TOTALS:</td>
+          <td style="text-align:center; color:var(--primary); font-size:14px;">${totalBillDays}</td>
+          <td></td>
+          <td style="text-align:right;">₹${totalGross.toLocaleString()}</td>
+          <td></td>
+          <td style="text-align:right; color:var(--danger);">${totalAdvDed > 0 ? '- ₹' + totalAdvDed.toLocaleString() : '₹0'}</td>
+          <td style="text-align:right; color:#15803d; font-size:15px;" id="totalNetCell">₹${totalNet.toLocaleString()}</td>
+          <td></td>
+        </tr>
+      `;
+    }
+
+    if (token) loadSalaryData();
+    else alert('Please sign in via index.html first.');
+  </script>
+</body>
+</html>

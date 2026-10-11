@@ -182,7 +182,8 @@ export const useVouchers = (token: string, dbName?: string) => {
 
   const resetVoucher = useCallback((
     initialType?: "Payment" | "Receipt" | "Contra" | "Journal" | "Sales" | "Purchase",
-    initialNarration?: string
+    initialNarration?: string,
+    initialDate?: Date
   ) => {
     let entries: VoucherEntry[] = [
         { id: "1", accountId: "", accountType: "Category", accountName: "", type: "Dr", amount: 0 },
@@ -206,7 +207,7 @@ export const useVouchers = (token: string, dbName?: string) => {
     }
 
     setVoucher({
-      date: new Date(),
+      date: initialDate || new Date(),
       narration: initialNarration || "",
       entries,
       totalDr: 0,
@@ -219,6 +220,7 @@ export const useVouchers = (token: string, dbName?: string) => {
   return {
     voucher,
     loading,
+    saveLoading: loading,
     addEntry,
     removeEntry,
     updateEntry,

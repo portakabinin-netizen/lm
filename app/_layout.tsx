@@ -29,9 +29,13 @@ import { StatusBar } from 'expo-status-bar';
 import ActivityModal from '@/modal/ActivityModal';
 import BroadcastAlertModal from '@/modal/BroadcastAlertModal';
 import LeadModal from '@/modal/LeadModal';
+import CorporateSwitchOverlay from '@/components/CorporateSwitchOverlay';
 LogBox.ignoreLogs([
   'Require cycle',
   'setLayoutAnimationEnabledExperimental is currently a no-op in the New Architecture.',
+  'Header Image Fetch Error',
+  'User Image Fetch Error',
+  'Analytics fetch',
 ]);
 
 import { requestAllAppPermissions } from '@/hooks/unifiedPermissions';
@@ -49,7 +53,7 @@ const ProtectedStack = React.memo(function ProtectedStack() {
   const router = useRouter();
 
   useEffect(() => {
-    if (loading) return;
+    if (loading && !user) return;
     const inAuth =
       segments[0] === 'Signin' || segments[0] === 'Signup' || segments[0] === 'resetPassword';
     if (!user && !inAuth) router.replace('/Signin');
@@ -59,7 +63,7 @@ const ProtectedStack = React.memo(function ProtectedStack() {
     DeviceEventEmitter.emit('AUTH_READY');
   }, [user, loading, segments, router]);
 
-  if (loading) return null; // Splash is handled by global overlay
+  if (loading && !user) return null; // Splash is handled by global overlay only for initial boot
 
   return (
     <Stack screenOptions={{ headerShown: false }}>
@@ -163,6 +167,8 @@ export default function RootLayout() {
           <BroadcastAlertModal />
           {/* 💳 Digital Visiting Card Generator: runs once per session */}
           <VisitingCardGenerator />
+          {/* 🏢 Corporate Switching Spinner & Live Timer Overlay */}
+          <CorporateSwitchOverlay />
         </AuthProvider>
       </GestureHandlerRootView>
 
@@ -187,3 +193,4 @@ export default function RootLayout() {
 const styles = StyleSheet.create({
   loader: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#fff' },
 });
+

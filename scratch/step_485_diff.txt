@@ -1,0 +1,194 @@
+Created At: 2026-08-25T22:01:30+05:30
+Completed At: 2026-08-25T22:01:38+05:30
+
+				The command exited with code 0.
+				Output:
+				<truncated 1 lines>
++                <SectionCard
++                  cardBg={cardBg}
++                  border={border}
++                  style={{ alignItems: 'center', paddingVertical: 24 }}
++                >
++                  <Ionicons
++                    name="wallet-outline"
++                    size={36}
++                    color={txtSec}
++                    style={{ opacity: 0.5 }}
++                  />
++                  <Text style={{ fontSize: 13, fontWeight: '700', color: txtSec, marginTop: 8 }}>
++                    No revenue records found.
++                  </Text>
++                </SectionCard>
++              ) : (
++                filteredReceipts.map((t) => (
++                  <TxnCard key={t._id} txn={t} theme={theme} onDelete={deleteTransaction} />
++                ))
++              )}
++            </View>
++          )}
++
++          {/* TAB: ALL TRANSACTIONS */}
++          {activeTab === 'transactions' && (
++            <View>
++              <View
++                style={{
++                  flexDirection: 'row',
++                  alignItems: 'center',
++                  backgroundColor: inputBg,
++                  borderWidth: 1,
++                  borderColor: border,
++                  borderRadius: 12,
++                  paddingHorizontal: 12,
++                  height: 42,
++                  marginBottom: 10,
++                }}
++              >
++                <Ionicons name="search-outline" size={16} color={txtSec} />
++                <TextInput
++                  style={{ flex: 1, marginLeft: 8, fontSize: 13, color: txtPri }}
++                  placeholder="Search full cash book ledger…"
++                  placeholderTextColor={COLORS.textMuted}
++                  value={searchQuery}
++                  onChangeText={setSearchQuery}
++                />
++              </View>
+ 
+-            {/* ── ADD TRANSACTION MODAL ─────────────────────────────────── */}
+-            <AddTxnModal
+-                visible={showForm}
+-                direction={formDir}
+-                leads={leads}
+-                leadsLoading={leadsLoading}
+-                staff={staff}
+-                staffLoading={staffLoading}
+-                onAddContact={handleAddContact}
+-                theme={theme}
+-                onClose={handleClose}
+-                onSubmit={handleSubmit}
++              {filteredAllTxns.length === 0 ? (
++                <SectionCard
++                  cardBg={cardBg}
++                  border={border}
++                  style={{ alignItems: 'center', paddingVertical: 24 }}
++                >
++                  <Ionicons
++                    name="layers-outline"
++                    size={36}
++                    color={txtSec}
++                    style={{ opacity: 0.5 }}
++                  />
++                  <Text style={{ fontSize: 13, fontWeight: '700', color: txtSec, marginTop: 8 }}>
++                    No transactions match criteria.
++                  </Text>
++                </SectionCard>
++              ) : (
++                filteredAllTxns.map((t) => (
++                  <TxnCard key={t._id} txn={t} theme={theme} onDelete={deleteTransaction} />
++                ))
++              )}
++            </View>
++          )}
++
++          {/* TAB: PETTY CASH */}
++          {activeTab === 'petty_cash' && <AdminPettyCashView hideHeader={true} />}
++
++          {/* TAB: WORKER SALARY & PAYROLL */}
++          {activeTab === 'worker_salary' && (
++            <WorkerSalaryPanel
++              theme={theme}
++              attendanceList={attendanceList}
++              vouchersList={vouchersList}
++              masterData={masterData}
++              onDownloadTemplate={handleDownloadSalaryTemplate}
++              onUploadVouchers={handleUploadSalaryVouchers}
++              downloading={downloadingSalary}
++              uploading={uploadingSalary}
++              onDownloadAttendanceTemplate={handleDownloadSalaryTemplate}
++              onUploadAttendance={handleUploadSalaryVouchers}
++              downloadingAtt={downloadingSalary}
++              uploadingAtt={uploadingSalary}
++              onDownloadSalaryDuesTemplate={handleDownloadSalaryTemplate}
++              onUploadSalaryDues={handleUploadSalaryVouchers}
++              downloadingSalary={downloadingSalary}
++              uploadingSalary={uploadingSalary}
+             />
+-
+-            {/* ── EMERGENCY DUTY OFF MODAL ──────────────────────────────── */}
+-            <Modal visible={emergencyFinVisible} transparent animationType="fade">
+-                <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: 20 }}>
+-                    <View style={{ backgroundColor: cardBg, borderRadius: 16, padding: 20 }}>
+-                        <Text style={{ color: txtPri, fontSize: 18, fontWeight: 'bold', marginBottom: 10 }}>Emergency Duty Off</Text>
+-                        <Text style={{ color: txtSec, fontSize: 14, marginBottom: 15 }}>Please enter a reason for ending your duty early. This will be recorded.</Text>
+-                        <TextInput
+-                            placeholder="Enter reason here..."
+-                            placeholderTextColor="#94a3b8"
+-                            value={emergencyFinReason}
+-                            onChangeText={setEmergencyFinReason}
+-                            style={{ borderWidth: 1, borderColor: border, borderRadius: 8, padding: 10, color: txtPri, backgroundColor: isDark ? '#0f172a' : '#f8fafc', marginBottom: 20, minHeight: 80, textAlignVertical: 'top' }}
+-                            multiline
+-                        />
+-                        <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 10 }}>
+-                            <TouchableOpacity onPress={() => { setEmergencyFinVisible(false); setEmergencyFinReason(''); }}
+-                                style={{ paddingVertical: 10, paddingHorizontal: 15, borderRadius: 8, backgroundColor: isDark ? '#334155' : '#e2e8f0' }}>
+-                                <Text style={{ color: txtPri, fontWeight: '700' }}>Cancel</Text>
+-                            </TouchableOpacity>
+-                            <TouchableOpacity onPress={submitFinanceEmergencyOff}
+-                                style={{ paddingVertical: 10, paddingHorizontal: 15, borderRadius: 8, backgroundColor: '#ef4444' }}>
+-                                <Text style={{ color: '#fff', fontWeight: '700' }}>Submit</Text>
+-                            </TouchableOpacity>
+-                        </View>
+-                    </View>
+-                </View>
+-            </Modal>
++          )}
++
++          {/* TAB: CLIENT BILLING & DEBTORS */}
++          {activeTab === 'client_billing' && (
++            <ClientBillingPanel
++              theme={theme}
++              vouchersList={vouchersList}
++              attendanceList={attendanceList}
++              masterData={masterData}
++              onDownloadTemplate={handleDownloadBillsTemplate}
++              onUploadVouchers={handleUploadBillsVouchers}
++              downloading={downloadingBills}
++              uploading={uploadingBills}
++            />
++          )}
+         </View>
+-    );
+-}
+\ No newline at end of file
++      </ScrollView>
++
++      {/* Modal: Add Transaction */}
++      <AddTxnModal
++        visible={modalVisible}
++        direction={modalDirection}
++        leads={leads}
++        leadsLoading={leadsLoading}
++        staff={staff}
++        staffLoading={staffLoading}
++        onAddContact={handleAddContact}
++        theme={theme}
++        onClose={() => setModalVisible(false)}
++        onSubmit={handleCreateTransaction}
++      />
++
++      {/* Modal: Full Voucher Entry (Like Project Tabs) */}
++      <VoucherEntryModal
++        visible={voucherVisible}
++        onClose={() => {
++          setVoucherVisible(false);
++          fetchPettyCashBalances();
++          refresh();
++        }}
++        token={token}
++        dbName={dbName}
++        mode={voucherMode}
++        initialType={voucherInitialType}
++      />
++    </View>
++  );
++}
+

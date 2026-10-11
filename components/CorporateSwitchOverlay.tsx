@@ -13,7 +13,7 @@ import { useUserContext } from '@/context/AuthContext';
 import { COLORS } from '@/styles/stylesIndex';
 
 export const CorporateSwitchOverlay: React.FC = () => {
-  const { switchingCorp } = useUserContext();
+  const { switchingCorp } = useUserContext() as any;
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const rotateAnim = useRef(new Animated.Value(0)).current;
 

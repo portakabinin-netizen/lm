@@ -20,6 +20,7 @@ interface ExpenseModalProps {
   visible: boolean;
   onClose: () => void;
   lead: any;
+  leads?: any[];
   onComplete: () => void;
 }
 

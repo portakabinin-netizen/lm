@@ -1,0 +1,41 @@
+Created At: 2026-09-20T15:48:57+05:30
+Completed At: 2026-09-20T15:48:57+05:30
+File Path: `file:///c:/hipk/UtilServices/appHelper.tsx`
+Total Lines: 832
+Total Bytes: 29378
+Showing lines 800 to 832
+The following code has been modified to include a line number before every line, in the format: <line_number>: <original_line>. Please note that any changes targeting the original code should remove the line number, colon, and leading space.
+800:       return res.data;
+801:     } catch (e: any) {
+802:       console.log('❌ getActiveStaff error:', e.message);
+803:       throw e;
+804:     }
+805:   }
+806: 
+807:   /** Fetches leads from email inbox and saves to MongoDB */
+808:   public async readEmail(loginCredentials: { userName: any; password: any }) {
+809:     try {
+810:       const session = await this.getSession();
+811:       const res = await this.httpClient.post(`/readEmails`, loginCredentials, {
+812:         headers: { Authorization: `Bearer ${session?.token}` },
+813:       });
+814:       if (res.data.status === 'success') {
+815:         this.showToast(`Synced ${res.data.count} new leads!`, 'Success');
+816:         return res.data.data;
+817:       }
+818:       this.showToast(res.data.message || 'Sync failed', 'Error');
+819:       return [];
+820:     } catch (e: any) {
+821:       this.showToast(e.response?.data?.message || e.message || 'Connection error', 'Error');
+822:       return [];
+823:     }
+824:   }
+825: }
+826: export const appService = AppService.getInstance();
+827: export const httpClient = appService.httpClient;
+828: export const baseURLs = appService.getBaseURLs();
+829: export const getCurrentBaseURL = () => appService.getCurrentBaseURL();
+830: export const loadPersistedHost = () => appService.loadPersistedHost();
+831: export { api_url, isLocalMachine, local_api_url } from '@/backend/routes/base_url';
+832: 
+The above content does NOT show the entire file contents. If you need to view any lines of the file which were not shown to complete your task, call this tool again to view those lines.

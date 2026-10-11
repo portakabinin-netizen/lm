@@ -17,18 +17,19 @@ import {
   View
 } from "react-native";
 import { GestureHandlerRootView, Swipeable } from "react-native-gesture-handler";
-import { styles } from "../../styles/stylesIndex";
+import { styles as baseStyles } from "../../styles/stylesIndex";
+const styles: any = baseStyles;
 
-const sanitizePhone = (num) => (num ? String(num).replace(/[^\d+]/g, "") : "");
+const sanitizePhone = (num: any) => (num ? String(num).replace(/[^\d+]/g, "") : "");
 
 export default function VendorScreen() {
   // Vendors list + loading
-  const [vendors, setVendors] = useState([]);
+  const [vendors, setVendors] = useState<any[]>([]);
   const [loadingVendors, setLoadingVendors] = useState(false);
 
   // Modal & form
   const [modalVisible, setModalVisible] = useState(false);
-  const [editingVendor, setEditingVendor] = useState(null);
+  const [editingVendor, setEditingVendor] = useState<any>(null);
   const [saving, setSaving] = useState(false);
 
   const [form, setForm] = useState({
@@ -40,14 +41,14 @@ export default function VendorScreen() {
   });
 
   // Contacts & suggestions
-  const [contacts, setContacts] = useState([]); // grouped by name with unique numbers
+  const [contacts, setContacts] = useState<any[]>([]); // grouped by name with unique numbers
   const [contactsLoaded, setContactsLoaded] = useState(false);
   const [loadingContacts, setLoadingContacts] = useState(false);
 
-  const [suggestions, setSuggestions] = useState([]);
+  const [suggestions, setSuggestions] = useState<any[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
 
-  const [selectedNumbers, setSelectedNumbers] = useState([]);
+  const [selectedNumbers, setSelectedNumbers] = useState<any[]>([]);
   const [showNumberOptions, setShowNumberOptions] = useState(false);
 
   const typingTimeout = useRef(null);
@@ -237,7 +238,7 @@ export default function VendorScreen() {
   // API: Delete vendor
   // DELETE /api/vendor/:id
   // ---------------------------
-  const deleteVendorApi = async (id) => {
+  const deleteVendorApi = async (id: any) => {
     Alert.alert("Confirm Delete", "Are you sure you want to remove this vendor?", [
       { text: "Cancel", style: "cancel" },
       {
@@ -248,7 +249,7 @@ export default function VendorScreen() {
             await httpClient.delete(`/product/vendor/${id}`);
             await loadVendors();
             Alert.alert("Deleted", "Vendor removed.");
-          } catch (err) {
+          } catch (err: any) {
             console.log("deleteVendor err", err?.response?.data || err.message);
             Alert.alert("Error", "Failed to delete vendor.");
           }
@@ -274,7 +275,7 @@ export default function VendorScreen() {
     setModalVisible(true);
   };
 
-  const openEditModal = (item) => {
+  const openEditModal = (item: any) => {
     setEditingVendor(item);
     setForm({
       contactPerson: item.contactPerson || item.vendorName || "",
@@ -316,7 +317,7 @@ export default function VendorScreen() {
   // ---------------------------
   // Swipeable right actions (Edit / Delete)
   // ---------------------------
-  const renderRightActions = (item) => (
+  const renderRightActions = (item: any) => (
     <View style={{ flexDirection: "row", height: "100%" }}>
       <TouchableOpacity
         onPress={() => openEditModal(item)}

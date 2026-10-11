@@ -1309,12 +1309,8 @@ export const LiveTracker = ({
     }
   };
 
-  useEffect(() => {
-    const interval = setInterval(() => {
-      handleRefresh(true);
-    }, 30000);
-    return () => clearInterval(interval);
-  }, []);
+  // Live GPS tracking is handled in real-time via socket ('attendance:geo_update')
+  // Manual refresh remains available via handleRefresh(false)
 
   const [gpsTimeout, setGpsTimeout] = useState(false);
 

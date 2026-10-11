@@ -1,0 +1,49 @@
+Created At: 2026-09-20T16:08:20+05:30
+Completed At: 2026-09-20T16:08:21+05:30
+File Path: `file:///c:/hipk/app/Signin.tsx`
+Total Lines: 477
+Total Bytes: 18763
+Showing lines 90 to 130
+The following code has been modified to include a line number before every line, in the format: <line_number>: <original_line>. Please note that any changes targeting the original code should remove the line number, colon, and leading space.
+90:     setCustomHost(url);
+91:     setShowHostPicker(false);
+92:     setManualHost('');
+93:     setHostStatus('checking');
+94: 
+95:     // 🚀 Notify all other screens/components
+96:     DeviceEventEmitter.emit('api_host_changed', url);
+97: 
+98:     const result = await appService.isSystemLive();
+99:     setHostStatus(result.available);
+100:     if (!result.available) {
+101:       appService.showToast(result.error || 'Host unreachable', 'Warning');
+102:     }
+103:     // Re-check registration on newly selected host if mobile number is entered
+104:     const cleanMobile = mobile.replace(/\D/g, '').slice(-10);
+105:     if (cleanMobile.length === 10) {
+106:       checkRegistration(cleanMobile);
+107:     }
+108:   };
+109: 
+110:   const checkRegistration = async (val: string) => {
+111:     const clean = val.replace(/\D/g, '').slice(-10);
+112:     if (clean.length === 10) {
+113:       try {
+114:         const res = await appService.httpClient.post('/auth/check-unique', { userMobile: clean });
+115:         setIsGuest(!res.data?.exists);
+116:       } catch (e) {
+117:         setIsGuest(null);
+118:       }
+119:     } else {
+120:       setIsGuest(null);
+121:     }
+122:   };
+123: 
+124:   const handleLogin = async () => {
+125:     const cleanMobile = mobile.replace(/\D/g, '').slice(-10);
+126:     if (cleanMobile.length !== 10) return appService.showToast('Invalid Mobile Number', 'Error');
+127:     setLoading(true);
+128:     try {
+129:       let res;
+130:       let loggedInAsGuest = false;
+The above content does NOT show the entire file contents. If you need to view any lines of the file which were not shown to complete your task, call this tool again to view those lines.

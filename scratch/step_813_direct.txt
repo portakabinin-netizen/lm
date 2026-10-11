@@ -1,0 +1,75 @@
+    const data = Array.from({ length: 12 }, (_, i) => ({
+      month: MONTH_NAMES[i],
+      monthIdx: i,
+      inflow: 0,
+      outflow: 0,
+      profit: 0, // representing Net (inflow - outflow)
+      sales: 0,
+      directIncome: 0,
+      indirectIncome: 0,
+      purchase: 0,
+      directExpenses: 0,
+      indirectExpenses: 0,
+    }));
+
+    // Process Vouchers (The single source of truth for General Ledger)
+    (vouchersList || []).forEach((v: any) => {
+      if (!v) return;
+      const parsed = parseFinancialDate(v.date || v.createdAt || v.voucherDate);
+      if (!parsed || parsed.year !== targetYear) return;
+      const m = parsed.month;
+      if (m < 0 || m > 11) return;
+
+      const vType = (v.voucherType || '').toLowerCase();
+      let voucherInflowHandled = false;
+      let voucherOutflowHandled = false;
+
+      (v.entries || []).forEach((e: any) => {
+        if (!e) return;
+        const lId = String(e.ledgerId || '');
+        const dr = Number(e.debit) || 0;
+        const cr = Number(e.credit) || 0;
+
+        if (inflowLedgerIds.has(lId)) {
+          const val = cr - dr;
+          data[m].inflow += val;
+          if (salesLedgerIds.has(lId)) {
+            data[m].sales += val;
+          } else if (directIncomeLedgerIds.has(lId)) {
+            data[m].directIncome += val;
+          } else {
+            data[m].indirectIncome += val;
+          }
+          voucherInflowHandled = true;
+        } else if (outflowLedgerIds.has(lId)) {
+          const val = dr - cr;
+          data[m].outflow += val;
+          if (purchaseLedgerIds.has(lId)) {
+            data[m].purchase += val;
+          } else if (directExpensesLedgerIds.has(lId)) {
+            data[m].directExpenses += val;
+          } else {
+            data[m].indirectExpenses += val;
+          }
+          voucherOutflowHandled = true;
+        }
+      });
+
+      // Type-level fallback for sales/purchase/expense vouchers where ledger name was generic
+      if (!voucherInflowHandled && vType === 'sales') {
+        const totalCr = (v.entries || []).reduce((sum: number, e: any) => sum + (e ? (Number(e.credit) || 0) : 0), 0);
+        const val = totalCr || Number(v.amount || v.totalCr || v.totalDr || 0);
+        data[m].inflow += val;
+        data[m].sales += val;
+      }
+      if (!voucherOutflowHandled && (vType === 'purchase' || vType === 'payment' || vType === 'expense')) {
+        const totalDr = (v.entries || []).reduce((sum: number, e: any) => sum + (e ? (Number(e.debit) || 0) : 0), 0);
+        const val = totalDr || Number(v.amount || v.totalDr || 0);
+        data[m].outflow += val;
+        if (vType === 'purchase') {
+          data[m].purchase += val;
+        } else {
+          data[m].indirectExpenses += val;
+        }
+      }
+    });

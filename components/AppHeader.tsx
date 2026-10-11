@@ -5,7 +5,7 @@ import { appModules } from "@/UtilServices/appModals";
 import { useAttendance } from "@/hooks/useAttendance";
 import { getSocket } from "@/hooks/Socket";
 import { Ionicons } from "@expo/vector-icons";
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { StatusBar } from "expo-status-bar";
 import {
   ActivityIndicator, DeviceEventEmitter, Image, Modal, Platform, Pressable, ScrollView, Switch, Text, TouchableOpacity,
@@ -97,7 +97,7 @@ export const AppHeader = React.memo(function AppHeader({
         }
       } catch (err: any) {
         if (err.response?.status !== 401) {
-          console.error("Header Image Fetch Error:", err);
+          console.warn("Header Image Fetch Error:", err?.message || err);
         }
       }
     };
@@ -141,6 +141,31 @@ export const AppHeader = React.memo(function AppHeader({
   }, [refreshGPS]);
 
   useEffect(() => { fetchLocation(); }, [fetchLocation]);
+
+  // ── Active API Host Tracking ──────────────────────────────────────────────
+  const [activeHost, setActiveHost] = useState<string>(() => appService.getCurrentBaseURL());
+
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener('SERVER_HOST_CHANGED', (newUrl: string) => {
+      if (newUrl) setActiveHost(newUrl);
+    });
+    const interval = setInterval(() => {
+      const current = appService.getCurrentBaseURL();
+      if (current && current !== activeHost) {
+        setActiveHost(current);
+      }
+    }, 3000);
+    return () => {
+      sub.remove();
+      clearInterval(interval);
+    };
+  }, [activeHost]);
+
+  const activeHostInfo = useMemo(() => {
+    const raw = activeHost || appService.getCurrentBaseURL() || '';
+    const name = appService.getHostDisplayName(raw);
+    return { name, full: raw };
+  }, [activeHost]);
 
   // ── Handlers ──────────────────────────────────────────────────────────────
   const handleSwitch = async (id: string) => {
@@ -209,7 +234,7 @@ export const AppHeader = React.memo(function AppHeader({
                   </View>
                 )}
                 <Text style={[styles.headerTitle as any, { flexShrink: 1 }]} numberOfLines={2}>
-                  {title || user?.corporateName || ""}
+                  {title || user?.corporateName || user?.accessCorporate?.[0]?.corporateName || ""}
                 </Text>
               </View>
               {!title && user?.corporateTagName ? (
@@ -221,17 +246,68 @@ export const AppHeader = React.memo(function AppHeader({
           </TouchableOpacity>
 
           {!title && (
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-              <Ionicons 
-                name={dutyStatus === 'ON' ? 'radio-button-on' : 'radio-button-off'} 
-                size={12} 
-                color={dutyStatus === 'ON' ? '#fff' : 'rgba(255,255,255,0.7)'} 
-              />
-              <Text style={styles.headerLocText as any}>
-                {dutyStatus === 'ON' 
-                  ? `${schedStartStr} - ${actualStartStr} | End Duty: ${endStr}`
-                  : 'Off Duty'}
-              </Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 2, flexWrap: 'wrap' }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                <Ionicons 
+                  name={dutyStatus === 'ON' ? 'radio-button-on' : 'radio-button-off'} 
+                  size={12} 
+                  color={dutyStatus === 'ON' ? '#4ade80' : 'rgba(255,255,255,0.7)'} 
+                />
+                <Text style={styles.headerLocText as any}>
+                  {dutyStatus === 'ON' 
+                    ? `${schedStartStr} - ${actualStartStr} | End Duty: ${endStr}`
+                    : 'Off Duty'}
+                </Text>
+              </View>
+
+              {/* 🌐 Active API Hosting URL + Live/Down Status Badge */}
+              <TouchableOpacity
+                activeOpacity={0.7}
+                onPress={async () => {
+                  const checkRes = await appService.isSystemLive();
+                  setIsOnline(checkRes.available);
+                  appService.showToast(
+                    `API: ${activeHostInfo.full || activeHostInfo.name} (${checkRes.available ? 'Live' : 'Down'})`,
+                    checkRes.available ? 'Success' : 'Error'
+                  );
+                }}
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  backgroundColor: isOnline
+                    ? 'rgba(16, 185, 129, 0.25)'
+                    : 'rgba(239, 68, 68, 0.28)',
+                  paddingHorizontal: 7,
+                  paddingVertical: 1.5,
+                  borderRadius: 10,
+                  borderWidth: 1,
+                  borderColor: isOnline
+                    ? 'rgba(52, 211, 153, 0.5)'
+                    : 'rgba(248, 113, 113, 0.5)',
+                  gap: 4,
+                }}
+              >
+                {/* Status Dot */}
+                <View
+                  style={{
+                    width: 6,
+                    height: 6,
+                    borderRadius: 3,
+                    backgroundColor: isOnline ? '#34d399' : '#f87171',
+                  }}
+                />
+                <Text
+                  style={{
+                    color: isOnline ? '#d1fae5' : '#fee2e2',
+                    fontSize: 10.5,
+                    fontWeight: '700',
+                    letterSpacing: 0.2,
+                  }}
+                  numberOfLines={1}
+                >
+                  {activeHostInfo.name} {isOnline ? 'Live' : 'Down'}
+                </Text>
+              </TouchableOpacity>
             </View>
           )}
         </View>
@@ -256,7 +332,7 @@ export const AppHeader = React.memo(function AppHeader({
             ) : (
               <View style={[styles.menuImage, { backgroundColor: '#fff', justifyContent: 'center', alignItems: 'center' }] as any}>
                 <Text style={{ color: bg, fontWeight: '900', fontSize: 16 }}>
-                  {(user?.corporateName || 'C').charAt(0).toUpperCase()}
+                  {((user?.corporateName || user?.accessCorporate?.[0]?.corporateName || 'C')).charAt(0).toUpperCase()}
                 </Text>
               </View>
             )}
@@ -331,3 +407,4 @@ export const AppHeader = React.memo(function AppHeader({
     </View>
   );
 });
+

@@ -23,6 +23,7 @@ import {
   Easing,
   RefreshControl,
   ScrollView,
+  Switch,
   Text,
   TextInput,
   TouchableOpacity,
@@ -110,7 +111,7 @@ export default function AdminDashboard({ token, userId, name, dbName }: Props) {
     | undefined
   >(undefined);
   const router = useRouter();
-  const { dutyStatus } = useAttendance();
+  const { dutyStatus, isLoading: dutyLoading, toggleDuty } = useAttendance();
   const [unseenCount, setUnseenCount] = useState(0);
   const [latestBroadcast, setLatestBroadcast] = useState('');
   const [chatVisible, setChatVisible] = useState(false);
@@ -205,48 +206,103 @@ export default function AdminDashboard({ token, userId, name, dbName }: Props) {
           colors={['#0f172a', '#1e293b']}
           style={{ paddingVertical: 12, paddingHorizontal: 16 }}
         >
-          <View
-            style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}
-          >
-            <View>
-              <Text style={{ color: '#fff', fontSize: 20, fontWeight: '800' }}>
-                {name || 'Admin'}
-              </Text>
-              {dutyStatus === 'ON' && (
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 }}>
-                  <View
-                    style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: '#10B981' }}
-                  />
-                  <Text style={{ color: '#e2e8f0', fontSize: 11, fontWeight: '700' }}>Live</Text>
-                </View>
-              )}
-            </View>
-            <TouchableOpacity onPress={() => setChatVisible(true)} style={{ position: 'relative' }}>
-              <Ionicons name="chatbubbles-outline" size={24} color="#fff" />
-              {unseenCount > 0 && (
+            <View
+              style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}
+            >
+              <View>
+                <Text style={{ color: '#fff', fontSize: 20, fontWeight: '800' }}>
+                  {name || 'Admin'}
+                </Text>
+                {dutyStatus === 'ON' && (
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 }}>
+                    <View
+                      style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: '#10B981' }}
+                    />
+                    <Text style={{ color: '#e2e8f0', fontSize: 11, fontWeight: '700' }}>Live</Text>
+                  </View>
+                )}
+              </View>
+
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                {/* Duty Switch Capsule */}
                 <View
                   style={{
-                    position: 'absolute',
-                    top: -5,
-                    right: -5,
-                    backgroundColor: '#ef4444',
-                    borderRadius: 8,
-                    minWidth: 16,
-                    height: 16,
-                    justifyContent: 'center',
+                    flexDirection: 'row',
                     alignItems: 'center',
-                    paddingHorizontal: 4,
+                    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+                    borderWidth: 1,
+                    borderColor: 'rgba(255, 255, 255, 0.15)',
+                    borderRadius: 20,
+                    paddingHorizontal: 8,
+                    paddingVertical: 3,
                   }}
                 >
-                  <Text style={{ color: '#fff', fontSize: 10, fontWeight: '700' }}>
-                    {unseenCount}
+                  <Switch
+                    value={dutyStatus === 'ON'}
+                    onValueChange={toggleDuty}
+                    disabled={dutyLoading}
+                    trackColor={{ false: '#7f1d1d', true: '#14532d' }}
+                    thumbColor={dutyStatus === 'ON' ? '#22c55e' : '#ef4444'}
+                    style={{
+                      transform: [{ scaleX: 0.8 }, { scaleY: 0.8 }],
+                      marginVertical: -4,
+                      marginRight: 2,
+                    }}
+                  />
+                  <Text
+                    style={{
+                      color: dutyLoading
+                        ? '#94a3b8'
+                        : dutyStatus === 'ON'
+                          ? '#4ade80'
+                          : '#f87171',
+                      fontSize: 12,
+                      fontWeight: '800',
+                      letterSpacing: 0.4,
+                    }}
+                  >
+                    {dutyLoading
+                      ? 'UPDATING...'
+                      : dutyStatus === 'ON'
+                        ? 'ON DUTY'
+                        : 'OFF DUTY'}
                   </Text>
+                  {dutyLoading && (
+                    <ActivityIndicator
+                      size="small"
+                      color="#94a3b8"
+                      style={{ marginLeft: 4, transform: [{ scale: 0.7 }] }}
+                    />
+                  )}
                 </View>
-              )}
-            </TouchableOpacity>
-          </View>
-        </LinearGradient>
-      </View>
+
+                <TouchableOpacity onPress={() => setChatVisible(true)} style={{ position: 'relative' }}>
+                  <Ionicons name="chatbubbles-outline" size={24} color="#fff" />
+                  {unseenCount > 0 && (
+                    <View
+                      style={{
+                        position: 'absolute',
+                        top: -5,
+                        right: -5,
+                        backgroundColor: '#ef4444',
+                        borderRadius: 8,
+                        minWidth: 16,
+                        height: 16,
+                        justifyContent: 'center',
+                        alignItems: 'center',
+                        paddingHorizontal: 4,
+                      }}
+                    >
+                      <Text style={{ color: '#fff', fontSize: 10, fontWeight: '700' }}>
+                        {unseenCount}
+                      </Text>
+                    </View>
+                  )}
+                </TouchableOpacity>
+              </View>
+            </View>
+          </LinearGradient>
+        </View>
 
       {/* 🚀 NEW: Centered Loading Overlays for better UX */}
       {(d.initialLoading || d.callSyncInProgress || d.isActionLoading) && (
@@ -363,6 +419,8 @@ export default function AdminDashboard({ token, userId, name, dbName }: Props) {
           userId={userId}
           corporateId={user?.corporateId ?? ''}
           corpAdminId={user?.corpAdminId ?? ''}
+          name={name || user?.name}
+          hideHeader={true}
         />
       )}
 
@@ -373,7 +431,13 @@ export default function AdminDashboard({ token, userId, name, dbName }: Props) {
 
       {/* ── FINANCE TAB ────────────────────────────────────────────────────── */}
       {mainTab === 'Finance' && (
-        <FinanceDashboard token={token} userId={userId} name={name} dbName={dbName} />
+        <FinanceDashboard
+          token={token}
+          userId={userId}
+          name={name || user?.name || ''}
+          dbName={dbName}
+          hideHeader={true}
+        />
       )}
 
       {/* ── SALES TAB ──────────────────────────────────────────────────────── */}

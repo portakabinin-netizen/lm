@@ -1,0 +1,108 @@
+Created At: 2026-09-20T15:45:18+05:30
+Completed At: 2026-09-20T15:45:18+05:30
+File Path: `file:///c:/hipk/app/Signin.tsx`
+Total Lines: 477
+Total Bytes: 18763
+Showing lines 1 to 100
+The following code has been modified to include a line number before every line, in the format: <line_number>: <original_line>. Please note that any changes targeting the original code should remove the line number, colon, and leading space.
+1: import { useAuthContext } from '@/context/AuthContext';
+2: import { api_url, local_api_url } from '@/backend/routes/base_url';
+3: import { COLORS, styles as G, getThemeStyles } from '@/styles/stylesIndex';
+4: import { appService } from '@/UtilServices/appHelper';
+5: import { Ionicons } from '@expo/vector-icons';
+6: import { Redirect, useRouter } from 'expo-router';
+7: import React, { useEffect, useState } from 'react';
+8: import {
+9:   ActivityIndicator,
+10:   BackHandler,
+11:   DeviceEventEmitter,
+12:   Image,
+13:   KeyboardAvoidingView,
+14:   Platform,
+15:   ScrollView,
+16:   Text,
+17:   TextInput,
+18:   TouchableOpacity,
+19:   View,
+20:   useColorScheme,
+21: } from 'react-native';
+22: import { SafeAreaView } from 'react-native-safe-area-context';
+23: 
+24: const LoginScreen = () => {
+25:   const router = useRouter();
+26:   const { login, user } = useAuthContext();
+27: 
+28: 
+29:   const theme = useColorScheme();
+30: 
+31:   // Initialize dynamic theme colors based on system theme
+32:   const isDark = theme === 'dark';
+33:   const dynamic = getThemeStyles(isDark);
+34: 
+35:   const [loading, setLoading] = useState(false);
+36:   const [mobile, setMobile] = useState('');
+37:   const [password, setPassword] = useState('');
+38:   const [isGuest, setIsGuest] = useState<boolean | null>(null);
+39:   const [showHostPicker, setShowHostPicker] = useState(false);
+40:   const [customHost, setCustomHost] = useState(appService.httpClient.defaults.baseURL || '');
+41:   const [hostList, setHostList] = useState<string[]>(appService.getBaseURLs());
+42:   const [manualHost, setManualHost] = useState('');
+43:   // null = unchecked, true = live, false = unreachable, 'checking' = in progress
+44:   const [hostStatus, setHostStatus] = useState<null | boolean | 'checking'>(null);
+45: 
+46:   // Use centralized host list that respects isLocalMachine
+47:   const buildHostList = () => {
+48:     return appService.getHostList();
+49:   };
+50: 
+51:   useEffect(() => {
+52:     let isMounted = true;
+53:     (async () => {
+54:       setHostStatus('checking');
+55:       const active = typeof appService?.loadPersistedHost === 'function'
+56:         ? await appService.loadPersistedHost()
+57:         : appService.getCurrentBaseURL();
+58:       if (!isMounted) return;
+59:       setCustomHost(active);
+60:       setHostList(appService.getHostList());
+61:       const result = await appService.isSystemLive();
+62:       if (!isMounted) return;
+63:       setHostStatus(result.available);
+64:       const cleanMobile = mobile.replace(/\D/g, '').slice(-10);
+65:       if (cleanMobile.length === 10) {
+66:         checkRegistration(cleanMobile);
+67:       }
+68:     })();
+69: 
+70:     const subHost = DeviceEventEmitter.addListener('api_host_changed', (newHost: string) => {
+71:       if (isMounted && newHost) {
+72:         setCustomHost(newHost);
+73:         setHostList(appService.getHostList());
+74:         setHostStatus('checking');
+75:         appService.isSystemLive().then((res) => {
+76:           if (isMounted) setHostStatus(res.available);
+77:         });
+78:       }
+79:     });
+80: 
+81:     return () => {
+82:       isMounted = false;
+83:       subHost.remove();
+84:     };
+85:   }, []);
+86: 
+87:   // Switch host, persist it, then immediately validate the new endpoint
+88:   const applyHost = async (url: string) => {
+89:     await appService.updateHost(url);
+90:     setCustomHost(url);
+91:     setShowHostPicker(false);
+92:     setManualHost('');
+93:     setHostStatus('checking');
+94: 
+95:     // 🚀 Notify all other screens/components
+96:     DeviceEventEmitter.emit('api_host_changed', url);
+97: 
+98:     const result = await appService.isSystemLive();
+99:     setHostStatus(result.available);
+100:     if (!result.available) {
+The above content does NOT show the entire file contents. If you need to view any lines of the file which were not shown to complete your task, call this tool again to view those lines.

@@ -1,0 +1,69 @@
+Created At: 2026-09-20T15:53:39+05:30
+Completed At: 2026-09-20T15:53:39+05:30
+File Path: `file:///c:/hipk/UtilServices/appHelper.tsx`
+Total Lines: 925
+Total Bytes: 32783
+Showing lines 240 to 300
+The following code has been modified to include a line number before every line, in the format: <line_number>: <original_line>. Please note that any changes targeting the original code should remove the line number, colon, and leading space.
+240:     }
+241:   }
+242: 
+243:   public async sendSMS(phoneNumbers: string | string[], message: string) {
+244:     try {
+245:       const isAvailable = await SMS.isAvailableAsync();
+246:       if (!isAvailable) {
+247:         this.showToast('SMS not supported', 'Error');
+248:         return;
+249:       }
+250:       const recipients = Array.isArray(phoneNumbers) ? phoneNumbers : [phoneNumbers];
+251:       const { result } = await SMS.sendSMSAsync(recipients, message);
+252:       if (result === 'sent') this.showToast('Message sent!', 'Success');
+253:       else if (result === 'unknown') this.showToast('SMS app opened', 'Info');
+254:     } catch {
+255:       this.showToast('Failed to open SMS', 'Error');
+256:     }
+257:   }
+258: 
+259:   /* ── SYSTEM & INTERCEPTORS */
+260: 
+261:   /* ✅ Checks both Internet and Database availability across candidate baseURLs
+262:    * Returns { available: boolean, error: string | null }
+263:    */
+264:   public async isSystemLive(): Promise<{ available: boolean; error: string | null }> {
+265:     // 1. Check internet connectivity via a lightweight ping (no third-party package needed)
+266:     try {
+267:       await axios.get('https://www.google.com', { timeout: 4000 });
+268:     } catch (error: any) {
+269:       // No response at all = no internet; if server replied (even with error), internet is up
+270:       if (!error.response) {
+271:         return { available: false, error: 'No internet connection. Please check your WiFi/Data.' };
+272:       }
+273:     }
+274: 
+275:     // 2. Check Backend & Database connection for the active base URL
+276:     const targetBase = this.getCurrentBaseURL();
+277:     try {
+278:       const response = await axios.get(`${targetBase}auth/health-check`, { timeout: 12000 });
+279: 
+280:       // Skip HTML error/suspended pages
+281:       if (
+282:         typeof response.data === 'string' &&
+283:         (response.data.includes('<title>Service Suspended</title>') ||
+284:           response.data.includes('<!DOCTYPE html>'))
+285:       ) {
+286:         return { available: false, error: 'Service temporarily suspended. Please try again.' };
+287:       }
+288: 
+289:       if (response.status === 200) {
+290:         if (response.data?.database === 'disconnected') {
+291:           return { available: false, error: 'Database is down' };
+292:         }
+293:         return { available: true, error: null };
+294:       }
+295:       return { available: false, error: 'Backend server returned unexpected status.' };
+296:     } catch (error: any) {
+297:       const errMsg =
+298:         error.response?.data?.message ||
+299:         (error.response?.data?.database === 'disconnected' ? 'Database is down' : error.message);
+300:       return { available: false, error: errMsg || 'Backend server is unreachable.' };
+The above content does NOT show the entire file contents. If you need to view any lines of the file which were not shown to complete your task, call this tool again to view those lines.

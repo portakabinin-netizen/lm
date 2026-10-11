@@ -26,8 +26,9 @@ interface Props {
   userId: string;
   name: string;
   onAttachmentPress?: () => void;
-  onUnseenCountChange?: (count: number) => void;
-  onBroadcastUnseenChange?: (count: number) => void;
+  onUnseenCountChange?: (count: number | any) => void;
+  onBroadcastUnseenChange?: (count: number | any) => void;
+  onGroupUnseenChange?: (count: number | any) => void;
 }
 
 export const ChatRoomModal = forwardRef(

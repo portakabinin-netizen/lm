@@ -1,0 +1,48 @@
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiI2OWVjYWJhMzgzMzAxZDg4NzI0NWU5MjUiLCJ1c2VyUm9sZSI6IkNvcnBBZG1pbiIsImRiTmFtZSI6IjQxNDQ0YzUwNTAzNTM5MzAzNTQyIiwibG9jYXRpb25JZCI6bnVsbCwiY29ycG9yYXRlTmFtZSI6IlByYXRoYW0gU2VydmljZXMiLCJ1c2VyRW1haWwiOiJpbmZvQHBvcnRha2FiaW4uaW4iLCJ1c2VyRGlzcGxheU5hbWUiOiJTdXJlc2ggQ2hhdWhhbiIsImFjY2Vzc0FsbG93Ijp0cnVlLCJpYXQiOjE3ODk2MDk3MDQsImV4cCI6MTc5NzM4NTcwNH0.ePmixuaYpW3zp8WBMzNyMxP5dtWoECLDoule4kLTHuY",
+  "userId": "69ecaba383301d887245e925",
+  "userRole": "CorpAdmin",
+  "dbName": "41444c50503539303542",
+  "corporateName": "Pratham Services",
+  "corporatePAN": "ADLPP5905B",
+  "CorpProfileImage": "",
+  "locationId": null,
+  "userDisplayName": "Suresh Chauhan",
+  "userProfileImage": "https://res.cloudinary.com/dzoxp1a6x/image/upload/v1787654952/hipk/41444c50503539303542/user-profile/69ecaba383301d887245e925/fyues9e6xmtdhwm7pfan.jpg",
+  "mobile": "9212790790",
+  "accessCorporate": [
+    {
+      "_id": "6aaa79d6a7edfd6caa61e637",
+      "corporateName": "portakabin.in",
+      "corporatePAN": "AAEFH4794A",
+      "dbName": "41414546483437393441",
+      "locationId": null,
+      "isActive": true,
+      "CorpProfileImage": "https://res.cloudinary.com/dltgogitd/image/upload/v1777206502/hipk/41414546483437393441/corp-profile/vbjr1qxe3eqmfiwx3iup.jpg"
+    },
+    {
+      "corporateName": "Miscellaneous Receipt-Income",
+      "corporatePAN": "AEWPC8844E",
+      "dbName": "41455750433838343445",
+      "CorpProfileImage": "",
+      "isActive": true,
+      "_id": "6a1c693e5335a5563fdcc078"
+    },
+    {
+      "corporateName": "Pratham Services",
+      "corporatePAN": "ADLPP5905B",
+      "dbName": "41444c50503539303542",
+      "isActive": true,
+      "_id": "6aaa7a32233eac18bc2e1093"
+    },
+    {
+      "corporateName": "Team Security and HR Solutions Pvt Ltd",
+      "corporatePAN": "AADCT8072F",
+      "dbName": "41414443543830373245",
+      "isActive": true,
+      "_id": "6aaa7a32233eac18bc2e1094",
+      "CorpProfileImage": "https://res.cloudinary.com/dzoxp1a6x/image/upload/v1789558831/hipk/41414443543830373245/corp-profile/t4kltjk1tqkotjufvnl5.jpg"
+    }
+  ],
+  "accessAllow": true
+}

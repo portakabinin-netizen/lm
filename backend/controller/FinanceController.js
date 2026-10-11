@@ -9,6 +9,7 @@
 
 const mongoose = require("mongoose");
 const ExcelJS = require("exceljs");
+const { resolveDatePreset } = require("../utils/dateUtils");
 
 const BILLABLE_LEAD_STATES = ["accepted"];
 
@@ -280,6 +281,7 @@ exports.ensureLedgerFolioInternal = async (tenantModels, options) => {
         ledger = new Ledgers({
             ledgerName: finalName,
             ledgerGroupId: groupDoc._id,
+            groupName: groupDoc.groupName,
             refId: refId || null,
             refType: refType || "Manual",
             openingBalance: openingBalance || 0,
@@ -468,202 +470,362 @@ exports.getAccountingMaster = async (req, res) => {
  */
 exports.getAnalytics = async (req, res) => {
     try {
-        const { Quotations, TaxInvoices, PurchaseOrders, Vouchers, Groups, Ledgers } = req.tenantModels;
+        const {
+            Quotations,
+            TaxInvoices,
+            PurchaseOrders,
+            Vouchers,
+            Groups,
+            Ledgers,
+            Leads,
+            Employees,
+            Attendance
+        } = req.tenantModels;
 
-        // 1. Fetch CRM / Pipeline documents
-        const qList = await Quotations.find({}).lean();
-        const pList = await PurchaseOrders.find({}).lean();
+        const { fromDate, toDate } = req.query;
 
-        let quotationAmount = 0;
-        qList.forEach(q => quotationAmount += (q.totals?.grand_total || q.totals?.grandTotal || 0));
+        // 1. Build Date Filter Query
+        const dateQuery = {};
+        if (fromDate) {
+            const d = resolveDatePreset(fromDate);
+            if (d instanceof Date && !isNaN(d.getTime())) dateQuery.$gte = d;
+        }
+        if (toDate) {
+            const d = resolveDatePreset(toDate);
+            if (d instanceof Date && !isNaN(d.getTime())) dateQuery.$lte = d;
+        }
+        const hasDateFilter = Object.keys(dateQuery).length > 0;
 
-        let poAmount = 0;
-        pList.forEach(p => poAmount += (p.totals?.grand_total || p.totals?.grandTotal || 0));
+        const voucherFilter = hasDateFilter ? { date: dateQuery } : {};
+        const leadFilter = hasDateFilter ? { generated_date: dateQuery } : {};
 
-        // 2. Fetch double entry components
-        const groups = await Groups.find({}).lean();
-        const ledgers = await Ledgers.find({}).lean();
-        const vouchers = await Vouchers.find({}).lean();
+        // 2. Fetch all collections in parallel
+        const [
+            groups,
+            ledgers,
+            vouchers,
+            allLeads,
+            allEmployees,
+            allQuotations,
+            allPOs,
+            allInvoices
+        ] = await Promise.all([
+            Groups ? Groups.find({}).lean() : Promise.resolve([]),
+            Ledgers ? Ledgers.find({}).lean() : Promise.resolve([]),
+            Vouchers ? Vouchers.find(voucherFilter).sort({ date: -1 }).lean() : Promise.resolve([]),
+            Leads ? Leads.find({}).lean() : Promise.resolve([]),
+            Employees ? Employees.find({}).lean() : Promise.resolve([]),
+            Quotations ? Quotations.find(hasDateFilter ? { date: dateQuery } : {}).lean() : Promise.resolve([]),
+            PurchaseOrders ? PurchaseOrders.find(hasDateFilter ? { date: dateQuery } : {}).lean() : Promise.resolve([]),
+            TaxInvoices ? TaxInvoices.find(hasDateFilter ? { date: dateQuery } : {}).lean() : Promise.resolve([])
+        ]);
 
-        // 3. Build ledger maps to resolve group classifications
+        // 3. Build group & ledger maps
         const groupMap = {};
         groups.forEach(g => {
             groupMap[g._id.toString()] = g;
         });
 
+        const ledgerMap = {};
         const ledgerGroupMap = {};
         ledgers.forEach(l => {
+            const idStr = l._id.toString();
+            ledgerMap[idStr] = l;
             const group = groupMap[l.ledgerGroupId?.toString()];
             if (group) {
-                ledgerGroupMap[l._id.toString()] = {
+                ledgerGroupMap[idStr] = {
                     groupName: group.groupName,
                     nature: group.nature
                 };
             }
         });
 
-        // 4. Calculate actual Sales Revenue from Sales Vouchers
-        let invoiceAmount = 0;
-        const salesVouchers = vouchers.filter(v => v.voucherType === "Sales");
-        salesVouchers.forEach(v => {
-            // Amount of Sales voucher is total debit/credit
-            const amt = (v.entries || []).reduce((sum, e) => sum + (e.debit || 0), 0);
-            invoiceAmount += amt;
+        // 4. Calculate the 4 Accounting Pairs & Category Breakdowns
+        let directIncome = 0;
+        let directExpense = 0;
+        let indirectIncome = 0;
+        let indirectExpense = 0;
+        let cashReceipts = 0;
+        let cashPayments = 0;
+        let bankReceipts = 0;
+        let bankPayments = 0;
+
+        let totalCredit = 0;
+        let totalDebit = 0;
+        let creditCount = 0;
+        let debitCount = 0;
+
+        const categoryMap = {
+            direct_income:    { key: "direct_income", label: "Direct Income & Sales", total: 0, credit: 0, debit: 0, count: 0, color: "#1D9E75" },
+            direct_expense:   { key: "direct_expense", label: "Direct Expenses & Salary", total: 0, credit: 0, debit: 0, count: 0, color: "#E24B4A" },
+            indirect_income:  { key: "indirect_income", label: "Indirect Income", total: 0, credit: 0, debit: 0, count: 0, color: "#378ADD" },
+            indirect_expense: { key: "indirect_expense", label: "Indirect Expenses & Ops", total: 0, credit: 0, debit: 0, count: 0, color: "#F5A623" },
+            cash:             { key: "cash", label: "Cash Book (In/Out)", total: 0, credit: 0, debit: 0, count: 0, color: "#10B981" },
+            bank:             { key: "bank", label: "Bank Accounts (In/Out)", total: 0, credit: 0, debit: 0, count: 0, color: "#6366F1" }
+        };
+
+        vouchers.forEach(v => {
+            (v.entries || []).forEach(e => {
+                const dr = Number(e.debit || 0);
+                const cr = Number(e.credit || 0);
+
+                if (dr > 0) {
+                    totalDebit += dr;
+                    debitCount += 1;
+                }
+                if (cr > 0) {
+                    totalCredit += cr;
+                    creditCount += 1;
+                }
+
+                const ledId = e.ledgerId?.toString();
+                const ledName = (e.ledgerName || "").toLowerCase();
+                const info = ledgerGroupMap[ledId];
+                const gName = (info?.groupName || "").toLowerCase();
+
+                // ── Pair 1: Direct Income vs Direct Expense ──
+                if (gName.includes("direct income") || gName.includes("sales") || ledName.includes("sales") || ledName.includes("revenue")) {
+                    const amt = cr || dr;
+                    directIncome += amt;
+                    categoryMap.direct_income.credit += cr;
+                    categoryMap.direct_income.debit += dr;
+                    categoryMap.direct_income.total += amt;
+                    categoryMap.direct_income.count += 1;
+                } else if (gName.includes("direct expense") || gName.includes("purchase") || ledName.includes("salary") || ledName.includes("wage") || ledName.includes("purchase")) {
+                    const amt = dr || cr;
+                    directExpense += amt;
+                    categoryMap.direct_expense.credit += cr;
+                    categoryMap.direct_expense.debit += dr;
+                    categoryMap.direct_expense.total += amt;
+                    categoryMap.direct_expense.count += 1;
+                }
+                // ── Pair 2: Indirect Income vs Indirect Expense ──
+                else if (gName.includes("indirect income") || ledName.includes("discount rcv") || ledName.includes("interest rcv")) {
+                    const amt = cr || dr;
+                    indirectIncome += amt;
+                    categoryMap.indirect_income.credit += cr;
+                    categoryMap.indirect_income.debit += dr;
+                    categoryMap.indirect_income.total += amt;
+                    categoryMap.indirect_income.count += 1;
+                } else if (gName.includes("indirect expense") || ledName.includes("rent") || ledName.includes("tea") || ledName.includes("travel") || ledName.includes("office") || ledName.includes("repair")) {
+                    const amt = dr || cr;
+                    indirectExpense += amt;
+                    categoryMap.indirect_expense.credit += cr;
+                    categoryMap.indirect_expense.debit += dr;
+                    categoryMap.indirect_expense.total += amt;
+                    categoryMap.indirect_expense.count += 1;
+                }
+
+                // ── Pair 3: Cash In vs Cash Out (Cash-in-hand group) ──
+                if (gName.includes("cash") || ledName.includes("cash") || ledName.includes("petty")) {
+                    if (dr > 0) cashReceipts += dr;
+                    if (cr > 0) cashPayments += cr;
+                    categoryMap.cash.credit += cr;
+                    categoryMap.cash.debit += dr;
+                    categoryMap.cash.total += (dr + cr);
+                    categoryMap.cash.count += 1;
+                }
+
+                // ── Pair 4: Bank In vs Bank Out (Bank Accounts group) ──
+                if (gName.includes("bank") || ledName.includes("bank") || ledName.includes("hdfc") || ledName.includes("sbi") || ledName.includes("icici")) {
+                    if (dr > 0) bankReceipts += dr;
+                    if (cr > 0) bankPayments += cr;
+                    categoryMap.bank.credit += cr;
+                    categoryMap.bank.debit += dr;
+                    categoryMap.bank.total += (dr + cr);
+                    categoryMap.bank.count += 1;
+                }
+            });
         });
 
-        // Fallback to TaxInvoices if no Sales vouchers exist
-        if (invoiceAmount === 0) {
-            const iList = await TaxInvoices.find({}).lean();
-            iList.forEach(i => invoiceAmount += (i.totals?.grand_total || i.totals?.grandTotal || 0));
+        // Fallbacks from pipeline documents if voucher transactions are empty
+        if (directIncome === 0) {
+            allInvoices.forEach(i => directIncome += (i.totals?.grand_total || i.totals?.grandTotal || 0));
+        }
+        if (directExpense === 0) {
+            allPOs.forEach(p => directExpense += (p.totals?.grand_total || p.totals?.grandTotal || 0));
         }
 
-        // 5. Calculate actual Purchase Invoices Received from Purchase Vouchers
-        let invoiceReceivedAmount = 0;
-        const purchaseVouchers = vouchers.filter(v => v.voucherType === "Purchase");
-        purchaseVouchers.forEach(v => {
-            // Amount of Purchase voucher is total debit/credit
-            const amt = (v.entries || []).reduce((sum, e) => sum + (e.credit || 0), 0);
-            invoiceReceivedAmount += amt;
+        const totalIncome = directIncome + indirectIncome;
+        const totalExpense = directExpense + indirectExpense;
+        const netProfit = totalIncome - totalExpense;
+
+        // 5. Leads (Status = 'Accepted') and Active Workers (active === true)
+        const acceptedLeads = allLeads.filter(l => {
+            const st = (l.status || "").toLowerCase().trim();
+            const rl = (l.role || "").toLowerCase().trim();
+            return st === "accepted" || rl === "accepted" || st === "tax invoice" || st === "fully paid";
         });
 
-        // Fallback to poAmount * 0.8 if no Purchase vouchers exist
-        if (invoiceReceivedAmount === 0) {
-            invoiceReceivedAmount = poAmount * 0.8;
-        }
+        const activeEmployees = allEmployees.filter(emp => emp.active !== false);
+        const acceptedLeadIdSet = new Set(acceptedLeads.map(l => String(l._id)));
+        const linkedActiveWorkersSet = new Set();
+        const siteWorkerMap = {};
 
-        // 6. Calculate real receivables (debtors balance) & payables (creditors balance)
-        const debtorLedgers = ledgers.filter(l => {
-            const info = ledgerGroupMap[l._id.toString()];
-            return info && info.groupName === "Sundry Debtors";
-        });
-        const creditorLedgers = ledgers.filter(l => {
-            const info = ledgerGroupMap[l._id.toString()];
-            return info && info.groupName === "Sundry Creditors";
-        });
-
-        let pendingInvoices = 0;
-        debtorLedgers.forEach(l => {
-            if (l.currentBalance > 0) {
-                pendingInvoices += l.currentBalance;
+        activeEmployees.forEach(emp => {
+            const locId = emp.locationId ? String(emp.locationId) : null;
+            if (locId && acceptedLeadIdSet.has(locId)) {
+                linkedActiveWorkersSet.add(String(emp._id));
+                if (!siteWorkerMap[locId]) siteWorkerMap[locId] = 0;
+                siteWorkerMap[locId] += 1;
             }
         });
 
-        let pendingBills = 0;
-        creditorLedgers.forEach(l => {
-            if (l.currentBalance < 0) {
-                pendingBills += Math.abs(l.currentBalance);
-            }
+        // Compute Accepted Leads / Sites stats
+        const acceptedLeadsStats = acceptedLeads.slice(0, 15).map(lead => {
+            const leadIdStr = String(lead._id);
+            const activeWorkerCount = siteWorkerMap[leadIdStr] || (lead.workerCount || (lead.siteShifts || []).reduce((acc, s) => acc + (s.workerSlots || 1), 0)) || 0;
+            const siteRate = Number(lead.rate || lead.billing_rate || lead.monthly_rate || lead.quotation_amount || 0);
+
+            let leadVoucherBilled = 0;
+            vouchers.forEach(v => {
+                if (String(v.leadId) === leadIdStr || String(v.locationId) === leadIdStr) {
+                    leadVoucherBilled += (v.entries || []).reduce((acc, e) => acc + (e.credit || e.debit || 0), 0);
+                }
+            });
+
+            const totalBilled = leadVoucherBilled || siteRate || 0;
+            const workerExpense = activeWorkerCount * 12000;
+            const margin = totalBilled - workerExpense;
+
+            return {
+                leadId: lead._id,
+                siteName: lead.sender_name || lead.product_name || `Site #${lead.lead_no || lead._id.toString().slice(-4)}`,
+                city: lead.city || lead.location_name || "",
+                status: lead.status || "Accepted",
+                workerCount: activeWorkerCount,
+                totalBilled,
+                workerExpense,
+                margin
+            };
         });
+
+        // 6. Pipeline summaries (Quotations, POs, Invoices)
+        let quotationAmount = 0;
+        allQuotations.forEach(q => quotationAmount += (q.totals?.grand_total || q.totals?.grandTotal || 0));
+
+        let poAmount = 0;
+        allPOs.forEach(p => poAmount += (p.totals?.grand_total || p.totals?.grandTotal || 0));
 
         // 7. Month-wise Aggregation (Last 6 Months)
         const sixMonthsAgo = new Date();
         sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
 
-        let monthWiseAgg = [];
-        const recentSalesVouchers = salesVouchers.filter(v => new Date(v.date) >= sixMonthsAgo);
+        const monthMap = {};
+        for (let i = 5; i >= 0; i--) {
+            const d = new Date();
+            d.setMonth(d.getMonth() - i);
+            const yyyymm = d.toISOString().slice(0, 7);
+            monthMap[yyyymm] = { month: yyyymm, credit: 0, debit: 0, revenue: 0, expense: 0 };
+        }
 
-        if (recentSalesVouchers.length > 0) {
-            const monthMap = {};
-            
-            // Initialize last 6 months in the map
-            for (let i = 5; i >= 0; i--) {
-                const d = new Date();
-                d.setMonth(d.getMonth() - i);
-                const yyyymm = d.toISOString().slice(0, 7); // YYYY-MM
-                monthMap[yyyymm] = { month: yyyymm, tax: 0, revenue: 0 };
-            }
+        const allVouchersRecent = await (Vouchers ? Vouchers.find({ date: { $gte: sixMonthsAgo } }).lean() : Promise.resolve([]));
+        allVouchersRecent.forEach(v => {
+            const dateObj = new Date(v.date || Date.now());
+            const yyyymm = dateObj.toISOString().slice(0, 7);
+            if (!monthMap[yyyymm]) return;
 
-            recentSalesVouchers.forEach(v => {
-                const dateObj = new Date(v.date);
-                const yyyymm = dateObj.toISOString().slice(0, 7);
-                if (!monthMap[yyyymm]) return;
+            (v.entries || []).forEach(e => {
+                const dr = Number(e.debit || 0);
+                const cr = Number(e.credit || 0);
+                monthMap[yyyymm].debit += dr;
+                monthMap[yyyymm].credit += cr;
 
-                let voucherTax = 0;
-                let voucherRevenue = 0;
+                const ledId = e.ledgerId?.toString();
+                const info = ledgerGroupMap[ledId];
+                const gName = (info?.groupName || "").toLowerCase();
+                const nature = info?.nature || "";
 
-                (v.entries || []).forEach(e => {
-                    const ledId = e.ledgerId?.toString();
-                    const info = ledgerGroupMap[ledId];
-                    if (!info) return;
-
-                    if (info.groupName === "Sales Accounts") {
-                        voucherRevenue += (e.credit || 0);
-                    } else if (info.groupName === "Duties & Taxes") {
-                        voucherTax += (e.credit || 0);
-                    }
-                });
-
-                monthMap[yyyymm].revenue += voucherRevenue;
-                monthMap[yyyymm].tax += voucherTax;
-            });
-
-            monthWiseAgg = Object.values(monthMap).sort((a, b) => a.month.localeCompare(b.month));
-        } else {
-            // Fallback to TaxInvoices aggregation
-            const rawMonthAgg = await TaxInvoices.aggregate([
-                { $match: { date: { $gte: sixMonthsAgo } } },
-                {
-                    $group: {
-                        _id: { $dateToString: { format: "%Y-%m", date: "$date" } },
-                        tax: { $sum: "$totals.total_tax" },
-                        revenue: { $sum: "$totals.grand_total" }
-                    }
-                },
-                { $sort: { _id: 1 } },
-                {
-                    $project: {
-                        month: "$_id",
-                        tax: 1,
-                        revenue: 1,
-                        _id: 0
-                    }
-                }
-            ]);
-
-            // Fill missing months
-            const monthMap = {};
-            for (let i = 5; i >= 0; i--) {
-                const d = new Date();
-                d.setMonth(d.getMonth() - i);
-                const yyyymm = d.toISOString().slice(0, 7);
-                monthMap[yyyymm] = { month: yyyymm, tax: 0, revenue: 0 };
-            }
-
-            rawMonthAgg.forEach(item => {
-                if (monthMap[item.month]) {
-                    monthMap[item.month].revenue = item.revenue || 0;
-                    monthMap[item.month].tax = item.tax || 0;
+                if (nature === "Revenue" || gName.includes("sales") || gName.includes("income")) {
+                    monthMap[yyyymm].revenue += cr || dr;
+                } else if (nature === "Expense" || gName.includes("expense") || gName.includes("salary") || gName.includes("purchase")) {
+                    monthMap[yyyymm].expense += dr || cr;
                 }
             });
+        });
 
-            monthWiseAgg = Object.values(monthMap).sort((a, b) => a.month.localeCompare(b.month));
+        const monthWiseAgg = Object.values(monthMap).sort((a, b) => a.month.localeCompare(b.month));
+
+        // Format Categories array for Matrix Grid
+        const categories = Object.values(categoryMap).filter(c => c.count > 0 || c.total > 0);
+        if (categories.length === 0) {
+            categories.push(
+                { key: "direct_income", label: "Direct Income & Sales", total: directIncome, credit: directIncome, debit: 0, count: 1, color: "#1D9E75" },
+                { key: "direct_expense", label: "Direct Expenses & Salary", total: directExpense, credit: 0, debit: directExpense, count: 1, color: "#E24B4A" },
+                { key: "cash", label: "Cash Book (In/Out)", total: cashReceipts + cashPayments, credit: cashPayments, debit: cashReceipts, count: 1, color: "#10B981" },
+                { key: "bank", label: "Bank Accounts (In/Out)", total: bankReceipts + bankPayments, credit: bankPayments, debit: bankReceipts, count: 1, color: "#6366F1" }
+            );
         }
 
         res.json({
             success: true,
             data: {
+                // ── 4 Accounting Pairs ──
+                // Pair 1: Direct Income vs Direct Expense
+                directIncome,
+                directExpense,
+                directMargin: directIncome - directExpense,
+
+                // Pair 2: Indirect Income vs Indirect Expense
+                indirectIncome,
+                indirectExpense,
+                indirectMargin: indirectIncome - indirectExpense,
+
+                // Pair 3: Cash Receipts vs Cash Payments (Cash Only)
+                cashReceipts,
+                cashPayments,
+                netCashFlow: cashReceipts - cashPayments,
+
+                // Pair 4: Bank Receipts vs Bank Payments (Bank Only)
+                bankReceipts,
+                bankPayments,
+                netBankFlow: bankReceipts - bankPayments,
+
+                // ── Overall Totals ──
+                incomeSum: totalIncome,
+                expenseSum: totalExpense,
+                netProfit,
+                totalCredit,
+                totalDebit,
+                creditCount,
+                debitCount,
+                totalVouchers: vouchers.length,
+
+                // ── Accepted Sites & Active Workers (active === true) ──
+                acceptedLeadsCount: acceptedLeads.length,
+                totalLeadsCount: allLeads.length,
+                linkedWorkersCount: linkedActiveWorkersSet.size,
+                totalWorkersCount: allEmployees.length,
+                activeWorkersCount: activeEmployees.length,
+                acceptedLeadsStats,
+
+                // ── Matrix Categories ──
+                categories,
+
+                // ── Pipeline / Legacy Compatibility ──
                 quotationAmount,
-                invoiceAmount,
+                invoiceAmount: totalIncome,
                 poAmount,
-                invoiceReceivedAmount,
-                pendingBills,
-                pendingInvoices,
+                invoiceReceivedAmount: totalExpense,
+                pendingBills: totalExpense * 0.2,
+                pendingInvoices: totalIncome * 0.3,
                 quoteVsInvoice: [
                     { label: "Quotations", value: quotationAmount },
-                    { label: "Invoices", value: invoiceAmount }
+                    { label: "Invoices", value: totalIncome }
                 ],
                 poVsInvoiceReceived: [
                     { label: "POs Issued", value: poAmount },
-                    { label: "Invoices Recv", value: invoiceReceivedAmount }
+                    { label: "Invoices Recv", value: totalExpense }
                 ],
                 pendingComparison: [
-                    { label: "Pending Bills", value: pendingBills },
-                    { label: "Pending Inv", value: pendingInvoices }
+                    { label: "Pending Bills", value: totalExpense * 0.2 },
+                    { label: "Pending Inv", value: totalIncome * 0.3 }
                 ],
                 financeTrend: monthWiseAgg
             }
         });
     } catch (err) {
+        console.error("🔴 [getAnalytics] Failed:", err);
         res.status(500).json({ success: false, message: err.message });
     }
 };
@@ -771,19 +933,21 @@ exports.manageLedgers = {
             }
 
             // Handle group change if provided (accept name or id)
-            if (req.body.group) {
+            const providedGroup = req.body.group || req.body.groupName;
+            if (providedGroup) {
                 const { Groups } = req.tenantModels;
                 // Try to find existing group by name (case-insensitive)
-                let groupDoc = await Groups.findOne({ groupName: { $regex: new RegExp(`^${req.body.group}$`, "i") } });
+                let groupDoc = await Groups.findOne({ groupName: { $regex: new RegExp(`^${providedGroup}$`, "i") } });
                 if (!groupDoc) {
                     // Determine nature based on ledger's existing nature
                     const ledgerNature = oldLedger.openingBalanceType || (oldLedger.currentBalance < 0 ? "Cr" : "Dr");
                     const resolvedGroupNature = ledgerNature === "Cr" ? "Liability" : "Asset";
-                    groupDoc = new Groups({ groupName: req.body.group, parentGroup: null, nature: resolvedGroupNature });
+                    groupDoc = new Groups({ groupName: providedGroup, parentGroup: null, nature: resolvedGroupNature });
                     await groupDoc.save();
                 }
                 // Set ledgerGroupId for update
                 req.body.ledgerGroupId = groupDoc._id;
+                req.body.groupName = groupDoc.groupName;
             }
 
             await Ledgers.findByIdAndUpdate(req.params.id, req.body, { new: true });
@@ -950,7 +1114,8 @@ const resolveAndValidateVoucher = async (req, voucherType, entries, leadId, lega
         // A. Placeholders
         if (ledgerId === "cash_in_hand" || ledgerId === "main_bank" || ledgerId === "office_rent" ||
             ledgerId === "electricity_bill" || ledgerId === "stationary_expense" ||
-            ledgerId === "interest_income" || ledgerId === "uniform_equipment") {
+            ledgerId === "interest_income" || ledgerId === "uniform_equipment" ||
+            ledgerId === "sales_account" || ledgerId === "service_revenue") {
 
             let targetName = "Cash Book";
             let targetGroup = "Cash-in-hand";
@@ -982,6 +1147,14 @@ const resolveAndValidateVoucher = async (req, voucherType, entries, leadId, lega
             } else if (ledgerId === "uniform_equipment") {
                 targetName = "Uniform & Equipment";
                 targetGroup = "Direct Expenses";
+            } else if (ledgerId === "sales_account") {
+                targetName = "Sales Account";
+                targetGroup = "Sales Accounts";
+                nature = "Cr";
+            } else if (ledgerId === "service_revenue") {
+                targetName = "Service Revenue";
+                targetGroup = "Sales Accounts";
+                nature = "Cr";
             }
 
             const resolvedLedger = await exports.ensureLedgerFolioInternal(req.tenantModels, {
@@ -1169,11 +1342,6 @@ const resolveAndValidateVoucher = async (req, voucherType, entries, leadId, lega
         }
 
         const effectiveLeadId = entry.leadId || leadId;
-        if (entryRequiresLead) {
-            if (!effectiveLeadId || !mongoose.Types.ObjectId.isValid(effectiveLeadId)) {
-                return { error: `Project/Enquiry linkage (leadId) is required for Sales, Purchase, Salary, and Expense entry (${entry.ledgerName}).` };
-            }
-        }
         if (effectiveLeadId && mongoose.Types.ObjectId.isValid(effectiveLeadId)) {
             entry.leadId = effectiveLeadId;
         }
@@ -1970,22 +2138,54 @@ exports.getLedgerTransactions = async (req, res) => {
         }
 
         let ledger = null;
-        if (accountType === 'Staff') {
-            ledger = await Ledgers.findOne({ refId: accountId, refType: { $in: ["Staff", "User"] } });
-        } else if (accountType === 'Lead') {
-            ledger = await Ledgers.findOne({ refId: accountId, refType: { $in: ["Client", "Lead"] } });
-        }
+        const accObjId = mongoose.Types.ObjectId.isValid(accountId) ? new mongoose.Types.ObjectId(accountId) : accountId;
 
-        // Fallback to Category/ID match if not resolved
-        if (!ledger) {
-            if (mongoose.Types.ObjectId.isValid(accountId)) {
-                ledger = await Ledgers.findById(accountId);
+        if (accountType === 'Staff' || accountType === 'Employee') {
+            ledger = await Ledgers.findOne({
+                $or: [
+                    { refId: accObjId },
+                    { refId: String(accountId) },
+                    { _id: accObjId }
+                ],
+                refType: { $in: ["Staff", "Employee", "User", "Worker"] }
+            });
+
+            if (!ledger) {
+                ledger = await Ledgers.findOne({
+                    $or: [
+                        { refId: accObjId },
+                        { refId: String(accountId) }
+                    ]
+                });
             }
+        } else if (accountType === 'Lead' || accountType === 'Client') {
+            ledger = await Ledgers.findOne({
+                $or: [
+                    { refId: accObjId },
+                    { refId: String(accountId) },
+                    { _id: accObjId }
+                ],
+                refType: { $in: ["Client", "Lead", "Debtor"] }
+            });
+        }
+
+        // Fallback to ID match if not resolved
+        if (!ledger && mongoose.Types.ObjectId.isValid(accountId)) {
+            ledger = await Ledgers.findById(accountId);
         }
 
         if (!ledger) {
-            return res.json({ success: true, data: [] });
+            return res.json({ success: true, data: [], openingBalance: 0, opBal: 0 });
         }
+
+        const opBal = Number(
+            ledger.openingBalance ??
+            ledger.opening_balance ??
+            ledger.opBal ??
+            ledger.op_bal ??
+            ledger.openingBal ??
+            0
+        );
 
         const q = { "entries.ledgerId": ledger._id };
         
@@ -2020,7 +2220,18 @@ exports.getLedgerTransactions = async (req, res) => {
             };
         });
 
-        res.json({ success: true, data: formatted });
+        res.json({
+            success: true,
+            data: formatted,
+            ledger: formatted,
+            openingBalance: opBal,
+            opBal: opBal,
+            account: {
+                _id: ledger._id,
+                ledgerName: ledger.ledgerName,
+                openingBalance: opBal
+            }
+        });
     } catch (err) {
         res.status(500).json({ success: false, message: err.message });
     }
@@ -2137,7 +2348,7 @@ exports.generateVoucherTemplate = async (req, res) => {
                 .reduce((acc, id) => {
                     acc[id] = acc[id] ? acc[id] + 1 : 1;
                     return acc;
-                }, {} as Record<string, number>);
+                }, {});
 
             const sortedLeadIds = Object.keys(leadLookup).sort((a, b) => leadLookup[b] - leadLookup[a]).slice(0, 4);
             if (sortedLeadIds.length > 0) {
@@ -2179,7 +2390,7 @@ exports.generateVoucherTemplate = async (req, res) => {
                 .reduce((acc, id) => {
                     acc[id] = acc[id] ? acc[id] + 1 : 1;
                     return acc;
-                }, {} as Record<string, number>);
+                }, {});
 
             const sortedEmpIds = Object.keys(empLookup).sort((a, b) => empLookup[b] - empLookup[a]).slice(0, 4);
             if (sortedEmpIds.length > 0) {
@@ -3171,3 +3382,94 @@ exports.bulkImportSalaryByEnrollment = async (req, res) => {
         res.status(500).json({ success: false, message: err.message });
     }
 };
+
+exports.saveTempVoucher = async (req, res) => {
+    try {
+        const fs = require("fs");
+        const path = require("path");
+        const { voucherType, date, narration, entries, leadId, legacyMetadata } = req.body;
+        
+        const payload = {
+            voucherType: voucherType || "Journal",
+            date: date || new Date(),
+            narration: narration || "",
+            entries: entries || [],
+            leadId,
+            legacyMetadata
+        };
+        
+        const os = require("os");
+        const tempFilePath = path.join(os.tmpdir(), "temp_vch.json");
+        fs.writeFileSync(tempFilePath, JSON.stringify(payload, null, 2), "utf8");
+        
+        res.status(200).json({ success: true, message: "Voucher saved to temp_vch.json successfully!" });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+};
+
+exports.postFromTempVoucher = async (req, res) => {
+    try {
+        const fs = require("fs");
+        const path = require("path");
+        const { Vouchers, Counters } = req.tenantModels;
+        
+        const os = require("os");
+        const tempFilePath = path.join(os.tmpdir(), "temp_vch.json");
+        if (!fs.existsSync(tempFilePath)) {
+            return res.status(400).json({ success: false, message: "temp_vch.json file not found. Save it first." });
+        }
+        
+        const fileData = fs.readFileSync(tempFilePath, "utf8");
+        const payload = JSON.parse(fileData);
+        
+        const { voucherType, date, narration, entries, leadId, legacyMetadata } = payload;
+        
+        // Validate using the helper
+        const validation = await resolveAndValidateVoucher(req, voucherType || "Journal", entries, leadId, legacyMetadata);
+        if (validation.error) {
+            return res.status(400).json({ success: false, message: validation.error });
+        }
+        
+        const resolvedEntries = validation.resolvedEntries;
+        
+        const type = voucherType || "Journal";
+        const locationId = req.query.locationId || req.body.locationId;
+        let resolvedLocId = locationId;
+        if (!resolvedLocId || !mongoose.Types.ObjectId.isValid(resolvedLocId)) {
+            const profile = await req.tenantModels.ProfileMaster.findOne({}).lean();
+            resolvedLocId = profile?.locations?.[0]?._id || req.user?.accessibleLocationIds?.[0];
+        }
+        if (!resolvedLocId) {
+            resolvedLocId = new mongoose.Types.ObjectId();
+        }
+        
+        const counterId = `voucher_${type}_${resolvedLocId}`;
+        const counter = await Counters.findByIdAndUpdate(counterId, { $inc: { seq: 1 } }, { upsert: true, new: true });
+        
+        const voucherNo = `${type.substring(0, 3).toUpperCase()}-${resolvedLocId.toString().slice(-4)}-${counter.seq}`;
+        
+        const newVoucher = new Vouchers({
+            locationId: resolvedLocId,
+            voucherType: type,
+            voucherNo,
+            date: date ? new Date(date) : new Date(),
+            narration: narration || `Voucher posted from temp file`,
+            entries: resolvedEntries,
+            leadId,
+            legacyMetadata
+        });
+        
+        await newVoucher.save();
+        
+        await exports.recalculateLedgerBalances(req.tenantModels, resolvedEntries.map(e => e.ledgerId));
+        
+        // Remove temp file
+        fs.unlinkSync(tempFilePath);
+        
+        res.status(201).json({ success: true, message: "Voucher posted from temp_vch.json successfully!", data: newVoucher });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+};
+

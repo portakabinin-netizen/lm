@@ -1,0 +1,44 @@
+Created At: 2026-09-20T16:13:23+05:30
+Completed At: 2026-09-20T16:13:23+05:30
+File Path: `file:///c:/hipk/app/Signin.tsx`
+Total Lines: 507
+Total Bytes: 19882
+Showing lines 400 to 435
+The following code has been modified to include a line number before every line, in the format: <line_number>: <original_line>. Please note that any changes targeting the original code should remove the line number, colon, and leading space.
+400:                 </Text>
+401:               ) : isGuest === false ? (
+402:                 <Text
+403:                   style={{
+404:                     fontSize: 11,
+405:                     color: COLORS.success,
+406:                     fontWeight: '700',
+407:                     marginTop: 4,
+408:                     marginLeft: 4,
+409:                   }}
+410:                 >
+411:                   ✓ Registered User — Enter your password
+412:                 </Text>
+413:               ) : null}
+414:             </View>
+415: 
+416:             {/* PASSWORD / REFERENCE MOBILE — only after full 10-digit mobile entered */}
+417:             {mobile.replace(/\D/g, '').slice(-10).length === 10 && (
+418:               <View style={G.mb12 as any}>
+419:                 <View
+420:                   style={{
+421:                     flexDirection: 'row',
+422:                     justifyContent: 'space-between',
+423:                     alignItems: 'center',
+424:                     marginBottom: 4,
+425:                   }}
+426:                 >
+427:                   <Text style={[G.label, dynamic.inputLabel, { marginBottom: 0 }] as any}>
+428:                     {isGuest ? 'Reference Mobile' : 'Password'}
+429:                   </Text>
+430:                   {isGuest !== null && (
+431:                     <TouchableOpacity
+432:                       onPress={() => setIsGuest(!isGuest)}
+433:                       hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+434:                     >
+435:                       <Text style={{ fontSize: 11, color: COLORS.primary, fontWeight: '700' }}>
+The above content does NOT show the entire file contents. If you need to view any lines of the file which were not shown to complete your task, call this tool again to view those lines.

@@ -44,6 +44,8 @@ router.post("/leads/create",    ctrl.manageLeads.create);
 router.put("/leads/:id",        ctrl.manageLeads.update);
 router.delete("/leads/:id",     ctrl.manageLeads.delete);
 router.post("/leads/:id/activity", ctrl.manageLeads.addActivity);
+router.put("/leads/:leadId/activity/:activityId", ctrl.manageLeads.updateActivity);
+router.delete("/leads/:leadId/activity/:activityId", ctrl.manageLeads.deleteActivity);
 router.post("/leads/:id/site-client-check", ctrl.manageLeads.addSiteClientCheck);
 router.post("/leads/:id/site-visit", ctrl.manageLeads.logSiteVisit);
 router.get("/leads/export/excel",  ctrl.manageLeads.download);
@@ -78,7 +80,10 @@ router.post("/hr/attendance/emergency-end-employee", ctrl.manageEmployees.emerge
 router.post("/hr/attendance/continue-shift",         ctrl.manageEmployees.continueShift);         // double shift continuation
 router.post("/hr/broadcast",                         ctrl.manageEmployees.sendBroadcast);
 
+router.post("/hr/attendance/lock-worker", ctrl.manageEmployees.lockWorkerAttendance);
 router.post("/hr/attendance",    ctrl.manageEmployees.markAttendance);
+router.post("/hr/attendance/mark-paid", ctrl.manageEmployees.markPaid);
+router.post("/hr/attendance/clean-reconcile", ctrl.manageEmployees.cleanAndReconcileAttendance);
 router.put("/hr/attendance/:id", ctrl.manageEmployees.updateAttendance);
 router.delete("/hr/attendance/:id", ctrl.manageEmployees.deleteAttendance);
 router.get("/hr/rate-lookup",   ctrl.manageEmployees.getRateLookup);
@@ -103,8 +108,14 @@ router.delete("/staff/:id",      ctrl.manageStaff.delete);
 
 // --- 💬 CHAT ---
 router.post("/chat/send", chatCtrl.sendMessage);
+router.get("/chat/latest-request", chatCtrl.getLatestRequest);
+router.put("/chat/requests/status", chatCtrl.updateRequestStatus);
 router.get("/chat/messages", chatCtrl.getMessages);
 router.put("/chat/seen", chatCtrl.markAsSeen);
+router.post("/chat/groups", chatCtrl.createGroup);
+router.get("/chat/groups", chatCtrl.getGroups);
+router.put("/chat/groups/member", chatCtrl.addGroupMember);
+router.delete("/chat/groups/member", chatCtrl.removeGroupMember);
 
 // --- 🏢 CORPORATE PROFILE ---
 router.get("/profile",           ctrl.manageProfile.get);

@@ -1,0 +1,34 @@
+Created At: 2026-09-20T15:53:48+05:30
+Completed At: 2026-09-20T15:53:48+05:30
+File Path: `file:///c:/hipk/UtilServices/appHelper.tsx`
+Total Lines: 925
+Total Bytes: 32783
+Showing lines 900 to 925
+The following code has been modified to include a line number before every line, in the format: <line_number>: <original_line>. Please note that any changes targeting the original code should remove the line number, colon, and leading space.
+900:   /** Fetches leads from email inbox and saves to MongoDB */
+901:   public async readEmail(loginCredentials: { userName: any; password: any }) {
+902:     try {
+903:       const session = await this.getSession();
+904:       const res = await this.httpClient.post(`/readEmails`, loginCredentials, {
+905:         headers: { Authorization: `Bearer ${session?.token}` },
+906:       });
+907:       if (res.data.status === 'success') {
+908:         this.showToast(`Synced ${res.data.count} new leads!`, 'Success');
+909:         return res.data.data;
+910:       }
+911:       this.showToast(res.data.message || 'Sync failed', 'Error');
+912:       return [];
+913:     } catch (e: any) {
+914:       this.showToast(e.response?.data?.message || e.message || 'Connection error', 'Error');
+915:       return [];
+916:     }
+917:   }
+918: }
+919: export const appService = AppService.getInstance();
+920: export const httpClient = appService.httpClient;
+921: export const baseURLs = appService.getBaseURLs();
+922: export const getCurrentBaseURL = () => appService.getCurrentBaseURL();
+923: export const loadPersistedHost = () => appService.loadPersistedHost();
+924: export { api_url, isLocalMachine, local_api_url } from '@/backend/routes/base_url';
+925: 
+The above content does NOT show the entire file contents. If you need to view any lines of the file which were not shown to complete your task, call this tool again to view those lines.

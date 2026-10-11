@@ -109,7 +109,7 @@ const SalaryRegisterModal: React.FC<SalaryRegisterModalProps> = ({
   const [previewHtml, setPreviewHtml] = useState<string | null>(null);
   const webviewRef = React.useRef<any>(null);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
-  const [previewOrientation, setPreviewOrientation] = useState<Print.Orientation>(
+  const [previewOrientation, setPreviewOrientation] = useState<any>(
     Print.Orientation.portrait
   );
 
@@ -578,7 +578,7 @@ const SalaryRegisterModal: React.FC<SalaryRegisterModalProps> = ({
   };
 
   const togglePreviewOrientation = () => {
-    setPreviewOrientation((prev) =>
+    setPreviewOrientation((prev: any) =>
       prev === Print.Orientation.portrait ? Print.Orientation.landscape : Print.Orientation.portrait
     );
   };

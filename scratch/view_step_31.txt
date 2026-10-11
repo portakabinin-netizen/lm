@@ -1,0 +1,78 @@
+Created At: 2026-09-20T15:45:23+05:30
+Completed At: 2026-09-20T15:45:23+05:30
+File Path: `file:///c:/hipk/app/Signin.tsx`
+Total Lines: 477
+Total Bytes: 18763
+Showing lines 251 to 320
+The following code has been modified to include a line number before every line, in the format: <line_number>: <original_line>. Please note that any changes targeting the original code should remove the line number, colon, and leading space.
+251:                         hostStatus === true  ? COLORS.success :
+252:                         hostStatus === false ? COLORS.danger  :
+253:                         (isDark ? COLORS.textLight : COLORS.textDark),
+254:                     }}
+255:                     numberOfLines={1}
+256:                   >
+257:                     {customHost || 'No host set'}
+258:                   </Text>
+259:                   <Text style={{
+260:                     fontSize: 9,
+261:                     fontWeight: '800',
+262:                     marginLeft: 4,
+263:                     color:
+264:                       hostStatus === true  ? COLORS.success :
+265:                       hostStatus === false ? COLORS.danger  :
+266:                       COLORS.textMuted,
+267:                   }}>
+268:                     {hostStatus === 'checking' ? 'Checking…' :
+269:                      hostStatus === true  ? '● Live' :
+270:                      hostStatus === false ? '● Down' : ''}
+271:                   </Text>
+272:                 </View>
+273:                 <Ionicons
+274:                   name={showHostPicker ? 'chevron-up' : 'chevron-down'}
+275:                   size={15}
+276:                   color={COLORS.primary}
+277:                   style={{ marginLeft: 6 }}
+278:                 />
+279:               </TouchableOpacity>
+280: 
+281:               {/* Expanded dropdown list */}
+282:               {showHostPicker && (
+283:                 <View
+284:                   style={[
+285:                     dynamic.card,
+286:                     { borderRadius: 10, marginTop: 4, overflow: 'hidden' },
+287:                   ] as any}
+288:                 >
+289:                   {hostList.map((url, i) => {
+290:                     const isActive = url === customHost;
+291:                     return (
+292:                       <TouchableOpacity
+293:                         key={i}
+294:                         onPress={() => applyHost(url)}
+295:                         style={{
+296:                           flexDirection: 'row',
+297:                           alignItems: 'center',
+298:                           padding: 10,
+299:                           borderBottomWidth: i < hostList.length - 1 ? 0.5 : 0,
+300:                           borderBottomColor: isDark ? '#333' : '#ddd',
+301:                           backgroundColor: isActive
+302:                             ? (isDark ? '#1a3a2a' : '#e8f5e9')
+303:                             : 'transparent',
+304:                         }}
+305:                       >
+306:                         <Ionicons
+307:                           name={isActive ? 'radio-button-on' : 'radio-button-off'}
+308:                           size={16}
+309:                           color={isActive ? COLORS.success : COLORS.textMuted}
+310:                         />
+311:                         <Text
+312:                           style={{
+313:                             marginLeft: 10,
+314:                             fontSize: 12,
+315:                             color: isActive ? COLORS.success : (isDark ? COLORS.textLight : COLORS.textDark),
+316:                             fontWeight: isActive ? '700' : '400',
+317:                             flex: 1,
+318:                           }}
+319:                           numberOfLines={1}
+320:                         >
+The above content does NOT show the entire file contents. If you need to view any lines of the file which were not shown to complete your task, call this tool again to view those lines.

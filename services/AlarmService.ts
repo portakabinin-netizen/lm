@@ -11,13 +11,28 @@ import * as Haptics from "expo-haptics";
 
 class AlarmService {
   private player: any = null;
+  private isPlaying: boolean = false;
   private vibrationInterval: ReturnType<typeof setInterval> | null = null;
-  private isPlaying = false;
+  private stateListeners: ((playing: boolean) => void)[] = [];
+
+  onStateChange(listener: (playing: boolean) => void): () => void {
+    this.stateListeners.push(listener);
+    return () => {
+      this.stateListeners = this.stateListeners.filter((l) => l !== listener);
+    };
+  }
 
   /** Start loud alarm + continuous vibration */
-  async startAlarm(): Promise<void> {
+  async startAlarm(options?: { autoStopMs?: number }): Promise<void> {
     if (this.isPlaying) return;
     this.isPlaying = true;
+    this.stateListeners.forEach((l) => l(true));
+
+    if (options?.autoStopMs) {
+      setTimeout(() => {
+        if (this.isPlaying) this.stopAlarm();
+      }, options.autoStopMs);
+    }
 
     // Vibration loop (every 800 ms)
     this.startVibration();
@@ -42,6 +57,7 @@ class AlarmService {
   /** Stop alarm sound and vibration */
   async stopAlarm(): Promise<void> {
     this.isPlaying = false;
+    this.stateListeners.forEach((l) => l(false));
     this.stopVibration();
 
     try {

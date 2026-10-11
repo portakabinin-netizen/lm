@@ -21,8 +21,8 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as Sharing from 'expo-sharing';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getInfoAsync } from 'expo-file-system/legacy';
-import { getPermanentVCardUri } from '@/components/VisitingCardGenerator';
 import { useUserContext } from '@/context/AuthContext';
+import { getPermanentVCardUri } from '@/components/VisitingCardGenerator';
 import { COLORS } from '@/styles/stylesIndex';
 import { appService } from '@/UtilServices/appHelper';
 

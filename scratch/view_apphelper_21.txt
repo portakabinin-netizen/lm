@@ -1,0 +1,129 @@
+Created At: 2026-09-20T15:45:10+05:30
+Completed At: 2026-09-20T15:45:10+05:30
+File Path: `file:///c:/hipk/UtilServices/appHelper.tsx`
+Total Lines: 832
+Total Bytes: 29378
+Showing lines 200 to 320
+The following code has been modified to include a line number before every line, in the format: <line_number>: <original_line>. Please note that any changes targeting the original code should remove the line number, colon, and leading space.
+200:         return { available: true, error: null };
+201:       }
+202:       return { available: false, error: 'Backend server returned unexpected status.' };
+203:     } catch (error: any) {
+204:       const errMsg =
+205:         error.response?.data?.message ||
+206:         (error.response?.data?.database === 'disconnected' ? 'Database is down' : error.message);
+207:       return { available: false, error: errMsg || 'Backend server is unreachable.' };
+208:     }
+209:   }
+210: 
+211:   private static readonly STORAGE_HOST_KEY = 'SELECTED_HOST_URL';
+212:   private hasUserSelectedHost = false;
+213: 
+214:   /**
+215:    * 🚀 Loads and activates the user-selected or previously saved host URL from AsyncStorage.
+216:    * Ensures all UI screens in the APK use this active server.
+217:    */
+218:   public loadPersistedHost = async (): Promise<string> => {
+219:     try {
+220:       const saved = await AsyncStorage.getItem(AppService.STORAGE_HOST_KEY);
+221:       if (saved && saved.startsWith('http')) {
+222:         const clean = saved.trim().replace(/\/+$/, '');
+223:         // 🚀 If running in mobile APK and saved host is a local URL or dead Vercel, discard it!
+224:         if ((!isLocalMachine && this.isLocal(clean)) || clean.includes('hibiz-nine.vercel.app')) {
+225:           console.log('[AppService] Discarding invalid persisted host on APK:', clean);
+226:           await AsyncStorage.removeItem(AppService.STORAGE_HOST_KEY).catch(() => {});
+227:           return this.getCurrentBaseURL();
+228:         }
+229:         const normalized = clean.endsWith('/api') ? clean + '/' : clean + '/api/';
+230:         if (!this.baseURLs.includes(normalized)) {
+231:           this.baseURLs.unshift(normalized);
+232:         }
+233:         this.currentUrlIndex = this.baseURLs.indexOf(normalized);
+234:         this.httpClient.defaults.baseURL = normalized;
+235:         this.hasUserSelectedHost = true;
+236:         return normalized;
+237:       }
+238:     } catch (e) {
+239:       console.warn('[AppService] Failed to load persisted host:', e);
+240:     }
+241:     return this.getCurrentBaseURL();
+242:   };
+243: 
+244:   public updateHost = async (newHost: string): Promise<string> => {
+245:     if (!newHost) return this.getCurrentBaseURL();
+246:     const clean = newHost.trim().replace(/\/+$/, '');
+247:     const cleanUrl = clean.endsWith('/api') ? clean + '/' : clean + '/api/';
+248:     if (!this.baseURLs.includes(cleanUrl)) {
+249:       this.baseURLs.unshift(cleanUrl);
+250:     }
+251:     this.currentUrlIndex = this.baseURLs.indexOf(cleanUrl);
+252:     this.httpClient.defaults.baseURL = cleanUrl;
+253:     this.hasUserSelectedHost = true;
+254:     try {
+255:       await AsyncStorage.setItem(AppService.STORAGE_HOST_KEY, cleanUrl);
+256:     } catch (e) {
+257:       console.warn('[AppService] Failed to persist host:', e);
+258:     }
+259:     this.showToast('Host updated successfully', 'Success');
+260:     return cleanUrl;
+261:   };
+262: 
+263:   private setupInterceptors() {
+264:     this.httpClient.interceptors.request.use((config) => {
+265:       if (config.url?.startsWith('/')) {
+266:         config.url = config.url.substring(1);
+267:       }
+268:       return config;
+269:     });
+270: 
+271:     this.httpClient.interceptors.response.use(
+272:       (response) => {
+273:         // Detect HTML error/suspended responses that return HTTP 200
+274:         if (
+275:           typeof response.data === 'string' &&
+276:           (response.data.includes('<title>Service Suspended</title>') ||
+277:             (response.data.includes('<!DOCTYPE html>') && !response.config.url?.includes('.html')))
+278:         ) {
+279:           const customErr: any = new Error('Service Suspended / Invalid Server Response');
+280:           customErr.isServiceSuspended = true;
+281:           customErr.config = response.config;
+282:           return Promise.reject(customErr);
+283:         }
+284:         return response;
+285:       },
+286:       async (error) => {
+287:         const req = error.config;
+288:         if (!req) return Promise.reject(error);
+289: 
+290:         const isNetworkError = !error.response;
+291:         const status = error.response?.status;
+292:         const isServerError = status && status >= 500;
+293:         const isSuspended = error.isServiceSuspended;
+294:         const isTimeout = error.code === 'ECONNABORTED';
+295: 
+296:         // Failover across baseURLs ONLY when not explicitly pinned by the user and server is dead/500
+297:         const shouldFailover =
+298:           !this.hasUserSelectedHost &&
+299:           (isNetworkError || isServerError || isSuspended || isTimeout) &&
+300:           this.baseURLs.length > 1;
+301: 
+302:         if (shouldFailover) {
+303:           req._failoverCount = (req._failoverCount || 0) + 1;
+304:           if (req._failoverCount < this.baseURLs.length) {
+305:             this.currentUrlIndex = (this.currentUrlIndex + 1) % this.baseURLs.length;
+306:             const nextUrl = this.baseURLs[this.currentUrlIndex];
+307:             console.warn(
+308:               `🔄 [AppService] Failing over to next baseURL [${this.currentUrlIndex}]: ${nextUrl}`
+309:             );
+310:             this.httpClient.defaults.baseURL = nextUrl;
+311:             req.baseURL = nextUrl;
+312:             return this.httpClient(req);
+313:           }
+314:         }
+315: 
+316:         if (error.response?.status === 401 || error.response?.status === 403) {
+317:           await AsyncStorage.removeItem('userSession');
+318:         }
+319:         return Promise.reject(error);
+320:       }
+The above content does NOT show the entire file contents. If you need to view any lines of the file which were not shown to complete your task, call this tool again to view those lines.

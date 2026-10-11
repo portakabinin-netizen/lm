@@ -97,7 +97,7 @@ REM ================================================================
 echo.
 echo  [2] Pushing backend to GitHub...
 echo.
-"%BASH_CMD%" -c "cd %TARGET_DIR%/backend && git add . && git commit -m 'update' && git push origin main"
+"%BASH_CMD%" -c "cd %TARGET_DIR%/backend && git add . && (git commit -m 'update' || true) && (git pull --rebase origin $(git rev-parse --abbrev-ref HEAD) 2>/dev/null || true) && git push origin HEAD"
 pause
 goto MENU
 
@@ -108,7 +108,7 @@ REM ================================================================
 echo.
 echo  [3] Building Release APK and pushing backend...
 echo.
-"%BASH_CMD%" -c "cd %TARGET_DIR% && node restore-native.js && cd android && ./gradlew assembleRelease --no-daemon -Dorg.gradle.jvmargs='-Xmx4096m' && cd ../backend && git add . && git commit -m 'update' && git push origin main"
+"%BASH_CMD%" -c "cd %TARGET_DIR% && node restore-native.js && cd android && ./gradlew assembleRelease --no-daemon -Dorg.gradle.jvmargs='-Xmx4096m' && cd ../backend && git add . && (git commit -m 'update' || true) && (git pull --rebase origin $(git rev-parse --abbrev-ref HEAD) 2>/dev/null || true) && git push origin HEAD"
 pause
 goto MENU
 

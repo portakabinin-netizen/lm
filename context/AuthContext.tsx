@@ -2,6 +2,8 @@
 import { AuthContextType, DecodedToken, UserSession } from "@/hooks/interface";
 import { appService } from "@/UtilServices/appHelper";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+
+export const httpClient = appService.httpClient;
 import { jwtDecode } from "jwt-decode";
 import { Alert } from "react-native";
 import React, {
@@ -252,6 +254,17 @@ const PUBLIC_URLS = ['leads/public-inquiry', 'publicform/webInquiry'];
             const decoded = jwtDecode<DecodedToken>(parsed.token);
             if (decoded.exp && decoded.exp > Date.now() / 1000) {
               setUser(parsed as UserSession);
+
+              // 🚀 Self-heal / Sync: If corporate name or multi-tenant corporate list is missing or incomplete, refresh from server
+              if (!parsed.corporateName || !parsed.dbName || !parsed.accessCorporate || parsed.accessCorporate.length <= 1) {
+                appService.httpClient.get('auth/me').then(async (meRes) => {
+                  if (meRes.data?.success && meRes.data?.userSession) {
+                    const refreshed = { ...meRes.data.userSession, token: meRes.data.token || parsed.token };
+                    await AsyncStorage.setItem("userSession", JSON.stringify(refreshed));
+                    setUser(refreshed);
+                  }
+                }).catch(() => {});
+              }
             } else {
               await AsyncStorage.removeItem("userSession");
             }

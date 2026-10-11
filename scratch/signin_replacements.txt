@@ -1,0 +1,215 @@
+=== STEP 148 ===
+TargetContent:
+  const [isGuest, setIsGuest] = useState<boolean | null>(null);
+  const [showHostPicker, setShowHostPicker] = useState(false);
+ReplacementContent:
+  const [isGuest, setIsGuest] = useState<boolean | null>(null);
+  const [checkingRegistration, setCheckingRegistration] = useState(false);
+  const [showHostPicker, setShowHostPicker] = useState(false);
+=== STEP 150 ===
+TargetContent:
+  const checkRegistration = async (val: string) => {
+    const clean = val.replace(/\D/g, '').slice(-10);
+    if (clean.length === 10) {
+      try {
+        const res = await appService.httpClient.post('/auth/check-unique', { userMobile: clean });
+        setIsGuest(!res.data?.exists);
+      } catch (e) {
+        setIsGuest(null);
+      }
+    } else {
+      setIsGuest(null);
+    }
+  };
+ReplacementContent:
+  const checkRegistration = async (val: string) => {
+    const clean = val.replace(/\D/g, '').slice(-10);
+    if (clean.length === 10) {
+      setCheckingRegistration(true);
+      try {
+        const res = await appService.httpClient.post('/auth/check-unique', { userMobile: clean });
+        setIsGuest(res.data?.exists === false);
+      } catch (e) {
+        setIsGuest(false);
+      } finally {
+        setCheckingRegistration(false);
+      }
+    } else {
+      setIsGuest(null);
+      setCheckingRegistration(false);
+    }
+  };
+=== STEP 154 ===
+TargetContent:
+              {isGuest && (
+                <Text
+                  style={{
+                    fontSize: 11,
+                    color: COLORS.accent,
+                    fontWeight: '800',
+                    marginTop: 4,
+                    marginLeft: 4,
+                  }}
+                >
+                  ✨ GUEST USER DETECTED
+                </Text>
+              )}
+            </View>
+
+            {/* PASSWORD / REFERENCE MOBILE — only after full 10-digit mobile entered */}
+            {mobile.replace(/\D/g, '').slice(-10).length === 10 && (
+              <View style={G.mb12 as any}>
+                <View
+                  style={{
+                    flexDirection: 'row',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    marginBottom: 4,
+                  }}
+                >
+                  <Text style={[G.label, dynamic.inputLabel, { marginBottom: 0 }] as any}>
+                    {isGuest ? 'Reference Mobile' : 'Password'}
+                  </Text>
+                  {isGuest !== null && (
+                    <TouchableOpacity
+                      onPress={() => setIsGuest(!isGuest)}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <Text style={{ fontSize: 11, color: COLORS.primary, fontWeight: '700' }}>
+                        {isGuest ? 'Enter Password instead' : 'Use Reference Mobile'}
+                      </Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+                <View style={[G.inputWrapperAuth, dynamic.inputWrapper] as any}>
+                  <Ionicons
+                    name={isGuest ? 'people-outline' : 'lock-closed-outline'}
+                    size={20}
+                    color={isDark ? COLORS.textMuted : COLORS.secondary}
+                  />
+                  <TextInput
+                    style={[G.flex1, G.ml12, G.fs16, { color: dynamic.textInput.color }] as any}
+                    placeholder={isGuest ? 'Enter Supervisor Mobile' : 'Password'}
+                    placeholderTextColor={dynamic.placeholder}
+                    secureTextEntry={!isGuest}
+                    keyboardType={isGuest ? 'number-pad' : 'default'}
+                    value={password}
+                    onChangeText={setPassword}
+                    autoCapitalize="none"
+                  />
+                </View>
+              </View>
+            )}
+ReplacementContent:
+              {checkingRegistration ? (
+                <Text
+                  style={{
+                    fontSize: 11,
+                    color: COLORS.textMuted,
+                    fontWeight: '600',
+                    marginTop: 4,
+                    marginLeft: 4,
+                  }}
+                >
+                  Checking mobile number…
+                </Text>
+              ) : isGuest === true ? (
+                <Text
+                  style={{
+                    fontSize: 11,
+                    color: COLORS.accent,
+                    fontWeight: '800',
+                    marginTop: 4,
+                    marginLeft: 4,
+                  }}
+                >
+                  ✨ Unregistered User — Enter Reference Mobile
+                </Text>
+              ) : isGuest === false ? (
+                <Text
+                  style={{
+                    fontSize: 11,
+                    color: COLORS.success,
+                    fontWeight: '700',
+                    marginTop: 4,
+                    marginLeft: 4,
+                  }}
+                >
+                  ✓ Registered User — Enter your password
+                </Text>
+              ) : null}
+            </View>
+
+            {/* PASSWORD / REFERENCE MOBILE — only after full 10-digit mobile entered */}
+            {mobile.replace(/\D/g, '').slice(-10).length === 10 && (
+              <View style={G.mb12 as any}>
+                <View
+                  style={{
+                    flexDirection: 'row',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    marginBottom: 4,
+                  }}
+                >
+                  <Text style={[G.label, dynamic.inputLabel, { marginBottom: 0 }] as any}>
+                    {isGuest ? 'Reference Mobile' : 'Password'}
+                  </Text>
+                  {isGuest !== null && (
+                    <TouchableOpacity
+                      onPress={() => setIsGuest(!isGuest)}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <Text style={{ fontSize: 11, color: COLORS.primary, fontWeight: '700' }}>
+                        {isGuest ? 'Enter Password instead' : 'Enter Reference Mobile instead'}
+                      </Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+                <View style={[G.inputWrapperAuth, dynamic.inputWrapper] as any}>
+                  <Ionicons
+                    name={isGuest ? 'people-outline' : 'lock-closed-outline'}
+                    size={20}
+                    color={isDark ? COLORS.textMuted : COLORS.secondary}
+                  />
+                  <TextInput
+                    style={[G.flex1, G.ml12, G.fs16, { color: dynamic.textInput.color }] as any}
+                    placeholder={isGuest ? 'Enter Reference Mobile' : 'Enter your password'}
+                    placeholderTextColor={dynamic.placeholder}
+                    secureTextEntry={!isGuest}
+                    keyboardType={isGuest ? 'phone-pad' : 'default'}
+                    value={password}
+                    onChangeText={setPassword}
+                    autoCapitalize="none"
+                    maxLength={isGuest ? 10 : undefined}
+                  />
+                </View>
+              </View>
+            )}
+=== STEP 166 ===
+TargetContent:
+                <View
+                  style={{
+                    flexDirection: 'row',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    marginBottom: 4,
+                  }}
+                >
+                  <Text style={[G.label, dynamic.inputLabel, { marginBottom: 0 }] as any}>
+                    {isGuest ? 'Reference Mobile' : 'Password'}
+                  </Text>
+                  {isGuest !== null && (
+                    <TouchableOpacity
+                      onPress={() => setIsGuest(!isGuest)}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <Text style={{ fontSize: 11, color: COLORS.primary, fontWeight: '700' }}>
+                        {isGuest ? 'Enter Password instead' : 'Enter Reference Mobile instead'}
+                      </Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+ReplacementContent:
+                <Text style={[G.label, dynamic.inputLabel] as any}>
+                  {isGuest ? 'Reference Mobile' : 'Password'}
+                </Text>

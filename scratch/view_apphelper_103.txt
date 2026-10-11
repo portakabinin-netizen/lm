@@ -1,0 +1,63 @@
+Created At: 2026-09-20T15:53:44+05:30
+Completed At: 2026-09-20T15:53:44+05:30
+File Path: `file:///c:/hipk/UtilServices/appHelper.tsx`
+Total Lines: 925
+Total Bytes: 32783
+Showing lines 301 to 355
+The following code has been modified to include a line number before every line, in the format: <line_number>: <original_line>. Please note that any changes targeting the original code should remove the line number, colon, and leading space.
+301:     }
+302:   }
+303: 
+304:   private static readonly STORAGE_HOST_KEY = 'SELECTED_HOST_URL';
+305:   private hasUserSelectedHost = false;
+306: 
+307:   /**
+308:    * 🚀 Loads and activates the user-selected or previously saved host URL from AsyncStorage.
+309:    * Ensures all UI screens in the APK use this active server.
+310:    */
+311:   public loadPersistedHost = async (): Promise<string> => {
+312:     try {
+313:       const saved = await AsyncStorage.getItem(AppService.STORAGE_HOST_KEY);
+314:       if (saved && saved.startsWith('http')) {
+315:         const clean = saved.trim().replace(/\/+$/, '');
+316:         // 🚀 If running in mobile APK and saved host is a local URL or dead Vercel, discard it!
+317:         if ((!isLocalMachine && this.isLocal(clean)) || clean.includes('hibiz-nine.vercel.app')) {
+318:           console.log('[AppService] Discarding invalid persisted host on APK:', clean);
+319:           await AsyncStorage.removeItem(AppService.STORAGE_HOST_KEY).catch(() => {});
+320:           return this.getCurrentBaseURL();
+321:         }
+322:         const normalized = clean.endsWith('/api') ? clean + '/' : clean + '/api/';
+323:         if (!this.baseURLs.includes(normalized)) {
+324:           this.baseURLs.unshift(normalized);
+325:         }
+326:         this.currentUrlIndex = this.baseURLs.indexOf(normalized);
+327:         this.httpClient.defaults.baseURL = normalized;
+328:         this.hasUserSelectedHost = true;
+329:         return normalized;
+330:       }
+331:     } catch (e) {
+332:       console.warn('[AppService] Failed to load persisted host:', e);
+333:     }
+334:     return this.getCurrentBaseURL();
+335:   };
+336: 
+337:   public updateHost = async (newHost: string): Promise<string> => {
+338:     if (!newHost) return this.getCurrentBaseURL();
+339:     const clean = newHost.trim().replace(/\/+$/, '');
+340:     const cleanUrl = clean.endsWith('/api') ? clean + '/' : clean + '/api/';
+341:     if (!this.baseURLs.includes(cleanUrl)) {
+342:       this.baseURLs.unshift(cleanUrl);
+343:     }
+344:     this.currentUrlIndex = this.baseURLs.indexOf(cleanUrl);
+345:     this.httpClient.defaults.baseURL = cleanUrl;
+346:     this.hasUserSelectedHost = true;
+347:     try {
+348:       await AsyncStorage.setItem(AppService.STORAGE_HOST_KEY, cleanUrl);
+349:     } catch (e) {
+350:       console.warn('[AppService] Failed to persist host:', e);
+351:     }
+352:     this.showToast('Host updated successfully', 'Success');
+353:     return cleanUrl;
+354:   };
+355: 
+The above content does NOT show the entire file contents. If you need to view any lines of the file which were not shown to complete your task, call this tool again to view those lines.

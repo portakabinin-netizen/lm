@@ -1,13 +1,14 @@
-import api_url from '@/backend/routes/base_url';
+import api_url, { isLocalMachine, local_api_url } from '@/backend/routes/base_url';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import axios, { AxiosInstance } from 'axios';
+import Constants from 'expo-constants';
 import { readAsStringAsync } from 'expo-file-system/legacy';
 import * as SMS from 'expo-sms';
 import { jwtDecode } from 'jwt-decode';
-import { Alert, Platform, ToastAndroid } from 'react-native';
+import { Alert, DeviceEventEmitter, Platform, ToastAndroid } from 'react-native';
 
 // ─── Types & Constants
-type NotificationType = 'Success' | 'Error' | 'Info';
+type NotificationType = 'Success' | 'Error' | 'Info' | 'Warning';
 
 const MONTHS: Record<string, number> = {
   jan: 0,
@@ -30,18 +31,356 @@ class AppService {
   private static instance: AppService;
   public httpClient: AxiosInstance;
   private currentUrlIndex = 0;
-  private baseURLs = [process.env.EXPO_PUBLIC_API_KEY, api_url]
-    .filter(Boolean)
-    .map((u) => u!.replace(/\/$/, '') + '/') as string[];
+  private baseURLs: string[];
+  private liveURLs: string[] = [];
+  private static readonly STORAGE_HOST_KEY = 'SELECTED_HOST_URL';
+  private hasUserSelectedHost = false;
 
   private constructor() {
+    this.baseURLs = this.buildCandidateURLs();
     this.httpClient = axios.create({
-      baseURL: this.baseURLs[0],
+      baseURL: this.baseURLs[0] || api_url,
       headers: { 'Content-Type': 'application/json' },
       timeout: 15000,
     });
     this.setupInterceptors();
   }
+
+  public isLocal(url: string): boolean {
+    return /https?:\/\/(localhost|127\.0\.0\.1|10\.0\.2\.2|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|10\.\d+\.\d+\.\d+|.*\.local)/i.test(
+      url
+    );
+  }
+
+  public getExpoPublicEnv(): Record<string, string> {
+    const envMap: Record<string, string> = {};
+
+    const sources: any[] = [
+      Constants?.expoConfig?.extra?.expoPublicEnv,
+      Constants?.expoConfig?.extra,
+      (Constants as any)?.manifest?.extra?.expoPublicEnv,
+      (Constants as any)?.manifest?.extra,
+      (Constants as any)?.manifest2?.extra?.expoClient?.extra?.expoPublicEnv,
+      (Constants as any)?.manifest2?.extra?.expoClient?.extra,
+      typeof process !== 'undefined' && process?.env ? process.env : null,
+    ];
+
+    for (let s = 0; s < sources.length; s++) {
+      const source = sources[s];
+      if (source && typeof source === 'object') {
+        const target =
+          source.expoPublicEnv && typeof source.expoPublicEnv === 'object'
+            ? { ...source, ...source.expoPublicEnv }
+            : source;
+
+        const entries = Object.entries(target);
+        for (let i = 0; i < entries.length; i++) {
+          const [key, val] = entries[i];
+          if (
+            key.startsWith('EXPO_PUBLIC_API_URL') &&
+            typeof val === 'string' &&
+            val.trim() &&
+            !envMap[key]
+          ) {
+            envMap[key] = val.trim();
+          }
+        }
+      }
+    }
+
+    return envMap;
+  }
+
+  private formatCamelCase(str: string): string {
+    if (!str) return 'Server';
+    const lower = str.toLowerCase();
+    if (lower === 'onrender') return 'OnRender';
+    if (lower === 'oracle') return 'Oracle';
+    if (lower === 'vercel') return 'Vercel';
+    if (lower === 'railway') return 'Railway';
+    if (lower === 'local') return 'Local';
+    if (lower === 'render') return 'Render';
+    if (lower === 'machin') return 'Machin';
+    if (lower === 'server') return 'Server';
+
+    return str
+      .split(/[-_\s]+/)
+      .filter(Boolean)
+      .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+      .join('');
+  }
+
+  public getHostDisplayName(url?: string): string {
+    const raw = (url || this.getCurrentBaseURL() || '').trim();
+    if (!raw) return 'Server';
+
+    const cleanUrl = (u: string) =>
+      u.trim().toLowerCase().replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+    const targetClean = cleanUrl(raw);
+    const targetHost = targetClean.split('/')[0].split(':')[0];
+
+    // 1. Dynamic check against EXPO_PUBLIC_API_URL environment variables
+    const publicEnv = this.getExpoPublicEnv();
+    for (const [key, val] of Object.entries(publicEnv)) {
+      if (
+        key.startsWith('EXPO_PUBLIC_API_URL') &&
+        typeof val === 'string' &&
+        val.trim()
+      ) {
+        const valClean = cleanUrl(val);
+        const valHost = valClean.split('/')[0].split(':')[0];
+
+        if (
+          valClean === targetClean ||
+          valClean.startsWith(targetClean) ||
+          targetClean.startsWith(valClean) ||
+          valHost === targetHost
+        ) {
+          if (key.startsWith('EXPO_PUBLIC_API_URL_')) {
+            return this.formatCamelCase(key.replace('EXPO_PUBLIC_API_URL_', ''));
+          }
+          return this.formatCamelCase(key.replace('EXPO_PUBLIC_API_URL', ''));
+        }
+      }
+    }
+
+    // 2. Fallbacks for known providers/IPs
+    const lower = raw.toLowerCase();
+    if (lower.includes('onrender.com') || lower.includes('render')) return 'OnRender';
+    if (lower.includes('137.23.37.25') || lower.includes('80.225.215.140') || lower.includes('oracle')) return 'Oracle';
+    if (lower.includes('vercel.app') || lower.includes('vercel')) return 'Vercel';
+    if (lower.includes('railway.app') || lower.includes('railway')) return 'Railway';
+    if (lower.includes('localhost') || lower.includes('127.0.0.1')) return 'Local';
+
+    // 3. Fallback to host/server
+    if (targetHost) return this.formatCamelCase(targetHost);
+    return 'Server';
+  }
+
+  private buildCandidateURLs(): string[] {
+    const normalize = (url: string) => {
+      const clean = url.trim().replace(/\/+$/, '');
+      return clean.endsWith('/api') ? clean + '/' : clean + '/api/';
+    };
+
+    const seen = new Set<string>();
+    const urls: string[] = [];
+    const urlPattern = /^https?:\/\//i;
+
+    const publicEnv = this.getExpoPublicEnv();
+    const envEntries = Object.entries(publicEnv);
+
+    const rawCandidates: string[] = [];
+
+    // 1. Capture all variables matching prefix EXPO_PUBLIC_API_URL_
+    for (let i = 0; i < envEntries.length; i++) {
+      const [key, val] = envEntries[i];
+      if (
+        key.startsWith('EXPO_PUBLIC_API_URL_') &&
+        typeof val === 'string' &&
+        urlPattern.test(val.trim())
+      ) {
+        rawCandidates.push(val.trim());
+      }
+    }
+
+    // 2. Capture any exact EXPO_PUBLIC_API_URL variables (e.g. EXPO_PUBLIC_API_URL, EXPO_PUBLIC_API_URL1, etc.)
+    for (let i = 0; i < envEntries.length; i++) {
+      const [key, val] = envEntries[i];
+      if (
+        !key.startsWith('EXPO_PUBLIC_API_URL_') &&
+        key.startsWith('EXPO_PUBLIC_API_URL') &&
+        typeof val === 'string' &&
+        urlPattern.test(val.trim())
+      ) {
+        rawCandidates.push(val.trim());
+      }
+    }
+
+    // Static references for inlining into APK bundle (only EXPO_PUBLIC_API_URL*)
+    const staticFallbacks: (string | undefined)[] = [
+      process.env.EXPO_PUBLIC_API_URL_MACHIN,
+      process.env.EXPO_PUBLIC_API_URL_ORACLE,
+      process.env.EXPO_PUBLIC_API_URL_ONRENDER,
+      process.env.EXPO_PUBLIC_API_URL_RENDER,
+      process.env.EXPO_PUBLIC_API_URL_CF,
+      process.env.EXPO_PUBLIC_API_URL,
+      process.env.EXPO_PUBLIC_API_URL1,
+      process.env.EXPO_PUBLIC_API_URL2,
+    ];
+    for (const fb of staticFallbacks) {
+      if (fb && typeof fb === 'string' && urlPattern.test(fb.trim())) {
+        rawCandidates.push(fb.trim());
+      }
+    }
+
+    for (let i = 0; i < rawCandidates.length; i++) {
+      const val = rawCandidates[i];
+      if (
+        val &&
+        typeof val === 'string' &&
+        urlPattern.test(val.trim())
+      ) {
+        const n = normalize(val);
+        if (!seen.has(n)) {
+          seen.add(n);
+          urls.push(n);
+        }
+      }
+    }
+
+    if (urls.length === 0) {
+      if (api_url) {
+        const n = normalize(api_url);
+        seen.add(n);
+        urls.push(n);
+      }
+      if (local_api_url) {
+        const n = normalize(local_api_url);
+        if (!seen.has(n)) {
+          seen.add(n);
+          urls.push(n);
+        }
+      }
+      const local5001 = normalize('http://localhost:5001/api');
+      if (!seen.has(local5001)) {
+        seen.add(local5001);
+        urls.push(local5001);
+      }
+      const emu5001 = normalize('http://10.0.2.2:5001/api');
+      if (!seen.has(emu5001)) {
+        seen.add(emu5001);
+        urls.push(emu5001);
+      }
+    }
+
+    return urls;
+  }
+
+  public getBaseURLs(): string[] {
+    return [...this.baseURLs];
+  }
+
+  public getLiveURLs(): string[] {
+    return [...this.liveURLs];
+  }
+
+  public getCurrentBaseURL(): string {
+    return this.httpClient.defaults.baseURL || this.baseURLs[this.currentUrlIndex] || api_url || '';
+  }
+
+  public getHostList(): string[] {
+    const seen = new Set<string>();
+    const merged: string[] = [];
+    const add = (u: string | undefined) => {
+      if (u && typeof u === 'string') {
+        const clean = u.trim().replace(/\/+$/, '');
+        if (!clean) return;
+        const normalized = clean.endsWith('/api') ? clean + '/' : clean + '/api/';
+        if (!seen.has(normalized)) {
+          seen.add(normalized);
+          merged.push(normalized);
+        }
+      }
+    };
+
+    this.liveURLs.forEach(add);
+    this.baseURLs.forEach(add);
+    if (api_url) add(api_url);
+    add('http://localhost:5001/api/');
+    add('http://10.0.2.2:5001/api/');
+    return merged;
+  }
+
+  public checkLiveURLs = async (): Promise<string[]> => {
+    const candidates = this.getHostList();
+    if (candidates.length === 0) return [];
+
+    const fallbackUrl = candidates[0];
+    const liveList: string[] = [];
+    let selectedActiveUrl: string | null = null;
+
+    for (let i = 0; i < candidates.length; i++) {
+      const url = candidates[i];
+      try {
+        const res = await axios.get(`${url}auth/health-check`, { timeout: 4000 });
+        const isSuspended =
+          typeof res.data === 'string' &&
+          (res.data.includes('<title>Service Suspended</title>') ||
+            res.data.includes('<!DOCTYPE html>'));
+        const isDbDown = res.data?.database === 'disconnected';
+
+        if (res.status === 200 && !isSuspended && !isDbDown) {
+          liveList.push(url);
+          if (!selectedActiveUrl) {
+            selectedActiveUrl = url;
+          }
+        }
+      } catch (err: any) {
+        // unreachable
+      }
+    }
+
+    this.liveURLs = liveList;
+
+    const targetUrl = selectedActiveUrl || fallbackUrl;
+    const currentBase = this.httpClient.defaults.baseURL || '';
+
+    const isCurrentBaseLive = this.liveURLs.includes(currentBase);
+    if ((!this.hasUserSelectedHost || !isCurrentBaseLive) && targetUrl && targetUrl !== currentBase) {
+      this.httpClient.defaults.baseURL = targetUrl;
+      const matchingIdx = this.baseURLs.indexOf(targetUrl);
+      if (matchingIdx !== -1) this.currentUrlIndex = matchingIdx;
+      DeviceEventEmitter.emit('SERVER_HOST_CHANGED', targetUrl);
+      DeviceEventEmitter.emit('api_host_changed', targetUrl);
+    }
+
+    return [...this.liveURLs];
+  };
+
+  public async updateHost(newHost: string) {
+    const clean = newHost.trim().replace(/\/+$/, '');
+    const normalized = clean.endsWith('/api') ? clean + '/' : clean + '/api/';
+    this.httpClient.defaults.baseURL = normalized;
+    if (!this.baseURLs.includes(normalized)) {
+      this.baseURLs.unshift(normalized);
+    }
+    this.currentUrlIndex = this.baseURLs.indexOf(normalized);
+    this.hasUserSelectedHost = true;
+    await AsyncStorage.setItem(AppService.STORAGE_HOST_KEY, normalized).catch(() => {});
+    DeviceEventEmitter.emit('SERVER_HOST_CHANGED', normalized);
+    DeviceEventEmitter.emit('api_host_changed', normalized);
+  }
+
+  public loadPersistedHost = async (): Promise<string> => {
+    this.checkLiveURLs().catch(() => {});
+    try {
+      const saved = await AsyncStorage.getItem(AppService.STORAGE_HOST_KEY);
+      if (saved && saved.startsWith('http')) {
+        const clean = saved.trim().replace(/\/+$/, '');
+        if (
+          (!isLocalMachine && this.isLocal(clean)) ||
+          clean.includes('hibiz-nine.vercel.app') ||
+          clean.includes(':5000')
+        ) {
+          console.log('[AppService] Discarding invalid persisted host on APK:', clean);
+          await AsyncStorage.removeItem(AppService.STORAGE_HOST_KEY).catch(() => {});
+          return this.getCurrentBaseURL();
+        }
+        const normalized = clean.endsWith('/api') ? clean + '/' : clean + '/api/';
+        if (!this.baseURLs.includes(normalized)) {
+          this.baseURLs.unshift(normalized);
+        }
+        this.currentUrlIndex = this.baseURLs.indexOf(normalized);
+        this.httpClient.defaults.baseURL = normalized;
+        this.hasUserSelectedHost = true;
+        return normalized;
+      }
+    } catch (e) {
+      console.warn('[AppService] Failed to load persisted host:', e);
+    }
+    return this.getCurrentBaseURL();
+  };
 
   public static getInstance(): AppService {
     if (!AppService.instance) AppService.instance = new AppService();
@@ -76,44 +415,37 @@ class AppService {
 
   /* ── SYSTEM & INTERCEPTORS */
 
-  /* ✅ Checks both Internet and Database availability
-   * Returns { available: boolean, error: string | null }
-   */
   public async isSystemLive(): Promise<{ available: boolean; error: string | null }> {
-    // 1. Check internet connectivity via a lightweight ping (no third-party package needed)
     try {
       await axios.get('https://www.google.com', { timeout: 4000 });
     } catch (error: any) {
-      // No response at all = no internet; if server replied (even with error), internet is up
       if (!error.response) {
         return { available: false, error: 'No internet connection. Please check your WiFi/Data.' };
       }
     }
 
-    // 2. Check Backend & Database connection
+    const targetBase = this.httpClient.defaults.baseURL || this.baseURLs[0] || api_url;
     try {
       const response = await this.httpClient.get('auth/health-check', { timeout: 5000 });
 
       if (response.status === 200) {
-        // If backend returns a database field, validate it too
         if (response.data?.database === 'disconnected') {
+          this.liveURLs = this.liveURLs.filter((u) => u !== targetBase);
           return { available: false, error: 'Database is down' };
+        }
+        if (!this.liveURLs.includes(targetBase)) {
+          this.liveURLs.push(targetBase);
         }
         return { available: true, error: null };
       }
-
-      return { available: false, error: 'Server Error' };
+      this.liveURLs = this.liveURLs.filter((u) => u !== targetBase);
+      return { available: false, error: 'Backend server returned unexpected status.' };
     } catch (error: any) {
-      if (error.response) {
-        // Server replied with an error status — check database field
-        const database = error.response.data?.database;
-        return {
-          available: false,
-          error: database === 'disconnected' ? 'Database is down' : 'Server Error',
-        };
-      }
-      // No response at all — server unreachable or timed out
-      return { available: false, error: 'Backend server is unreachable. Is the server running?' };
+      this.liveURLs = this.liveURLs.filter((u) => u !== targetBase);
+      const errMsg =
+        error.response?.data?.message ||
+        (error.response?.data?.database === 'disconnected' ? 'Database is down' : error.message);
+      return { available: false, error: errMsg || 'Backend server is unreachable.' };
     }
   }
 
@@ -133,19 +465,25 @@ class AppService {
 
         const isNetworkError = !error.response;
         req._retryCount = req._retryCount || 0;
+        req._failoverCount = req._failoverCount || 0;
 
-        if (isNetworkError && req._retryCount < 3) {
+        if (isNetworkError && req._retryCount < 2) {
           req._retryCount++;
-          await new Promise((r) => setTimeout(r, 4000));
+          await new Promise((r) => setTimeout(r, 2000));
           return this.httpClient(req);
         }
 
-        if (isNetworkError && this.currentUrlIndex < this.baseURLs.length - 1) {
-          this.currentUrlIndex++;
+        if (isNetworkError && req._failoverCount < this.baseURLs.length) {
+          req._failoverCount++;
+          this.currentUrlIndex = (this.currentUrlIndex + 1) % this.baseURLs.length;
           const nextUrl = this.baseURLs[this.currentUrlIndex];
+          console.warn(
+            `🔄 [AppService] Failing over to next baseURL [${this.currentUrlIndex}]: ${nextUrl}`
+          );
           this.httpClient.defaults.baseURL = nextUrl;
           req.baseURL = nextUrl;
-          console.warn(`🔄 Switched to fallback: ${nextUrl}`);
+          DeviceEventEmitter.emit('SERVER_HOST_CHANGED', nextUrl);
+          DeviceEventEmitter.emit('api_host_changed', nextUrl);
           return this.httpClient(req);
         }
 
@@ -592,4 +930,20 @@ class AppService {
     }
   }
 }
+
 export const appService = AppService.getInstance();
+export const httpClient = appService.httpClient;
+export const baseURLs = appService.getBaseURLs();
+export const getLiveURLs = () => appService.getLiveURLs();
+export const checkLiveURLs = () => appService.checkLiveURLs();
+export const getCurrentBaseURL = () => appService.getCurrentBaseURL();
+export const loadPersistedHost = () => appService.loadPersistedHost();
+export const getHostDisplayName = (url?: string) => appService.getHostDisplayName(url);
+export {
+  api_url,
+  api_urls,
+  configuredApiUrls,
+  getConfiguredApiUrls,
+  isLocalMachine,
+  local_api_url
+} from '@/backend/routes/base_url';

@@ -3,6 +3,8 @@ import { Ionicons } from "@expo/vector-icons";
 import { z } from "zod";
 const { regex } = appService;
 
+export type Leads = any;
+
 /**
  * ============================================
  * 🔐 AUTH CONTEXT TYPE

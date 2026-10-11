@@ -4,7 +4,7 @@ import { TOKENS } from '../theme/tokens';
 import { appService } from '@/UtilServices/appHelper';
 import { Language, t } from '../i18n';
 
-interface AttendanceLog {
+export interface AttendanceLog {
   _id: string;
   date: string;
   dutyStart: string;

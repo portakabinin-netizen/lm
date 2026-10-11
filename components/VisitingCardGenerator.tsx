@@ -4,9 +4,14 @@ import { appService } from '@/UtilServices/appHelper';
 import { CORP_IMG_CACHE } from '@/components/AppHeader';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
+import { documentDirectory } from 'expo-file-system/legacy';
 import React, { useEffect, useRef, useState } from 'react';
 import { Image, StyleSheet, Text, View } from 'react-native';
 import ViewShot from 'react-native-view-shot';
+
+export const VCARD_DIR = `${documentDirectory}visiting_cards/`;
+export const getPermanentVCardUri = (dbName?: string, userId?: string) =>
+  `${VCARD_DIR}vcard_${(dbName || 'default').replace(/[^a-zA-Z0-9_-]/g, '_')}_${(userId || 'user').replace(/[^a-zA-Z0-9_-]/g, '_')}.png`;
 
 export default function VisitingCardGenerator() {
   const { user, visitingCardUri, setVisitingCardUri } = useAuthContext();
@@ -56,9 +61,11 @@ export default function VisitingCardGenerator() {
 
         // ── Corporate image from Cloudinary history ──────────────────────────
         if (corpRes?.data?.resources?.length > 0) {
-          const url = corpRes.data.resources[0].url;
-          setCorpData(prev => ({ ...prev, CorpProfileImage: url }));
-          if (user?.dbName) CORP_IMG_CACHE[user.dbName] = url;
+          const url = corpRes?.data?.resources[0]?.url;
+          if (url) {
+            setCorpData(prev => ({ ...prev, CorpProfileImage: url }));
+            if (user?.dbName) CORP_IMG_CACHE[user.dbName] = url;
+          }
         }
 
         // ── Corporate profile fields from ProfileMaster ───────────────────────

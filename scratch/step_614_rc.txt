@@ -1,0 +1,10 @@
+              {/* Multi-Line Graph for Sales, Purchase, Salary, and Profit (Current / Previous Year) */}
+              <FinancialComparisonLineChart
+                vouchersList={vouchersList}
+                transactions={transactions}
+                masterData={masterData}
+                totalInflow={totalInflow}
+                totalOutflow={totalOutflow}
+                summary={summary}
+                theme={theme}
+              />

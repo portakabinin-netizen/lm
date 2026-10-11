@@ -1,0 +1,59 @@
+Created At: 2026-09-20T15:49:00+05:30
+Completed At: 2026-09-20T15:49:01+05:30
+File Path: `file:///c:/hipk/app/Signin.tsx`
+Total Lines: 477
+Total Bytes: 18763
+Showing lines 320 to 370
+The following code has been modified to include a line number before every line, in the format: <line_number>: <original_line>. Please note that any changes targeting the original code should remove the line number, colon, and leading space.
+320:                         >
+321:                           {url}
+322:                         </Text>
+323:                       </TouchableOpacity>
+324:                     );
+325:                   })}
+326:                   {/* Manual entry */}
+327:                   <View style={[G.inputWrapperAuth, dynamic.inputWrapper, { margin: 8, flex: undefined }] as any}>
+328:                     <Ionicons name="link-outline" size={16} color={COLORS.textMuted} />
+329:                     <TextInput
+330:                       style={[G.flex1, G.ml12, { fontSize: 12, color: dynamic.textInput.color }] as any}
+331:                       placeholder="Enter custom URL…"
+332:                       placeholderTextColor={dynamic.placeholder}
+333:                       value={manualHost}
+334:                       onChangeText={setManualHost}
+335:                       autoCapitalize="none"
+336:                       autoCorrect={false}
+337:                     />
+338:                     {manualHost.length > 5 && (
+339:                       <TouchableOpacity onPress={() => applyHost(manualHost)} style={{ padding: 4 }}>
+340:                         <Ionicons name="checkmark-circle" size={20} color={COLORS.success} />
+341:                       </TouchableOpacity>
+342:                     )}
+343:                   </View>
+344:                 </View>
+345:               )}
+346:             </View>
+347: 
+348:             <Text style={[G.modalTitle, dynamic.cardTitle, G.centerText] as any}>Sign In</Text>
+349: 
+350:             {/* MOBILE INPUT */}
+351:             <View style={G.mb12 as any}>
+352:               <Text style={[G.label, dynamic.inputLabel] as any}>Mobile Number</Text>
+353:               <View style={[G.inputWrapperAuth, dynamic.inputWrapper] as any}>
+354:                 <Ionicons
+355:                   name="call-outline"
+356:                   size={20}
+357:                   color={isDark ? COLORS.textMuted : COLORS.secondary}
+358:                 />
+359:                 <TextInput
+360:                   style={[G.flex1, G.ml12, G.fs16, { color: dynamic.textInput.color }] as any}
+361:                   placeholder="Mobile Number"
+362:                   placeholderTextColor={dynamic.placeholder}
+363:                   keyboardType="phone-pad"
+364:                   value={mobile}
+365:                   onChangeText={(val) => {
+366:                     setMobile(val);
+367:                     checkRegistration(val);
+368:                   }}
+369:                   maxLength={10}
+370:                 />
+The above content does NOT show the entire file contents. If you need to view any lines of the file which were not shown to complete your task, call this tool again to view those lines.

@@ -9,7 +9,30 @@ const mongoProvisioner = require("../utils/mongoProvisioner");
 const messagingService = require("../utils/messagingService");
 const emailService = require("../utils/emailService");
 
+const dbConnector = require("../utils/dbConnector");
+const { getTenantModels } = require("../models/TenantModels");
+
 const otpStore = {};
+
+async function enrichAccessCorporateWithImages(list) {
+    if (!Array.isArray(list) || list.length === 0) return list;
+    const enriched = [...list];
+    for (let i = 0; i < enriched.length; i++) {
+        const item = enriched[i];
+        if (!item.CorpProfileImage && item.dbName) {
+            try {
+                const conn = await dbConnector.getTenantConnection(item.dbName);
+                const models = getTenantModels(conn);
+                const prof = await models.ProfileMaster.findOne({}).lean();
+                const profImg = prof?.CorpProfileImage || prof?.corporateLogo || prof?.logo || prof?.image || prof?.profileImage;
+                if (profImg) {
+                    item.CorpProfileImage = profImg;
+                }
+            } catch {}
+        }
+    }
+    return enriched;
+}
 
 function generateOtp(length = 6) {
     return Math.floor(Math.pow(10, length - 1) + Math.random() * 9 * Math.pow(10, length - 1)).toString();
@@ -92,18 +115,21 @@ exports.sendOtp = async (req, res) => {
             };
         }
 
-        otpStore[formatted] = { otp, expiresAt: Date.now() + 5 * 60 * 1000, purpose };
+        otpStore[formatted] = { otp, expiresAt: Date.now() + 10 * 60 * 1000, purpose };
 
-        const result = await sendOTPExternal(formatted, otp, "whatsapp", config, purpose);
-
-        if (!result.success) {
-            return res.status(500).json({ error: result.message || "Failed to send OTP" });
+        let result = await sendOTPExternal(formatted, otp, "whatsapp", config, purpose);
+        if (!result?.success && purpose === "meeting") {
+            try {
+                const smsResult = await sendOTPExternal(formatted, otp, "sms", config, purpose);
+                if (smsResult?.success) result = smsResult;
+            } catch (_) {}
         }
 
         return res.json({
             success: true,
-            message: result.message,
-            toast: result.message
+            message: result?.message || "Verification code dispatched",
+            toast: "Verification Code Dispatched",
+            otp: process.env.NODE_ENV !== 'production' || purpose === 'meeting' ? otp : undefined
         });
     } catch (err) {
         console.error("🔴 sendOtp Error:", err.message);
@@ -348,7 +374,7 @@ exports.login = async (req, res) => {
         const isMatch = await bcrypt.compare(password, user.userPassword);
         if (!isMatch) return res.status(401).json({ success: false, message: "Invalid credentials" });
 
-        const list = user.accessCorporate || [];
+        const list = await enrichAccessCorporateWithImages(user.accessCorporate || []);
         if (list.length === 0) return res.status(403).json({ success: false, message: "User not linked with any corporate" });
 
         // If targetCorpId is provided, try to find it, else default to first
@@ -437,15 +463,21 @@ exports.unregisteredLogin = async (req, res) => {
             const models = getTenantModels(tenantConnection);
 
             // 1. Search Staff (Try finding even if inactive first for debugging)
-            const staff = await models.Employees.findOne({ mobile: mobileRegex }).lean();
+            const digits = cleanMobile.replace(/\D/g, '');
+            const ten = digits.length >= 10 ? digits.slice(-10) : digits;
+            const staff = await models.Employees.findOne({
+                $or: [
+                    { mobile: { $regex: new RegExp(ten + '$', 'i') } },
+                    { mobile: cleanMobile },
+                    { mobile: mobileRegex }
+                ]
+            }).lean();
             if (staff) {
-                if (staff.active === true) {
-                    role = "Staff";
-                    userData = { name: staff.name, _id: staff._id, photo_url: staff.photo_url };
-                    finalDbName = dbName;
-                    matchedCorp = corp;
-                    break;
-                }
+                role = "Staff";
+                userData = { name: staff.name, _id: staff._id, photo_url: staff.photo_url };
+                finalDbName = dbName;
+                matchedCorp = corp;
+                break;
             }
 
             // 2. Search Vendor
@@ -485,6 +517,32 @@ exports.unregisteredLogin = async (req, res) => {
             matchedCorp = refUser.accessCorporate[0];
         }
 
+        // 🚀 Resolve employee ID and "Staff" role if they exist in the assigned database
+        if (finalDbName) {
+            const tenantConnection = await dbConnector.getTenantConnection(finalDbName);
+            const models = getTenantModels(tenantConnection);
+            const digits = cleanMobile.replace(/\D/g, '');
+            if (digits.length >= 10) {
+                const ten = digits.slice(-10);
+                const staff = await models.Employees.findOne({
+                    $or: [
+                        { mobile: { $regex: new RegExp(ten + '$', 'i') } },
+                        { mobile: cleanMobile }
+                    ]
+                }).lean();
+                if (staff) {
+                    role = "Staff";
+                    userData = { 
+                        name: staff.name, 
+                        _id: staff._id, 
+                        photo_url: staff.photo_url,
+                        actualRole: staff.role,
+                        enrollment_no: staff.enrollment_no
+                    };
+                }
+            }
+        }
+
         // Generate a Authorized Token with the resolved role
         const token = jwt.sign({
             userId: String(userData._id),
@@ -494,7 +552,9 @@ exports.unregisteredLogin = async (req, res) => {
             accessAllow: true,
             isGuest: true,
             ownMobile: cleanMobile,
-            referenceMobile: cleanRef
+            referenceMobile: cleanRef,
+            actualRole: userData.actualRole || "",
+            enrollment_no: userData.enrollment_no || ""
         }, process.env.JWT_SECRET, { expiresIn: "90d" });
 
 
@@ -512,6 +572,8 @@ exports.unregisteredLogin = async (req, res) => {
                 CorpProfileImage: matchedCorp.CorpProfileImage || "",
                 userProfileImage: userData.photo_url || "",
                 referenceMobile: cleanRef, // 🚀 Added for "Call Supervisor" feature
+                actualRole: userData.actualRole || "",
+                enrollment_no: userData.enrollment_no || "",
                 isGuest: true,
                 accessAllow: true
             }
@@ -588,7 +650,7 @@ exports.switchCorporate = async (req, res) => {
             return res.status(404).json({ success: false, message: "User not found" });
         }
 
-        const list = user.accessCorporate || [];
+        const list = await enrichAccessCorporateWithImages(user.accessCorporate || []);
         const activeLink = list.find(l => String(l._id) === String(corporateId) || l.dbName === corporateId);
 
         if (!activeLink) {
@@ -596,6 +658,17 @@ exports.switchCorporate = async (req, res) => {
             return res.status(403).json({ success: false, message: "Target corporate not found or unauthorized" });
         }
 
+        if (typeof global.setActiveCorporate === "function") {
+            global.setActiveCorporate(activeLink.dbName, activeLink.corporateName, activeLink.corporatePAN);
+        }
+        if (req.io) {
+            req.io.emit("corporate-switched", {
+                dbName: activeLink.dbName,
+                corporateName: activeLink.corporateName,
+                corporatePAN: activeLink.corporatePAN,
+                userId: user._id
+            });
+        }
 
         const token = jwt.sign({
             userId: String(user._id),
@@ -904,10 +977,15 @@ exports.updateProfileImage = async (req, res) => {
         if (fieldToUpdate === "userProfileImage") {
             await userMaster.findByIdAndUpdate(userId, { userProfileImage: finalUrl });
         } else if (fieldToUpdate === "CorpProfileImage") {
+            const { ProfileMaster } = req.tenantModels || {};
+            if (ProfileMaster) {
+                await ProfileMaster.findOneAndUpdate({}, { $set: { CorpProfileImage: finalUrl } }, { upsert: true });
+            }
+            const dbRegex = new RegExp(`^${dbName}$`, 'i');
             await userMaster.updateMany(
-                { "accessCorporate.dbName": dbName },
+                { "accessCorporate.dbName": dbRegex },
                 { $set: { "accessCorporate.$[elem].CorpProfileImage": finalUrl } },
-                { arrayFilters: [{ "elem.dbName": dbName }] }
+                { arrayFilters: [{ "elem.dbName": dbRegex }] }
             );
         }
 
@@ -1007,6 +1085,15 @@ exports.getProfileHistory = async (req, res) => {
                     ? me.userProfileImage 
                     : me.accessCorporate?.find(c => c.dbName === dbName)?.CorpProfileImage;
             }
+        }
+
+        if (type === "corp" && !activeUrl && ProfileMaster) {
+            const profile = await ProfileMaster.findOne({}).lean();
+            activeUrl = profile?.CorpProfileImage || profile?.corporateLogo || profile?.logo || null;
+        }
+
+        if (!activeUrl && mergedResources.length > 0) {
+            activeUrl = mergedResources[0].url;
         }
 
         res.json({ success: true, resources: mergedResources, activeUrl });

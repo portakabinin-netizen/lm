@@ -1,4 +1,13 @@
+require('dotenv').config();
+
 module.exports = ({ config }) => {
+  const expoPublicEnv = {};
+  for (const [key, val] of Object.entries(process.env)) {
+    if (key.startsWith('EXPO_PUBLIC_') && typeof val === 'string' && val.trim()) {
+      expoPublicEnv[key] = val.trim();
+    }
+  }
+
   return {
     ...config,
     name: "HiBiz",
@@ -8,6 +17,11 @@ module.exports = ({ config }) => {
     splash: {
       ...config.splash,
       backgroundColor: "#f1ededff"
+    },
+    extra: {
+      ...(config.extra || {}),
+      ...expoPublicEnv,
+      expoPublicEnv,
     },
     ios: {
       ...config.ios,

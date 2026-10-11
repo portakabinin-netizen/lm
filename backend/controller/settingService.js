@@ -102,26 +102,26 @@ const updateCorporate = {
 
       // 1. Update Authoritative Isolated Profile
       const profileUpdates = {
-        corporateName: clean(b.corporateName),
-        corporateTagName: clean(b.corporateTagName),
-        corporateEmail: clean(b.corporateEmail),
+        corporateName: clean(b.corporateName) || '',
+        corporateTagName: clean(b.corporateTagName) || '',
+        corporateEmail: clean(b.corporateEmail) || '',
         ownershipType: b.ownershipType || 'Proprietorship',
-        corporatePAN: clean(b.corporatePAN)?.toUpperCase(),
+        corporatePAN: clean(b.corporatePAN)?.toUpperCase() || '',
         corporateActive: typeof b.corporateActive === 'boolean' ? b.corporateActive : true,
-        CorpProfileImage: clean(b.CorpProfileImage),
+        CorpProfileImage: clean(b.CorpProfileImage) || '',
 
         centralRegistrations: {
-          cin: clean(b.centralRegistrations?.cin),
-          tan: clean(b.centralRegistrations?.tan),
-          iec: clean(b.centralRegistrations?.iec),
-          msme_udyam: clean(b.centralRegistrations?.msme_udyam),
-          fssai: clean(b.centralRegistrations?.fssai),
-          drug_license: clean(b.centralRegistrations?.drug_license),
-          import_export_code: clean(b.centralRegistrations?.import_export_code),
-          corporateMobile: clean(b.centralRegistrations?.corporateMobile),
-          corporateTelephone: clean(b.centralRegistrations?.corporateTelephone),
-          Quotation_TC: clean(b.centralRegistrations?.Quotation_TC),
-          TaxInvoiceTC: clean(b.centralRegistrations?.TaxInvoiceTC),
+          cin: clean(b.centralRegistrations?.cin) || '',
+          tan: clean(b.centralRegistrations?.tan) || '',
+          iec: clean(b.centralRegistrations?.iec) || '',
+          msme_udyam: clean(b.centralRegistrations?.msme_udyam) || '',
+          fssai: clean(b.centralRegistrations?.fssai) || '',
+          drug_license: clean(b.centralRegistrations?.drug_license) || '',
+          import_export_code: clean(b.centralRegistrations?.import_export_code) || '',
+          corporateMobile: clean(b.centralRegistrations?.corporateMobile) || '',
+          corporateTelephone: clean(b.centralRegistrations?.corporateTelephone) || '',
+          Quotation_TC: clean(b.centralRegistrations?.Quotation_TC) || '',
+          TaxInvoiceTC: clean(b.centralRegistrations?.TaxInvoiceTC) || '',
         },
 
         locations: Array.isArray(b.locations)
@@ -130,42 +130,44 @@ const updateCorporate = {
               console.log(JSON.stringify(b.locations, null, 2));
               return b.locations;
             })().map((loc) => ({
-              ...(loc._id ? { _id: new mongoose.Types.ObjectId(loc._id) } : {}),
+              ...(loc._id && mongoose.isValidObjectId(loc._id) ? { _id: new mongoose.Types.ObjectId(loc._id) } : {}),
               locationName: clean(loc.locationName) || 'Head Office',
               locationType: clean(loc.locationType) || 'HO',
-              ...(loc.parentId ? { parentId: new mongoose.Types.ObjectId(loc.parentId) } : {}),
+              ...(loc.parentId && mongoose.isValidObjectId(loc.parentId) ? { parentId: new mongoose.Types.ObjectId(loc.parentId) } : {}),
               isRegisteredOffice: !!loc.isRegisteredOffice,
               address: {
-                line1: clean(loc.address?.line1),
-                city: clean(loc.address?.city),
-                district: clean(loc.address?.district),
-                state: clean(loc.address?.state),
-                pincode: clean(loc.address?.pincode),
+                line1: clean(loc.address?.line1) || '',
+                city: clean(loc.address?.city) || '',
+                district: clean(loc.address?.district) || '',
+                state: clean(loc.address?.state) || '',
+                pincode: clean(loc.address?.pincode) || '',
                 country: clean(loc.address?.country) || 'India',
-                lat: loc.address?.lat ? Number(loc.address?.lat) : undefined,
-                long: loc.address?.long ? Number(loc.address?.long) : undefined,
+                lat: loc.address?.lat !== undefined && loc.address?.lat !== null && loc.address?.lat !== '' && !isNaN(Number(loc.address?.lat)) ? Number(loc.address?.lat) : undefined,
+                long: loc.address?.long !== undefined && loc.address?.long !== null && loc.address?.long !== '' && !isNaN(Number(loc.address?.long)) ? Number(loc.address?.long) : undefined,
               },
-              gstin: clean(loc.gstin)?.toUpperCase(),
+              gstin: clean(loc.gstin)?.toUpperCase() || '',
               bankDetails: {
-                bank_name: clean(loc.bankDetails?.bank_name),
-                branch: clean(loc.bankDetails?.branch),
-                account_number: clean(loc.bankDetails?.account_number),
-                ifsc_code: clean(loc.bankDetails?.ifsc_code)?.toUpperCase(),
+                bank_name: clean(loc.bankDetails?.bank_name) || '',
+                branch: clean(loc.bankDetails?.branch) || '',
+                account_number: clean(loc.bankDetails?.account_number) || '',
+                ifsc_code: clean(loc.bankDetails?.ifsc_code)?.toUpperCase() || '',
                 account_type: clean(loc.bankDetails?.account_type) || 'Current',
-                upi_id: clean(loc.bankDetails?.upi_id),
+                upi_id: clean(loc.bankDetails?.upi_id) || '',
               },
-              contactPerson: clean(loc.contactPerson),
-              contactMobile: clean(loc.contactMobile),
-              contactEmail: clean(loc.contactEmail),
+              contactPerson: clean(loc.contactPerson) || '',
+              contactMobile: clean(loc.contactMobile) || '',
+              contactEmail: clean(loc.contactEmail) || '',
               active: typeof loc.active === 'boolean' ? loc.active : true,
             }))
           : [],
 
         authorizedSignatory: {
-          name: clean(b.authorizedSignatory?.name),
-          designation: clean(b.authorizedSignatory?.designation),
-          aadhar: clean(b.authorizedSignatory?.aadhar),
+          name: clean(b.authorizedSignatory?.name) || '',
+          designation: clean(b.authorizedSignatory?.designation) || '',
+          aadhar: clean(b.authorizedSignatory?.aadhar) || '',
           signature_label: clean(b.authorizedSignatory?.signature_label) || 'Authorised Signatory',
+          signature_img: clean(b.authorizedSignatory?.signature_img) || '',
+          stamp_img: clean(b.authorizedSignatory?.stamp_img) || '',
         },
 
         apiUrls: b.apiUrls || {},
@@ -184,14 +186,32 @@ const updateCorporate = {
       const admin = await resolveCorpAdmin(req);
       const tDb = req.tenantDbName || req.user?.dbName;
 
-      if (tDb && (clean(b.corporateName) || clean(b.CorpProfileImage))) {
+      if (tDb) {
+        const dbRegex = new RegExp(`^${tDb}$`, 'i');
         const updateFields = {};
         if (clean(b.corporateName))
-          updateFields['accessCorporate.$.corporateName'] = clean(b.corporateName);
+          updateFields['accessCorporate.$[elem].corporateName'] = clean(b.corporateName);
+        if (clean(b.corporatePAN))
+          updateFields['accessCorporate.$[elem].corporatePAN'] = clean(b.corporatePAN).toUpperCase();
         if (clean(b.CorpProfileImage))
-          updateFields['accessCorporate.$.CorpProfileImage'] = clean(b.CorpProfileImage);
+          updateFields['accessCorporate.$[elem].CorpProfileImage'] = clean(b.CorpProfileImage);
 
-        await userMaster.updateMany({ 'accessCorporate.dbName': tDb }, { $set: updateFields });
+        if (Object.keys(updateFields).length > 0) {
+          await userMaster.updateMany(
+            { 'accessCorporate.dbName': dbRegex },
+            { $set: updateFields },
+            { arrayFilters: [{ 'elem.dbName': dbRegex }] }
+          );
+        }
+
+        if (admin && admin._id) {
+          const userUpdates = {};
+          if (clean(b.corporateEmail)) userUpdates.userEmail = clean(b.corporateEmail).toLowerCase();
+          if (clean(b.CorpProfileImage)) userUpdates.userProfileImage = clean(b.CorpProfileImage);
+          if (Object.keys(userUpdates).length > 0) {
+            await userMaster.findByIdAndUpdate(admin._id, { $set: userUpdates });
+          }
+        }
       }
 
       // 🚀 REAL-TIME: Notify all clients in the tenant room
@@ -517,17 +537,19 @@ const otherUser = {
       if (!existing) return res.status(404).json({ message: 'User not found or not authorized' });
 
       const b = req.body;
-      const $set = {};
 
-      if (clean(b.userDisplayName)) $set.userDisplayName = clean(b.userDisplayName);
-      if (clean(b.userEmail)) $set.userEmail = clean(b.userEmail).toLowerCase();
-      if (clean(b.userMobile)) $set.userMobile = clean(b.userMobile);
-      if (clean(b.userAadhar)) $set.userAadhar = clean(b.userAadhar);
-      if (b.userDoB) $set.userDoB = new Date(b.userDoB);
-      if (typeof b.userActive === 'boolean') $set.userActive = b.userActive;
-      if (clean(b.userProfileImage)) $set.userProfileImage = clean(b.userProfileImage);
-      if (b.addresses) $set.addresses = b.addresses;
-      if (b.location) $set.location = b.location;
+      if (clean(b.userDisplayName)) existing.userDisplayName = clean(b.userDisplayName);
+      if (clean(b.userEmail)) existing.userEmail = clean(b.userEmail).toLowerCase();
+      if (clean(b.userMobile)) existing.userMobile = clean(b.userMobile);
+      if (clean(b.userAadhar)) existing.userAadhar = clean(b.userAadhar);
+      if (b.userDoB) existing.userDoB = new Date(b.userDoB);
+      if (typeof b.userActive === 'boolean') existing.userActive = b.userActive;
+      if (clean(b.userProfileImage)) existing.userProfileImage = clean(b.userProfileImage);
+      if (b.addresses) existing.addresses = b.addresses;
+      if (b.location) existing.location = b.location;
+      if (clean(b.userRole)) existing.userRole = clean(b.userRole);
+      if (typeof b.allowCashFlow === 'boolean') existing.allowCashFlow = b.allowCashFlow;
+
       if (b.dutyShift) {
         const ds = { ...b.dutyShift };
         const durationHrs = Number(ds.durationHrs);
@@ -538,58 +560,77 @@ const otherUser = {
             ds.endOn = `${String(endHrs).padStart(2, '0')}:${String(parts[1]).padStart(2, '0')}`;
           }
         }
-        $set.dutyShift = ds;
-      }
-
-      // Access grant/revoke and corporate permissions
-      const tDb = req.tenantDbName || req.user.dbName;
-      if (tDb) {
-        // Ensure the user has an entry for this corporate in their array
-        const userWithLink = await userMaster.findOne({ _id: id, 'accessCorporate.dbName': tDb });
-
-        if (userWithLink) {
-          $set['accessCorporate.$.locationId'] = b.locationId
-            ? new mongoose.Types.ObjectId(b.locationId)
-            : undefined;
-        } else {
-          // If for some reason they don't have it, push it
-          await userMaster.updateOne(
-            { _id: id },
-            {
-              $push: {
-                accessCorporate: {
-                  dbName: tDb,
-                  locationId: b.locationId ? new mongoose.Types.ObjectId(b.locationId) : undefined,
-                  isActive: true,
-                },
-              },
-            }
-          );
-        }
+        existing.dutyShift = ds;
       }
 
       // Password reset (admin resets on behalf of user – no current-password check)
       if (clean(b.newPassword)) {
         const salt = await bcrypt.genSalt(10);
-        $set.userPassword = await bcrypt.hash(b.newPassword, salt);
+        existing.userPassword = await bcrypt.hash(b.newPassword, salt);
       }
 
-      if (Object.keys($set).length === 0) {
-        return res.status(400).json({ message: 'No updatable fields provided' });
-      }
+      // Access grant/revoke and corporate permissions
+      const tDb = req.tenantDbName || req.user.dbName;
+      if (tDb) {
+        const adminCorpDbs = admin.accessCorporate.map((c) => c.dbName);
+        const otherAdminLinks = (existing.accessCorporate || []).filter((c) => !adminCorpDbs.includes(c.dbName));
 
-      const updated = await userMaster
-        .findByIdAndUpdate(
-          id,
-          { $set },
-          {
-            new: true,
-            runValidators: true,
+        let selectedLinks = [];
+        if (b.accessAllow && Array.isArray(b.corporateIds)) {
+          selectedLinks = b.corporateIds
+            .map((corpId) => {
+              const adminLink = admin.accessCorporate.find(
+                (c) => String(c._id) === String(corpId) || c.dbName === corpId
+              );
+              if (!adminLink) return null;
+
+              const isCurrentDb = adminLink.dbName === tDb;
+              return {
+                dbName: adminLink.dbName,
+                corporateName: adminLink.corporateName,
+                corporatePAN: adminLink.corporatePAN,
+                locationId: isCurrentDb && b.locationId
+                  ? new mongoose.Types.ObjectId(b.locationId)
+                  : (adminLink.locationId || undefined),
+                isActive: true,
+              };
+            })
+            .filter(Boolean);
+
+          // Ensure current database link is present and active if accessAllow is true
+          const hasCurrentDb = selectedLinks.some((l) => l.dbName === tDb);
+          if (!hasCurrentDb) {
+            const adminLink = admin.accessCorporate.find((c) => c.dbName === tDb);
+            if (adminLink) {
+              selectedLinks.push({
+                dbName: adminLink.dbName,
+                corporateName: adminLink.corporateName,
+                corporatePAN: adminLink.corporatePAN,
+                locationId: b.locationId ? new mongoose.Types.ObjectId(b.locationId) : undefined,
+                isActive: true,
+              });
+            }
           }
-        )
-        .lean();
+        } else if (b.accessAllow) {
+          // If accessAllow is true but corporateIds is not provided, ensure current tDb is at least linked
+          const adminLink = admin.accessCorporate.find((c) => c.dbName === tDb);
+          if (adminLink) {
+            selectedLinks.push({
+              dbName: adminLink.dbName,
+              corporateName: adminLink.corporateName,
+              corporatePAN: adminLink.corporatePAN,
+              locationId: b.locationId ? new mongoose.Types.ObjectId(b.locationId) : undefined,
+              isActive: true,
+            });
+          }
+        }
 
-      const { userPassword, ...safe } = updated;
+        existing.accessCorporate = [...otherAdminLinks, ...selectedLinks];
+      }
+
+      await existing.save();
+
+      const { userPassword, ...safe } = existing.toObject();
       return res.status(200).json({ message: 'User updated', data: safe });
     } catch (err) {
       console.error('[postOtherUser]', err);

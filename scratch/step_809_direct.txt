@@ -1,0 +1,94 @@
+    const salesLedgerIds = new Set<string>();
+    const directIncomeLedgerIds = new Set<string>();
+    const indirectIncomeLedgerIds = new Set<string>();
+
+    const purchaseLedgerIds = new Set<string>();
+    const directExpensesLedgerIds = new Set<string>();
+    const indirectExpensesLedgerIds = new Set<string>();
+
+    const groupMap = new Map<string, any>();
+    (masterData?.groups || []).forEach((g: any) => {
+      groupMap.set(String(g._id), g);
+    });
+
+    (masterData?.ledgers || []).forEach((l: any) => {
+      const g = groupMap.get(String(l.ledgerGroupId)) || {};
+      const gName = (g.groupName || l.groupName || '').toLowerCase();
+      const gNature = (g.nature || '').toLowerCase();
+      const lName = (l.ledgerName || '').toLowerCase();
+      const lId = String(l._id);
+
+      // Exclude asset accounts from outflow
+      if (gNature === 'asset') {
+        return;
+      }
+
+      // Inflow includes Sales + Direct/Indirect Income
+      const isInflow =
+        gNature === 'revenue' ||
+        gNature === 'income' ||
+        gName.includes('sales') ||
+        gName.includes('revenue') ||
+        gName.includes('income') ||
+        gName.includes('turnover') ||
+        lName.includes('sales') ||
+        lName.includes('income') ||
+        lName.includes('revenue');
+
+      // Outflow includes Purchase + Direct/Indirect Expenses (excluding Asset)
+      const isOutflow =
+        gNature === 'expense' ||
+        gName.includes('purchase') ||
+        gName.includes('expense') ||
+        gName.includes('cost') ||
+        gName.includes('material') ||
+        lName.includes('purchase') ||
+        lName.includes('expense') ||
+        lName.includes('salary') ||
+        lName.includes('wages') ||
+        lName.includes('payroll') ||
+        lName.includes('rent') ||
+        lName.includes('bill');
+
+      if (isInflow) {
+        inflowLedgerIds.add(lId);
+        const isSales =
+          gName.includes('sales') ||
+          gName.includes('turnover') ||
+          gName.includes('revenue') ||
+          lName.includes('sales') ||
+          lName.includes('turnover') ||
+          lName.includes('revenue');
+        const isDirect = gName.includes('direct') || lName.includes('direct');
+
+        if (isSales) {
+          salesLedgerIds.add(lId);
+        } else if (isDirect) {
+          directIncomeLedgerIds.add(lId);
+        } else {
+          indirectIncomeLedgerIds.add(lId);
+        }
+      } else if (isOutflow) {
+        outflowLedgerIds.add(lId);
+        const isPurchase =
+          gName.includes('purchase') ||
+          gName.includes('cost') ||
+          gName.includes('material') ||
+          lName.includes('purchase') ||
+          lName.includes('material');
+        const isDirect =
+          gName.includes('direct') ||
+          lName.includes('direct') ||
+          lName.includes('salary') ||
+          lName.includes('wages') ||
+          lName.includes('payroll');
+
+        if (isPurchase) {
+          purchaseLedgerIds.add(lId);
+        } else if (isDirect) {
+          directExpensesLedgerIds.add(lId);
+        } else {
+          indirectExpensesLedgerIds.add(lId);
+        }
+      }
+    });

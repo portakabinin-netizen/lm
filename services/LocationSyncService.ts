@@ -105,4 +105,24 @@ export class LocationSyncService {
       await AsyncStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(remaining));
     }
   }
+
+  static async uploadCompact(payload: any, dutyInfo: any) {
+    if (!dutyInfo || !dutyInfo.attendanceId || !dutyInfo.token || !dutyInfo.baseURL || dutyInfo.isExempt) return;
+    try {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${dutyInfo.token}`,
+      };
+      if (dutyInfo.dbName) {
+        headers['x-tenant-id'] = dutyInfo.dbName;
+      }
+      await fetch(`${dutyInfo.baseURL}service/hr/attendance/${dutyInfo.attendanceId}/compact-gps`, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify(payload),
+      });
+    } catch (e) {
+      // Ignore background upload error
+    }
+  }
 }

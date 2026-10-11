@@ -1,0 +1,119 @@
+Created At: 2026-09-20T16:08:23+05:30
+Completed At: 2026-09-20T16:08:23+05:30
+File Path: `file:///c:/hipk/app/Signin.tsx`
+Total Lines: 477
+Total Bytes: 18763
+Showing lines 340 to 450
+The following code has been modified to include a line number before every line, in the format: <line_number>: <original_line>. Please note that any changes targeting the original code should remove the line number, colon, and leading space.
+340:                         <Ionicons name="checkmark-circle" size={20} color={COLORS.success} />
+341:                       </TouchableOpacity>
+342:                     )}
+343:                   </View>
+344:                 </View>
+345:               )}
+346:             </View>
+347: 
+348:             <Text style={[G.modalTitle, dynamic.cardTitle, G.centerText] as any}>Sign In</Text>
+349: 
+350:             {/* MOBILE INPUT */}
+351:             <View style={G.mb12 as any}>
+352:               <Text style={[G.label, dynamic.inputLabel] as any}>Mobile Number</Text>
+353:               <View style={[G.inputWrapperAuth, dynamic.inputWrapper] as any}>
+354:                 <Ionicons
+355:                   name="call-outline"
+356:                   size={20}
+357:                   color={isDark ? COLORS.textMuted : COLORS.secondary}
+358:                 />
+359:                 <TextInput
+360:                   style={[G.flex1, G.ml12, G.fs16, { color: dynamic.textInput.color }] as any}
+361:                   placeholder="Mobile Number"
+362:                   placeholderTextColor={dynamic.placeholder}
+363:                   keyboardType="phone-pad"
+364:                   value={mobile}
+365:                   onChangeText={(val) => {
+366:                     setMobile(val);
+367:                     checkRegistration(val);
+368:                   }}
+369:                   maxLength={10}
+370:                 />
+371:               </View>
+372:               {isGuest && (
+373:                 <Text
+374:                   style={{
+375:                     fontSize: 11,
+376:                     color: COLORS.accent,
+377:                     fontWeight: '800',
+378:                     marginTop: 4,
+379:                     marginLeft: 4,
+380:                   }}
+381:                 >
+382:                   ✨ GUEST USER DETECTED
+383:                 </Text>
+384:               )}
+385:             </View>
+386: 
+387:             {/* PASSWORD / REFERENCE MOBILE — only after full 10-digit mobile entered */}
+388:             {mobile.replace(/\D/g, '').slice(-10).length === 10 && (
+389:               <View style={G.mb12 as any}>
+390:                 <View
+391:                   style={{
+392:                     flexDirection: 'row',
+393:                     justifyContent: 'space-between',
+394:                     alignItems: 'center',
+395:                     marginBottom: 4,
+396:                   }}
+397:                 >
+398:                   <Text style={[G.label, dynamic.inputLabel, { marginBottom: 0 }] as any}>
+399:                     {isGuest ? 'Reference Mobile' : 'Password'}
+400:                   </Text>
+401:                   {isGuest !== null && (
+402:                     <TouchableOpacity
+403:                       onPress={() => setIsGuest(!isGuest)}
+404:                       hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+405:                     >
+406:                       <Text style={{ fontSize: 11, color: COLORS.primary, fontWeight: '700' }}>
+407:                         {isGuest ? 'Enter Password instead' : 'Use Reference Mobile'}
+408:                       </Text>
+409:                     </TouchableOpacity>
+410:                   )}
+411:                 </View>
+412:                 <View style={[G.inputWrapperAuth, dynamic.inputWrapper] as any}>
+413:                   <Ionicons
+414:                     name={isGuest ? 'people-outline' : 'lock-closed-outline'}
+415:                     size={20}
+416:                     color={isDark ? COLORS.textMuted : COLORS.secondary}
+417:                   />
+418:                   <TextInput
+419:                     style={[G.flex1, G.ml12, G.fs16, { color: dynamic.textInput.color }] as any}
+420:                     placeholder={isGuest ? 'Enter Supervisor Mobile' : 'Password'}
+421:                     placeholderTextColor={dynamic.placeholder}
+422:                     secureTextEntry={!isGuest}
+423:                     keyboardType={isGuest ? 'number-pad' : 'default'}
+424:                     value={password}
+425:                     onChangeText={setPassword}
+426:                     autoCapitalize="none"
+427:                   />
+428:                 </View>
+429:               </View>
+430:             )}
+431: 
+432:             <TouchableOpacity
+433:               style={G.primaryButton as any}
+434:               onPress={handleLogin}
+435:               disabled={loading}
+436:             >
+437:               {loading ? (
+438:                 <ActivityIndicator color="#fff" />
+439:               ) : (
+440:                 <Text style={G.primaryButtonText as any}>Sign In</Text>
+441:               )}
+442:             </TouchableOpacity>
+443: 
+444:             <View style={G.iconRow as any}>
+445:               <TouchableOpacity
+446:                 style={G.actionBtn as any}
+447:                 onPress={() => router.push('/resetPassword')}
+448:               >
+449:                 <View style={[G.iconCircleAuth, dynamic.iconCircle] as any}>
+450:                   <Ionicons name="key-outline" size={20} color={COLORS.accent} />
+The above content does NOT show the entire file contents. If you need to view any lines of the file which were not shown to complete your task, call this tool again to view those lines.

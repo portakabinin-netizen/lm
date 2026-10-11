@@ -1,0 +1,714 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hiresh iSearch | Server Administration</title>
+  <link rel="icon" type="image/png" href="data:image/png;base64,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">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0F172A;
+      --surface: #1E293B;
+      --surface-border: #334155;
+      --ink: #F8FAFC;
+      --muted: #94A3B8;
+      --brand: #2563EB;
+      --brand-hover: #1D4ED8;
+      --ok: #10B981;
+      --warn: #F59E0B;
+      --bad: #EF4444;
+      --console-bg: #020617;
+      --console-bar: #0F172A;
+      --console-text: #E2E8F0;
+      --console-dim: #64748B;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; width: 100%; }
+    body {
+      font-family: 'Sora', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      display: flex;
+      flex-direction: column;
+      overflow-x: hidden;
+    }
+
+    /* --- LOGIN GATE MODAL --- */
+    #authOverlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.95);
+      backdrop-filter: blur(8px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 9999;
+      padding: 20px;
+    }
+    .auth-card {
+      background: var(--surface);
+      border: 1px solid var(--surface-border);
+      border-radius: 20px;
+      padding: 36px 32px;
+      width: 100%;
+      max-width: 440px;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.6);
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+      animation: modalFadeIn 0.3s ease;
+    }
+    @keyframes modalFadeIn {
+      from { opacity: 0; transform: scale(0.95) translateY(10px); }
+      to { opacity: 1; transform: scale(1) translateY(0); }
+    }
+    .auth-header {
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+    }
+    .auth-icon {
+      width: 64px;
+      height: 64px;
+      background: rgba(37, 99, 235, 0.15);
+      border: 1px solid rgba(37, 99, 235, 0.3);
+      border-radius: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 30px;
+    }
+    .auth-title {
+      font-size: 1.5rem;
+      font-weight: 700;
+      color: #fff;
+    }
+    .auth-sub {
+      font-size: 0.875rem;
+      color: var(--muted);
+      line-height: 1.4;
+    }
+    .auth-form {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      text-align: left;
+    }
+    .form-group label {
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .form-group input {
+      background: #0F172A;
+      border: 1px solid var(--surface-border);
+      border-radius: 10px;
+      padding: 12px 14px;
+      color: #fff;
+      font-size: 0.95rem;
+      font-family: inherit;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .form-group input:focus {
+      border-color: var(--brand);
+    }
+    .auth-btn {
+      background: var(--brand);
+      color: #fff;
+      border: none;
+      border-radius: 10px;
+      padding: 14px;
+      font-size: 0.95rem;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: background 0.2s, transform 0.1s;
+      margin-top: 4px;
+    }
+    .auth-btn:hover { background: var(--brand-hover); }
+    .auth-btn:active { transform: scale(0.98); }
+    .auth-error {
+      background: rgba(239, 68, 68, 0.15);
+      border: 1px solid rgba(239, 68, 68, 0.4);
+      color: #FCA5A5;
+      font-size: 0.85rem;
+      padding: 10px 14px;
+      border-radius: 8px;
+      display: none;
+      line-height: 1.4;
+    }
+
+    /* --- DASHBOARD WRAPPER --- */
+    #dashboardApp {
+      display: none;
+      flex: 1;
+      flex-direction: column;
+      gap: 16px;
+      padding: 16px;
+      height: 100vh;
+    }
+
+    /* Row 1: Brand Bar */
+    .brand-bar {
+      background: linear-gradient(135deg, #1E293B 0%, #0F172A 100%);
+      border: 1px solid var(--surface-border);
+      color: #fff;
+      border-radius: 14px;
+      padding: 16px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    .brand-left {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    .brand-logo {
+      width: 48px;
+      height: 48px;
+      background: #fff;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 24px;
+      font-weight: 800;
+      color: #0F172A;
+    }
+    .brand-name {
+      font-size: 1.4rem;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+      line-height: 1.2;
+    }
+    .brand-tag {
+      font-size: 0.75rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .brand-right {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .admin-pill {
+      background: rgba(37, 99, 235, 0.18);
+      border: 1px solid rgba(37, 99, 235, 0.4);
+      color: #93C5FD;
+      font-size: 0.8rem;
+      font-weight: 600;
+      padding: 6px 12px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .logout-btn {
+      background: rgba(239, 68, 68, 0.15);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+      color: #F87171;
+      padding: 6px 12px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .logout-btn:hover {
+      background: rgba(239, 68, 68, 0.3);
+    }
+
+    /* Row 2: Status Cards */
+    .status-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 14px;
+    }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--surface-border);
+      border-radius: 14px;
+      padding: 16px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .card-label {
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+    }
+    .card-value {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 1.15rem;
+      font-weight: 700;
+      color: #fff;
+    }
+    .card-sub {
+      font-size: 0.75rem;
+      color: var(--muted);
+      font-family: 'IBM Plex Mono', monospace;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.8rem;
+      font-weight: 700;
+      padding: 4px 10px;
+      border-radius: 999px;
+      text-transform: uppercase;
+    }
+    .badge-ok { background: rgba(16, 185, 129, 0.15); color: #34D399; border: 1px solid rgba(16, 185, 129, 0.4); }
+    .badge-warn { background: rgba(245, 158, 11, 0.15); color: #FBBF24; border: 1px solid rgba(245, 158, 11, 0.4); }
+    .badge-bad { background: rgba(239, 68, 68, 0.15); color: #F87171; border: 1px solid rgba(239, 68, 68, 0.4); }
+
+    .pulse {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: currentColor;
+      box-shadow: 0 0 8px currentColor;
+    }
+
+    /* Row 3: Live Console Stream */
+    .console-wrapper {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      background: var(--console-bg);
+      border: 1px solid var(--surface-border);
+      border-radius: 14px;
+      overflow: hidden;
+      min-height: 340px;
+    }
+    .console-bar {
+      background: var(--console-bar);
+      border-bottom: 1px solid var(--surface-border);
+      padding: 10px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .console-title {
+      font-size: 0.85rem;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--console-text);
+    }
+    .console-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .btn {
+      background: var(--surface);
+      border: 1px solid var(--surface-border);
+      color: var(--console-text);
+      padding: 6px 12px;
+      font-size: 0.75rem;
+      font-family: inherit;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .btn:hover { background: #334155; }
+    .btn[aria-pressed="true"] {
+      background: var(--brand);
+      color: #fff;
+      border-color: var(--brand);
+    }
+
+    .stream {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px 16px;
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.8rem;
+      line-height: 1.6;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .log-row {
+      display: flex;
+      gap: 12px;
+      word-break: break-all;
+    }
+    .log-row.err { color: #FCA5A5; }
+    .log-row.err .log-tag { background: #DC2626; color: #fff; }
+    .log-row.info { color: var(--console-text); }
+    .log-time { color: var(--console-dim); flex: none; }
+    .log-tag {
+      flex: none;
+      padding: 0 6px;
+      border-radius: 4px;
+      font-size: 0.7rem;
+      font-weight: 600;
+      background: #1E293B;
+      color: #94A3B8;
+    }
+    .log-msg { flex: 1; white-space: pre-wrap; }
+
+    .only-errors .log-row.info { display: none; }
+  </style>
+</head>
+<body>
+
+  <!-- 🔒 SECURE LOGIN OVERLAY (CorpAdmin only) -->
+  <div id="authOverlay">
+    <div class="auth-card">
+      <div class="auth-header">
+        <div class="auth-icon">🛡️</div>
+        <h2 class="auth-title">Hiresh iSearch</h2>
+        <p class="auth-sub">Server Admin Console<br><span style="color:#60A5FA;">CorpAdmin Authentication Required</span></p>
+      </div>
+
+      <div id="authError" class="auth-error"></div>
+
+      <form id="authForm" class="auth-form" onsubmit="handleLogin(event)">
+        <div class="form-group">
+          <label for="mobileInput">Registered Mobile / User</label>
+          <input type="text" id="mobileInput" placeholder="Enter 10-digit mobile" required autofocus autocomplete="username">
+        </div>
+        <div class="form-group">
+          <label for="passInput">Admin Password</label>
+          <input type="password" id="passInput" placeholder="Enter your password" required autocomplete="current-password">
+        </div>
+        <button type="submit" id="loginBtn" class="auth-btn">
+          <span>Authorize Access</span>
+          <span>→</span>
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- 📊 SERVER MONITORING APPLICATION -->
+  <div id="dashboardApp">
+    
+    <!-- Row 1: Brand & User Header -->
+    <header class="brand-bar">
+      <div class="brand-left">
+        <div class="brand-logo">H</div>
+        <div>
+          <h1 class="brand-name">Hiresh iSearch</h1>
+          <p class="brand-tag">Dedicated Telemetry & Server Console</p>
+        </div>
+      </div>
+      <div class="brand-right">
+        <div class="admin-pill">
+          <span>👤</span>
+          <span id="userNameBadge">CorpAdmin</span>
+        </div>
+        <button class="logout-btn" onclick="handleLogout()">Logout</button>
+      </div>
+    </header>
+
+    <!-- Row 2: Status & Metric Cards -->
+    <section class="status-row">
+      <!-- Server Status -->
+      <div class="card">
+        <span class="card-label">Server Engine</span>
+        <div class="card-value">
+          <span class="badge badge-ok"><span class="pulse"></span> LIVE</span>
+          <span>Port 5001</span>
+        </div>
+        <span class="card-sub" id="uptimeText">Initializing...</span>
+      </div>
+
+      <!-- Database Status -->
+      <div class="card">
+        <span class="card-label">Primary Database</span>
+        <div class="card-value">
+          <span id="dbBadge" class="badge badge-warn"><span class="pulse"></span> Connecting</span>
+        </div>
+        <span class="card-sub">MongoDB Atlas Cluster</span>
+      </div>
+
+      <!-- Active Corporate Badge -->
+      <div class="card">
+        <span class="card-label">Active Corporate Database</span>
+        <div class="card-value">
+          <span id="corpBadge" style="font-size:0.95rem; font-weight:600; color:#93C5FD;">Connecting...</span>
+        </div>
+        <span class="card-sub" id="corpDbSub">Multi-Tenant Routing</span>
+      </div>
+
+      <!-- Live Sockets -->
+      <div class="card">
+        <span class="card-label">Connected Clients</span>
+        <div class="card-value">
+          <span id="socketCount" style="font-size: 1.5rem; color:#60A5FA;">0</span>
+          <span style="font-size:0.85rem; color:var(--muted); font-weight:normal;">Active Sockets</span>
+        </div>
+        <span class="card-sub">Real-Time Mobile & Web Telemetry</span>
+      </div>
+    </section>
+
+    <!-- Row 3: Live System Console -->
+    <section class="console-wrapper" id="consoleContainer">
+      <div class="console-bar">
+        <div class="console-title">
+          <span>⚡ Live Server Log Stream</span>
+        </div>
+        <div class="console-actions">
+          <button id="filterErrorsBtn" class="btn" aria-pressed="false">Errors Only</button>
+          <button id="autoScrollBtn" class="btn" aria-pressed="true">Auto Scroll</button>
+          <button id="clearBtn" class="btn">Clear</button>
+        </div>
+      </div>
+      <div id="logStream" class="stream"></div>
+    </section>
+
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    var tokenKey = 'hibiz_corpadmin_token';
+    var userKey = 'hibiz_corpadmin_user';
+    var socket = null;
+    var autoScroll = true;
+
+    var authOverlay = document.getElementById('authOverlay');
+    var authError = document.getElementById('authError');
+    var dashboardApp = document.getElementById('dashboardApp');
+    var loginBtn = document.getElementById('loginBtn');
+    var userNameBadge = document.getElementById('userNameBadge');
+
+    var uptimeText = document.getElementById('uptimeText');
+    var dbBadge = document.getElementById('dbBadge');
+    var corpBadge = document.getElementById('corpBadge');
+    var corpDbSub = document.getElementById('corpDbSub');
+    var socketCount = document.getElementById('socketCount');
+    var logStream = document.getElementById('logStream');
+    var consoleContainer = document.getElementById('consoleContainer');
+
+    var filterErrorsBtn = document.getElementById('filterErrorsBtn');
+    var autoScrollBtn = document.getElementById('autoScrollBtn');
+    var clearBtn = document.getElementById('clearBtn');
+
+    // On Load: Verify existing token or show login
+    window.addEventListener('DOMContentLoaded', function () {
+      var savedToken = localStorage.getItem(tokenKey);
+      if (savedToken) {
+        verifyToken(savedToken);
+      } else {
+        showLogin();
+      }
+    });
+
+    function showLogin() {
+      authOverlay.style.display = 'flex';
+      dashboardApp.style.display = 'none';
+      if (socket) {
+        socket.disconnect();
+        socket = null;
+      }
+    }
+
+    function showDashboard(user) {
+      authOverlay.style.display = 'none';
+      dashboardApp.style.display = 'flex';
+      if (user && user.name) {
+        userNameBadge.textContent = user.name + ' [CorpAdmin]';
+      }
+      initSocket();
+    }
+
+    async function verifyToken(token) {
+      try {
+        var res = await fetch('/api/auth/server-admin/verify', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + token
+          },
+          body: JSON.stringify({ token: token })
+        });
+        var data = await res.json();
+        if (data.success && data.user) {
+          showDashboard(data.user);
+        } else {
+          localStorage.removeItem(tokenKey);
+          localStorage.removeItem(userKey);
+          showLogin();
+        }
+      } catch (e) {
+        showLogin();
+      }
+    }
+
+    async function handleLogin(e) {
+      e.preventDefault();
+      var mobile = document.getElementById('mobileInput').value.trim();
+      var password = document.getElementById('passInput').value;
+      if (!mobile || !password) return;
+
+      authError.style.display = 'none';
+      loginBtn.disabled = true;
+      loginBtn.innerHTML = '<span>Verifying CorpAdmin...</span>';
+
+      try {
+        var res = await fetch('/api/auth/server-admin/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mobile: mobile, password: password })
+        });
+        var data = await res.json();
+        if (data.success && data.token) {
+          localStorage.setItem(tokenKey, data.token);
+          localStorage.setItem(userKey, JSON.stringify(data.user));
+          showDashboard(data.user);
+        } else {
+          authError.textContent = data.message || 'Authentication failed. CorpAdmin credentials required.';
+          authError.style.display = 'block';
+        }
+      } catch (err) {
+        authError.textContent = 'Network or server error occurred. Please try again.';
+        authError.style.display = 'block';
+      } finally {
+        loginBtn.disabled = false;
+        loginBtn.innerHTML = '<span>Authorize Access</span><span>→</span>';
+      }
+    }
+
+    function handleLogout() {
+      localStorage.removeItem(tokenKey);
+      localStorage.removeItem(userKey);
+      showLogin();
+    }
+
+    function initSocket() {
+      var token = localStorage.getItem(tokenKey);
+      if (socket) socket.disconnect();
+
+      socket = io({
+        query: {
+          client: 'dashboard',
+          token: token
+        },
+        auth: { token: token },
+        reconnectionAttempts: 30,
+        reconnectionDelay: 1000
+      });
+
+      socket.on('auth-required', function () {
+        handleLogout();
+      });
+
+      socket.on('init-data', function (data) {
+        if (data.startTime) uptimeText.textContent = 'Started: ' + data.startTime;
+        if (data.dbStatus) updateDbBadge(data.dbStatus);
+        if (data.activeCorporate) updateCorporateBadge(data.activeCorporate);
+        if (typeof data.liveSockets === 'number') socketCount.textContent = data.liveSockets;
+        if (Array.isArray(data.logs)) {
+          logStream.innerHTML = '';
+          data.logs.forEach(addLog);
+        }
+      });
+
+      socket.on('status-sync', function (data) {
+        if (data.dbStatus) updateDbBadge(data.dbStatus);
+        if (data.corporate) updateCorporateBadge(data.corporate);
+      });
+
+      socket.on('corporate-update', function (corp) {
+        updateCorporateBadge(corp);
+      });
+
+      socket.on('metrics-update', function (data) {
+        if (typeof data.liveSockets === 'number') socketCount.textContent = data.liveSockets;
+      });
+
+      socket.on('console-log', addLog);
+    }
+
+    function updateDbBadge(status) {
+      dbBadge.textContent = status;
+      dbBadge.className = 'badge ' + (status === 'Connected' ? 'badge-ok' : (status === 'Connecting' ? 'badge-warn' : 'badge-bad'));
+    }
+
+    function updateCorporateBadge(corp) {
+      if (corp && corp.name) {
+        var label = corp.name;
+        if (corp.pan) label += ' (' + corp.pan + ')';
+        corpBadge.textContent = label;
+        corpDbSub.textContent = corp.dbName ? 'DB: ' + corp.dbName : 'Multi-Tenant Routing';
+      } else {
+        corpBadge.textContent = 'Global / Standby';
+        corpDbSub.textContent = 'Multi-Tenant Routing';
+      }
+    }
+
+    function addLog(entry) {
+      var row = document.createElement('div');
+      var isErr = entry.type === 'ERROR' || (entry.message && entry.message.includes('[Error]'));
+      row.className = 'log-row ' + (isErr ? 'err' : 'info');
+
+      var time = document.createElement('span');
+      time.className = 'log-time';
+      time.textContent = entry.time || '';
+
+      var tag = document.createElement('span');
+      tag.className = 'log-tag';
+      tag.textContent = entry.type || 'LOG';
+
+      var msg = document.createElement('span');
+      msg.className = 'log-msg';
+      msg.textContent = entry.message || '';
+
+      row.appendChild(time);
+      row.appendChild(tag);
+      row.appendChild(msg);
+
+      logStream.appendChild(row);
+      if (autoScroll) logStream.scrollTop = logStream.scrollHeight;
+    }
+
+    filterErrorsBtn.addEventListener('click', function () {
+      var on = filterErrorsBtn.getAttribute('aria-pressed') !== 'true';
+      filterErrorsBtn.setAttribute('aria-pressed', on);
+      consoleContainer.classList.toggle('only-errors', on);
+    });
+
+    autoScrollBtn.addEventListener('click', function () {
+      autoScroll = !autoScroll;
+      autoScrollBtn.setAttribute('aria-pressed', autoScroll);
+      if (autoScroll) logStream.scrollTop = logStream.scrollHeight;
+    });
+
+    clearBtn.addEventListener('click', function () {
+      logStream.innerHTML = '';
+    });
+  </script>
+</body>
+</html>

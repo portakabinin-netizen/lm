@@ -38,10 +38,11 @@ export const AttendanceDayModal: React.FC<AttendanceDayModalProps> = ({
   };
 
   const resolveShiftLabel = (r: AttendanceLog): string => {
-    if (r.shiftPeriod) {
-      return r.shiftPeriod === 'Night12' ? 'Night' : r.shiftPeriod;
+    const raw = r as any;
+    if (raw.shiftPeriod) {
+      return raw.shiftPeriod === 'Night12' ? 'Night' : raw.shiftPeriod;
     }
-    const code = r.shiftCode || (r as any).shift_code;
+    const code = raw.shiftCode || raw.shift_code;
     switch (code) {
       case 'M': return 'Morning';
       case 'A': return 'Afternoon';
@@ -78,8 +79,9 @@ export const AttendanceDayModal: React.FC<AttendanceDayModalProps> = ({
               </View>
             ) : (
               records.map((record, index) => {
-                const isOnDuty = record.status !== 'Absent' && record.status !== 'Leave' && !record.dutyEnd;
-                const isAbsent = record.status === 'Absent' || record.status === 'Leave';
+                const recAny = record as any;
+                const isOnDuty = recAny.status !== 'Absent' && recAny.status !== 'Leave' && !record.dutyEnd;
+                const isAbsent = recAny.status === 'Absent' || recAny.status === 'Leave';
                 
                 let trackBg = isOnDuty ? '#dcfce7' : '#f8fafc';
                 let trackBorder = isOnDuty ? '#16a34a' : '#e2e8f0';
