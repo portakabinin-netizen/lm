@@ -5,38 +5,12 @@ const fs = require("fs");
 const router = express.Router();
 const externalService = require("../utils/externalService");
 
-const os = require("os");
-
-// Simple local storage with serverless compatibility
-const isServerless = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.NETLIFY);
-
-const getUploadDir = () => {
-    const dir = isServerless 
-        ? path.join(os.tmpdir(), "uploads")
-        : path.join(__dirname, "..", "uploads");
-    try {
-        if (!fs.existsSync(dir)) {
-            fs.mkdirSync(dir, { recursive: true });
-        }
-        return dir;
-    } catch (err) {
-        // Fallback to /tmp if primary directory is not writable
-        const fallback = path.join(os.tmpdir(), "uploads");
-        if (!fs.existsSync(fallback)) {
-            fs.mkdirSync(fallback, { recursive: true });
-        }
-        return fallback;
-    }
-};
+// Simple local storage
+const UPLOAD_DIR = path.join(__dirname, "..", "uploads");
+if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR);
 
 const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        try {
-            cb(null, getUploadDir());
-        } catch (err) {
-            cb(err);
-        }
-    },
+    destination: (req, file, cb) => cb(null, UPLOAD_DIR),
     filename: (req, file, cb) => {
         cb(null, `${Date.now()}-${file.originalname}`);
     },

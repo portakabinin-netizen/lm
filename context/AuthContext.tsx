@@ -5,7 +5,10 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 
 export const httpClient = appService.httpClient;
 import { jwtDecode } from "jwt-decode";
-import { Alert } from "react-native";
+import { Alert, DeviceEventEmitter } from "react-native";
+import { switchTenantRoom } from "@/hooks/Socket";
+import { tenantStore } from "@/UtilServices/TenantStore";
+import { LocationCacheService } from "@/services/LocationCacheService";
 import React, {
   createContext,
   useCallback,
@@ -52,7 +55,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const logout = useCallback(async (showToast = true) => {
     try {
-      await AsyncStorage.removeItem("userSession");
+      tenantStore.clear();
+      await LocationCacheService.clearCache().catch(() => {});
+      await AsyncStorage.multiRemove([
+        "userSession",
+        "cached_workers",
+        "cached_clients",
+        "selected_site",
+        "registered_sites",
+        "gps_cache_profile",
+        "gps_cache_leads",
+      ]).catch(() => {});
+      userRef.current = null;
       setUser(null);
       if (showToast)  appService.showToast("Session Expired", "Info");
     } catch (err) {
@@ -88,11 +102,55 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const switchCorporate = useCallback(async (corporateId: string) => {
     try {
       setLoading(true);
+      const previousDbName = userRef.current?.dbName;
       const res = await appService.switchCorporate(corporateId);
       if (res.data?.success) {
         const { token, userSession } = res.data;
-        const updatedUser = { ...userSession, token };
+        const cleanToken = token.replace(/['"]+/g, "").trim();
+        const updatedUser = { ...userSession, token: cleanToken };
+
+        // 1. Immediately update userRef so in-flight interceptor requests use new tenant
+        userRef.current = updatedUser;
+
+        // 2. Set default Authorization header on httpClient
+        appService.httpClient.defaults.headers.common['Authorization'] = `Bearer ${cleanToken}`;
+        if (updatedUser.dbName) {
+          appService.httpClient.defaults.headers.common['x-tenant-id'] = updatedUser.dbName;
+        }
+
+        // 3. Clear transient and global caches that belong to the previous corporate
+        await LocationCacheService.clearCache().catch(() => {});
+        await AsyncStorage.multiRemove([
+          'cached_workers',
+          'cached_clients',
+          'selected_site',
+          'registered_sites',
+          'gps_cache_profile',
+          'gps_cache_leads',
+        ]).catch(() => {});
+
+        // 4. Reset in-memory TenantStore for new corporate
+        if (updatedUser.dbName) {
+          tenantStore.switchTenant(updatedUser.dbName).catch(() => {});
+        }
+
+        // 5. Switch socket rooms (leave old room, join new room)
+        switchTenantRoom(previousDbName, updatedUser.dbName, {
+          corporateName: updatedUser.corporateName,
+          corporatePAN: updatedUser.corporatePAN,
+        });
+
+        // 6. Persist new user session
         await AsyncStorage.setItem("userSession", JSON.stringify(updatedUser));
+
+        // 7. Emit global CORPORATE_SWITCHED event for all components/services
+        DeviceEventEmitter.emit('CORPORATE_SWITCHED', {
+          previousDbName,
+          newDbName: updatedUser.dbName,
+          user: updatedUser,
+        });
+
+        // 8. Update React state
         setUser(updatedUser);
         appService.showToast(`Switched to ${userSession.corporateName}`, "Success");
       }
@@ -108,6 +166,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       setLoading(true);
       userData.token = userData.token.replace(/['"]+/g, "").trim();
+      userRef.current = userData;
+      appService.httpClient.defaults.headers.common['Authorization'] = `Bearer ${userData.token}`;
+      if (userData.dbName) {
+        appService.httpClient.defaults.headers.common['x-tenant-id'] = userData.dbName;
+        tenantStore.switchTenant(userData.dbName).catch(() => {});
+        switchTenantRoom(undefined, userData.dbName, {
+          corporateName: userData.corporateName,
+          corporatePAN: userData.corporatePAN,
+        });
+      }
       await AsyncStorage.setItem("userSession", JSON.stringify(userData));
       setUser(userData);
     } finally {

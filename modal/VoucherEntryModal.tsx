@@ -3,12 +3,13 @@ import { FIXED_LEDGERS, useVouchers } from '@/hooks/useVouchers';
 import { COLORS, styles } from '@/styles/stylesIndex';
 import { printAccountingVoucher } from '@/UtilServices/printVoucherHelper';
 import { Ionicons } from '@expo/vector-icons';
-import React, { useMemo, useState, useCallback, useEffect } from 'react';
+import React, { useMemo, useState, useCallback, useEffect, useRef } from 'react';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import {
   ActivityIndicator,
   Alert,
   FlatList,
+  Keyboard,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -31,7 +32,7 @@ interface AccountItemProps {
 }
 
 const AccountItem = React.memo(({ item, onSelect }: AccountItemProps) => {
-  const isStaff = item.type === 'Staff';
+  const isStaff = item.type === 'Staff' || !!item.isRul;
   return (
     <TouchableOpacity
       onPress={() => onSelect(item)}
@@ -181,6 +182,7 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
 
   const handleCorpSwitch = async (targetDbName: string) => {
     setCorpSelectorVisible(false);
+    if (targetDbName === (dbName || user?.dbName)) return;
     await switchCorporate(targetDbName);
   };
 
@@ -191,6 +193,8 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
     setMode(propMode);
   }, [propMode]);
 
+  const activeTenantDb = dbName || user?.dbName;
+
   const {
     voucher,
     updateEntry,
@@ -200,43 +204,90 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
     resetVoucher,
     saveVoucher,
     saveLoading,
-  } = useVouchers(token, dbName);
+  } = useVouchers(token, activeTenantDb);
 
-  const { leads, staff, leadsLoading, staffLoading, fetchLeadsForPicker } = usePayments(token, dbName);
+  const { leads, staff, leadsLoading, staffLoading, fetchLeadsForPicker, fetchStaffPicker } = usePayments(token, activeTenantDb);
   const [pettyCashBooks, setPettyCashBooks] = useState<any[]>([]);
   const [allWorkers, setAllWorkers] = useState<any[]>([]);
+  const [registeredUsers, setRegisteredUsers] = useState<any[]>([]);
   const [accountingMaster, setAccountingMaster] = useState<{ groups: any[], ledgers: any[] } | null>(null);
   const [sundryDebtorLedgers, setSundryDebtorLedgers] = useState<any[]>([]);
+  const [sundryCreditorLedgers, setSundryCreditorLedgers] = useState<any[]>([]);
   const [ledgersLoading, setLedgersLoading] = useState(false);
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
+
+  useEffect(() => {
+    const showSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
+      () => setKeyboardVisible(true)
+    );
+    const hideSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
+      () => setKeyboardVisible(false)
+    );
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
+
+  // Clear stale corporate data when corporate is switched inside the modal
+  useEffect(() => {
+    setPettyCashBooks([]);
+    setAllWorkers([]);
+    setRegisteredUsers([]);
+    setAccountingMaster(null);
+    setSundryDebtorLedgers([]);
+    setSundryCreditorLedgers([]);
+  }, [activeTenantDb]);
 
   const fetchAccountingMaster = useCallback(async () => {
     setLedgersLoading(true);
     try {
-      const res = await appService.httpClient.get('finance/master');
+      const res = await appService.httpClient.get('finance/master', {
+        headers: activeTenantDb ? { 'x-tenant-id': activeTenantDb } : undefined,
+      });
       if (res.data?.success) {
         const groups: any[] = res.data.data.groups || [];
         const ledgers: any[] = res.data.data.ledgers || [];
         setAccountingMaster(res.data.data);
 
-        const debtorGroup = groups.find(
-          (g: any) => g.groupName?.toLowerCase().includes('sundry debtor')
+        // Extract Sundry Debtors
+        const debtorGroups = groups.filter(
+          (g: any) => (g.groupName || '').toLowerCase().includes('debtor')
         );
-        const debtorLedgers = debtorGroup
-          ? ledgers.filter(
-              (l: any) => String(l.ledgerGroupId) === String(debtorGroup._id)
-            )
-          : [];
-        const filtered = debtorLedgers.filter(
+        const debtorGroupIds = debtorGroups.map((g: any) => String(g._id));
+        const debtorLedgers = ledgers.filter(
+          (l: any) =>
+            debtorGroupIds.includes(String(l.ledgerGroupId)) ||
+            (l.groupName || '').toLowerCase().includes('debtor') ||
+            l.refType === 'Lead' ||
+            l.refType === 'Client'
+        );
+        const filteredDebtors = debtorLedgers.filter(
           (l: any) => l.ledgerName !== 'Default Client'
         );
-        setSundryDebtorLedgers(filtered);
+        setSundryDebtorLedgers(filteredDebtors);
+
+        // Extract Sundry Creditors
+        const creditorGroups = groups.filter(
+          (g: any) => (g.groupName || '').toLowerCase().includes('creditor')
+        );
+        const creditorGroupIds = creditorGroups.map((g: any) => String(g._id));
+        const creditorLedgers = ledgers.filter(
+          (l: any) =>
+            creditorGroupIds.includes(String(l.ledgerGroupId)) ||
+            (l.groupName || '').toLowerCase().includes('creditor') ||
+            l.refType === 'Vendor'
+        );
+        setSundryCreditorLedgers(creditorLedgers);
       }
     } catch (e) {
       console.log('Failed to load Accounting Master:', e);
     } finally {
       setLedgersLoading(false);
     }
-  }, []);
+  }, [activeTenantDb]);
 
   const bankAndCashLedgers = useMemo(() => {
     if (!accountingMaster) return [];
@@ -246,11 +297,24 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
     const allowedGroupIds = groups
       .filter((g: any) => {
         const name = (g.groupName || '').toLowerCase();
-        return name.includes('bank') || name.includes('cash-in-hand') || name.includes('cash in hand');
+        return (
+          name.includes('bank') ||
+          name.includes('cash-in-hand') ||
+          name.includes('cash in hand') ||
+          name.includes('petty cash')
+        );
       })
       .map((g: any) => String(g._id));
 
-    return ledgers.filter((l: any) => allowedGroupIds.includes(String(l.ledgerGroupId)));
+    return ledgers.filter(
+      (l: any) =>
+        allowedGroupIds.includes(String(l.ledgerGroupId)) ||
+        (l.groupName || '').toLowerCase().includes('bank') ||
+        (l.groupName || '').toLowerCase().includes('cash') ||
+        (l.ledgerName || '').toLowerCase().includes('bank') ||
+        (l.ledgerName || '').toLowerCase().includes('cash') ||
+        l.refType === 'Bank'
+    );
   }, [accountingMaster]);
 
   const revenueAndSalesLedgers = useMemo(() => {
@@ -365,7 +429,7 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
       return;
     }
     if (currentMode === 'bill_collection') {
-      resetVoucher('Receipt', 'Received from client', effectiveDate);
+      resetVoucher('Receipt', 'Received bill collection from client', effectiveDate);
       updateEntry('1', { accountId: ownPetty.id, accountName: ownPetty.name, accountType: 'Category', type: 'Dr', isBank: false });
       updateEntry('2', { accountId: '', accountName: '', accountType: 'Lead', type: 'Cr' });
       return;
@@ -377,7 +441,7 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
       return;
     }
     if (currentMode === 'vendor_payment') {
-      resetVoucher('Payment', 'Payment to vendor', effectiveDate);
+      resetVoucher('Payment', 'Payment made to vendor', effectiveDate);
       updateEntry('1', { accountId: '', accountName: '', accountType: 'Category', type: 'Dr' });
       updateEntry('2', { accountId: ownPetty.id, accountName: ownPetty.name, accountType: 'Category', type: 'Cr', isBank: false });
       return;
@@ -401,9 +465,9 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
       return;
     }
     if (currentMode === 'contra') {
-      resetVoucher('Contra', 'Cash transferred between accounts', effectiveDate);
-      updateEntry('1', { accountId: 'main_bank', accountName: 'Main Bank Account', accountType: 'Category', type: 'Dr', isBank: true });
-      updateEntry('2', { accountId: ownPetty.id, accountName: ownPetty.name, accountType: 'Category', type: 'Cr', isBank: false });
+      resetVoucher('Contra', `Cash transferred from ${ownPetty.name}`, effectiveDate);
+      updateEntry('1', { accountId: '', accountName: '', accountType: 'Category', type: 'Dr', isPettyCash: true });
+      updateEntry('2', { accountId: ownPetty.id, accountName: ownPetty.name, accountType: 'Category', type: 'Cr', isBank: false, isPettyCash: true });
       return;
     }
     if (currentMode === 'sales') {
@@ -415,32 +479,61 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
     resetVoucher(initialType || 'Journal', 'Accounting adjustment entry', effectiveDate);
   }, [resetVoucher, initialType, dateText, getOwnPettyCashAccount, updateEntry]);
 
+  const wasVisibleRef = useRef(false);
+
   useEffect(() => {
-    if (visible) {
+    if (visible && !wasVisibleRef.current) {
+      wasVisibleRef.current = true;
       setVoucherNo(Date.now().toString().slice(-4));
-      fetchAccountingMaster();
-      fetchLeadsForPicker();
       const current = propMode || 'payment';
       setMode(current);
       applyModeTemplate(current, dateText);
+    } else if (!visible) {
+      wasVisibleRef.current = false;
+    }
+  }, [visible]);
 
-      appService.httpClient.get('/finance/petty-cash/summary')
+  useEffect(() => {
+    if (visible) {
+      fetchAccountingMaster();
+      fetchLeadsForPicker();
+      fetchStaffPicker();
+
+      appService.httpClient.get('/finance/petty-cash/balances', {
+        headers: activeTenantDb ? { 'x-tenant-id': activeTenantDb } : undefined,
+      })
         .then((res) => {
-          if (res.data?.success && res.data.data?.books) {
+          if (res.data?.success && Array.isArray(res.data.data)) {
+            setPettyCashBooks(res.data.data);
+          } else if (res.data?.data?.books) {
             setPettyCashBooks(res.data.data.books);
           }
         })
         .catch((e) => console.log('Failed to load petty cash balances in VoucherEntryModal:', e));
 
-      appService.httpClient.get('/service/hr/employees', { params: { all: 'true' } })
+      appService.httpClient.get('/service/hr/employees', {
+        params: { all: 'true' },
+        headers: activeTenantDb ? { 'x-tenant-id': activeTenantDb } : undefined,
+      })
         .then((res) => {
           if (res.data?.success) {
             setAllWorkers(res.data.data || []);
           }
         })
         .catch((e) => console.log('Failed to load all employees in VoucherEntryModal:', e));
+
+      appService.httpClient.get('/setting/update/other-user', {
+        params: { corporateId: user?.corporateId, corpAdminId: user?.corpAdminId },
+        headers: activeTenantDb ? { 'x-tenant-id': activeTenantDb } : undefined,
+      })
+        .then((res) => {
+          if (res.data?.data) {
+            setRegisteredUsers(Array.isArray(res.data.data) ? res.data.data : []);
+          }
+        })
+        .catch((e) => console.log('Failed to load registered users in VoucherEntryModal:', e));
     }
-  }, [visible, fetchAccountingMaster, fetchLeadsForPicker]);
+  }, [visible, activeTenantDb]);
 
   const [pickerVisible, setPickerVisible] = useState(false);
   const [accountSearchText, setAccountSearchText] = useState('');
@@ -449,15 +542,24 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
   const [activeEntryId, setActiveEntryId] = useState<string | null>(null);
 
   const isAdminOrFinance = useMemo(() => {
-    const role = (user?.userRole || (user as any)?.role || '').toLowerCase();
+    if (!restrictToOwnPettyCash) return true;
+    const role = (
+      user?.userRole ||
+      (user as any)?.role ||
+      (user as any)?.user_role ||
+      (user as any)?.userType ||
+      ''
+    ).toLowerCase().trim();
     return (
       role.includes('admin') ||
       role.includes('finance') ||
       role.includes('super') ||
-      (user?.userRole as any) === 'SuperAdmin' ||
-      user?.userRole === 'CorpAdmin'
+      role === 'supervisor' ||
+      role === 'corpadmin' ||
+      role === 'useradmin' ||
+      role === 'corpadminfull'
     );
-  }, [user]);
+  }, [user, restrictToOwnPettyCash]);
 
   const allAccounts = useMemo(() => {
     const leadAccs = leads.map((l) => ({
@@ -467,13 +569,20 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
       sub: `Lead #${l.lead_no} (${l.status})`,
     }));
 
+    const normalizeName = (str: string) => {
+      return (str || '')
+        .replace(/\s*\((?:salary|employee|staff|worker)\)\s*/gi, '')
+        .toLowerCase()
+        .trim();
+    };
+
     const mergedEmployeesMap = new Map();
     allWorkers.forEach((w: any) => {
       mergedEmployeesMap.set(String(w._id), {
         _id: String(w._id),
         name: w.name,
         role: w.role || 'Worker',
-        photo: w.photo || w.photo_url,
+        photo: w.photo || w.photo_url || w.userProfileImage,
         enrollment_no: w.enrollment_no,
         mobile: w.mobile,
         last_site_name: w.last_site_name,
@@ -510,31 +619,147 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
       };
     });
 
+    const groupMap = new Map((accountingMaster?.groups || []).map((g: any) => [String(g._id), g]));
+
     const dynamicLedgerAccs = (accountingMaster?.ledgers || []).map((l: any) => {
-      const isPetty = l.ledgerName?.toLowerCase().includes('petty cash') || l.groupName?.toLowerCase().includes('petty cash');
-      const isBank = l.ledgerName?.toLowerCase().includes('bank') || l.groupName?.toLowerCase().includes('bank');
+      const parentGroup = groupMap.get(String(l.ledgerGroupId));
+      const effectiveGroupName = l.groupName || parentGroup?.groupName || '';
+      const groupLower = effectiveGroupName.toLowerCase();
+      const nameLower = (l.ledgerName || '').toLowerCase();
+
+      const isBankGroup = groupLower.includes('bank');
+      const isBank =
+        isBankGroup ||
+        nameLower.includes('bank') ||
+        l.refType === 'Bank' ||
+        (l as any).isBank === true;
+
+      const isPetty =
+        groupLower.includes('petty cash') ||
+        groupLower.includes('cash-in-hand') ||
+        groupLower.includes('cash in hand') ||
+        nameLower.includes('petty cash') ||
+        nameLower.includes('cash book') ||
+        nameLower.includes('cash-in-hand');
+
       const bal = l.currentBalance ?? l.openingBalance ?? 0;
+      const isRul = l.refType === 'RUL' || (l.ledgerName && l.ledgerName.toLowerCase().includes('(salary)'));
+
+      let resolvedPhoto: string | undefined;
+      let resolvedRole: string | undefined;
+      let resolvedMobile: string | undefined;
+
+      if (isRul) {
+        const cleanName = normalizeName(l.ledgerName);
+        const targetId = l.refId ? String(l.refId) : '';
+
+        const matchedRegUser = registeredUsers.find((u: any) =>
+          (targetId && (String(u._id) === targetId || String(u.userId) === targetId)) ||
+          normalizeName(u.userDisplayName || u.name) === cleanName
+        );
+
+        const matchedWorker = allWorkers.find((w: any) =>
+          (targetId && (String(w._id) === targetId || String(w.userId) === targetId)) ||
+          normalizeName(w.name) === cleanName
+        );
+
+        const matchedStaff = staff.employees.find((e: any) =>
+          (targetId && (String(e._id) === targetId || String(e.userId) === targetId)) ||
+          normalizeName(e.name) === cleanName
+        );
+
+        const isCurrent = (targetId && (String(user?.userId) === targetId || String(user?._id) === targetId)) ||
+          normalizeName(user?.userDisplayName || user?.name || '') === cleanName;
+
+        const matchedPetty = pettyCashBooks.find((b: any) =>
+          (targetId && String(b.refId) === targetId) ||
+          normalizeName(b.name).includes(cleanName) ||
+          cleanName.includes(normalizeName(b.name))
+        );
+
+        resolvedPhoto =
+          matchedRegUser?.userProfileImage ||
+          matchedRegUser?.photo ||
+          matchedWorker?.photo ||
+          matchedWorker?.photo_url ||
+          matchedWorker?.userProfileImage ||
+          matchedStaff?.photo ||
+          (isCurrent ? (user?.userProfileImage || (user as any)?.photo) : undefined) ||
+          matchedPetty?.userProfileImage ||
+          matchedPetty?.photo;
+
+        resolvedRole =
+          matchedRegUser?.userRole ||
+          matchedWorker?.role ||
+          matchedStaff?.role ||
+          (isCurrent ? user?.userRole : undefined);
+
+        resolvedMobile =
+          matchedRegUser?.userMobile ||
+          matchedWorker?.mobile ||
+          matchedStaff?.mobile ||
+          (isCurrent ? ((user as any)?.userMobile || user?.mobile) : undefined);
+      }
+
       return {
         id: l._id,
         name: l.ledgerName,
         type: 'Category' as const,
-        isRul: l.refType === 'RUL' || (l.ledgerName && l.ledgerName.toLowerCase().includes('(salary)')),
-        sub: l.groupName || 'General Ledger',
+        isRul,
+        sub: isBank
+          ? `Bank Account • ${effectiveGroupName || 'Bank Accounts'}`
+          : resolvedRole
+          ? `Registered User • ${resolvedRole}`
+          : (effectiveGroupName || 'General Ledger'),
         refId: l.refId,
         isPettyCash: isPetty,
         isBank,
         isActive: l.isActive !== false,
         allowCashFlow: l.allowCashFlow !== false,
         balance: bal,
+        photo: resolvedPhoto,
+        mobile: resolvedMobile,
       };
     });
+
+    const hasBankInLedgers = dynamicLedgerAccs.some((a) => a.isBank);
+    const bankFallbacks = !hasBankInLedgers
+      ? FIXED_LEDGERS.filter((f) => f.isBank).map((f) => ({
+          id: f.id,
+          name: f.name,
+          type: 'Category' as const,
+          sub: 'Bank Account',
+          isBank: true,
+          balance: 0,
+        }))
+      : [];
+
+    const existingIds = new Set(dynamicLedgerAccs.map((a: any) => String(a.id)));
+    const existingNames = new Set(dynamicLedgerAccs.map((a: any) => normalizeName(a.name)));
+    const extraPettyAccs = pettyCashBooks
+      .filter((b: any) => !existingIds.has(String(b._id)) && !existingNames.has(normalizeName(b.name)))
+      .map((b: any) => ({
+        id: b._id,
+        name: b.name,
+        type: 'Category' as const,
+        sub: 'Petty Cash Register',
+        refId: b.refId,
+        isPettyCash: true,
+        isBank: false,
+        isActive: b.userActive !== false,
+        allowCashFlow: b.allowCashFlow !== false,
+        balance: b.balance ?? 0,
+        photo: b.photo || b.userProfileImage,
+        mobile: b.mobile,
+      }));
 
     if (dynamicLedgerAccs.length === 0) {
       const staticAccs = FIXED_LEDGERS.map((f) => ({
         id: f.id,
         name: f.name,
         type: 'Category' as const,
-        sub: 'General Ledger',
+        sub: f.isBank ? 'Bank Account' : 'General Ledger',
+        isBank: !!f.isBank,
       }));
       const pettyAccs = pettyCashBooks.map((b) => ({
         id: b._id,
@@ -549,8 +774,8 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
       return [...staticAccs, ...pettyAccs, ...leadAccs, ...employeeAccs];
     }
 
-    return [...dynamicLedgerAccs, ...leadAccs, ...employeeAccs];
-  }, [leads, staff, pettyCashBooks, allWorkers, accountingMaster]);
+    return [...dynamicLedgerAccs, ...extraPettyAccs, ...bankFallbacks, ...leadAccs, ...employeeAccs];
+  }, [leads, staff, pettyCashBooks, allWorkers, registeredUsers, accountingMaster, user]);
 
   const filteredLeads = useMemo(() => {
     const eligible = leads.filter((l) => {
@@ -571,7 +796,7 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
     if (sundryDebtorLedgers.length > 0) {
       return sundryDebtorLedgers.map((l: any) => {
         const bal = l.currentBalance ?? l.openingBalance ?? 0;
-        const balStr = bal > 0 ? ` • Bal: ₹${bal.toLocaleString('en-IN')}` : '';
+        const balStr = bal !== 0 ? ` • Bal: ₹${Math.abs(bal).toLocaleString('en-IN')}` : '';
         const associatedLeadId = l.leadIds?.length
           ? l.leadIds[0]
           : (l.refType === 'Lead' && l.refId ? l.refId : undefined);
@@ -604,20 +829,55 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
     );
   }, [sundryDebtorLedgers, allAccounts, leads]);
 
+  const sundryCreditorAccounts = useMemo(() => {
+    if (sundryCreditorLedgers.length > 0) {
+      return sundryCreditorLedgers.map((l: any) => {
+        const bal = l.currentBalance ?? l.openingBalance ?? 0;
+        const balStr = bal !== 0 ? ` • Bal: ₹${Math.abs(bal).toLocaleString('en-IN')}` : '';
+        return {
+          id: l._id,
+          name: l.ledgerName,
+          type: 'Category' as const,
+          sub: `Sundry Creditor${balStr}`,
+          isLedgerAccount: true,
+          ledgerId: l._id,
+          balance: bal,
+        };
+      });
+    }
+    const fallback = allAccounts.filter((acc: any) => {
+      const subLower = (acc.sub || '').toLowerCase();
+      const nameLower = (acc.name || '').toLowerCase();
+      return (
+        subLower.includes('creditor') ||
+        subLower.includes('vendor') ||
+        subLower.includes('supplier') ||
+        nameLower.includes('creditor') ||
+        nameLower.includes('vendor')
+      );
+    });
+    if (fallback.length > 0) return fallback;
+    return allAccounts.filter((acc: any) => !acc.isBank && !acc.isPettyCash && acc.type !== 'Staff');
+  }, [sundryCreditorLedgers, allAccounts]);
+
   const filteredAccounts = useMemo(() => {
     if (!activeEntryId) return allAccounts;
     const activeEntry = voucher.entries.find((e) => e.id === activeEntryId);
     if (!activeEntry) return allAccounts;
 
     const rowType = activeEntry.type;
+    const ownPetty = getOwnPettyCashAccount();
 
     const isGeneralBankOrCash = (acc: any) => {
+      if (acc.isBank || acc.isPettyCash) return true;
       const groupLower = (acc.sub || '').toLowerCase();
       const nameLower = (acc.name || '').toLowerCase();
       return (
         groupLower.includes('bank') ||
         groupLower.includes('cash-in-hand') ||
         groupLower.includes('cash in hand') ||
+        groupLower.includes('petty cash') ||
+        nameLower.includes('bank') ||
         nameLower.includes('cash book') ||
         nameLower.includes('petty cash') ||
         nameLower.includes('main bank')
@@ -631,24 +891,59 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
        acc.allowCashFlow &&
        acc.refId &&
        (acc.refId === user?.userId || acc.refId === user?._id)) ||
-      acc.id === 'cash_in_hand';
+      acc.id === 'cash_in_hand' ||
+      String(acc.id) === String(ownPetty.id);
 
     const isEmployee = (acc: any) => acc.type === 'Staff';
 
     const getSortedBankCash = () => {
-      const allowedIds = bankAndCashLedgers.map((l: any) => String(l._id));
-      return allAccounts.filter((acc: any) => isActiveUserPettyCash(acc) || (!restrictToOwnPettyCash && (allowedIds.includes(String(acc.id)) || isGeneralBankOrCash(acc))));
+      const allowedIds = new Set(bankAndCashLedgers.map((l: any) => String(l._id)));
+      const pool = allAccounts.filter((acc: any) =>
+        acc.isBank ||
+        acc.isPettyCash ||
+        isActiveUserPettyCash(acc) ||
+        allowedIds.has(String(acc.id)) ||
+        isGeneralBankOrCash(acc)
+      );
+
+      return pool.sort((a: any, b: any) => {
+        if (isActiveUserPettyCash(a) && !isActiveUserPettyCash(b)) return -1;
+        if (!isActiveUserPettyCash(a) && isActiveUserPettyCash(b)) return 1;
+        if (a.isPettyCash && !b.isPettyCash) return -1;
+        if (!a.isPettyCash && b.isPettyCash) return 1;
+        if (a.isBank && !b.isBank) return -1;
+        if (!a.isBank && b.isBank) return 1;
+        return (a.name || '').localeCompare(b.name || '');
+      });
     };
 
+    const getUserPaymentCashSources = () => {
+      if (!restrictToOwnPettyCash || isAdminOrFinance) {
+        return getSortedBankCash();
+      }
+      return allAccounts.filter((acc: any) => isActiveUserPettyCash(acc) || String(acc.id) === String(ownPetty.id));
+    };
+
+    // ── CASH TRANSFER (CONTRA) ────────────────────────────────────────────────
+    // Any user (Admin, Project role, Supervisor, etc.) can transfer cash:
+    // Cash may be paid (Credit own petty cash, Debit recipient petty cash/bank)
+    // or received (Debit own petty cash, Credit sender petty cash/bank).
+    // Both Dr and Cr allow selecting other users' petty cash books, cash books, or bank accounts,
+    // subject to counter validation.
     if (mode === 'contra') {
-      return getSortedBankCash();
+      const allBankCash = getSortedBankCash();
+      const oppositeEntry = voucher.entries.find((e) => e.id !== activeEntry.id);
+      if (oppositeEntry && oppositeEntry.accountId) {
+        return allBankCash.filter((acc: any) => String(acc.id) !== String(oppositeEntry.accountId));
+      }
+      return allBankCash;
     }
 
     if (mode === 'payment') {
       if (rowType === 'Dr') {
         return allAccounts.filter((acc: any) => !isEmployee(acc) && !isGeneralBankOrCash(acc));
       } else {
-        return getSortedBankCash();
+        return getUserPaymentCashSources();
       }
     }
 
@@ -668,6 +963,8 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
       }
     }
 
+    // ── CLIENT RECEIPT (BILL COLLECTION) ──────────────────────────────────────
+    // Dr Own Petty Cash / Bank • Cr Client (Sundry Debtors)
     if (mode === 'bill_collection') {
       if (rowType === 'Dr') {
         return getSortedBankCash();
@@ -676,22 +973,24 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
       }
     }
 
+    // ── VENDOR PAYMENT ────────────────────────────────────────────────────────
+    // Dr Vendor Account (Sundry Creditors) • Cr Bank/Petty Cash
     if (mode === 'vendor_payment') {
       if (rowType === 'Dr') {
-        return allAccounts.filter((acc: any) => acc.type === 'Lead' || acc.type === 'Category');
+        return sundryCreditorAccounts;
       } else {
-        return getSortedBankCash();
+        return getUserPaymentCashSources();
       }
     }
 
+    // ── STAFF PAYMENT & ADVANCE ───────────────────────────────────────────────
+    // Dr Employee / Registered User (available to both Admin and Project role users)
+    // Cr Bank / Petty Cash (restricted to own petty cash when restrictToOwnPettyCash is true)
     if (mode === 'salary' || mode === 'advance') {
       if (rowType === 'Dr') {
-        if (restrictToOwnPettyCash && !isAdminOrFinance) {
-          return allAccounts.filter((acc: any) => acc.type === 'Category' && acc.name?.toLowerCase().includes('salary payable'));
-        }
         return allAccounts.filter((acc: any) => acc.type === 'Staff' || (acc as any).isRul);
       } else {
-        return getSortedBankCash();
+        return getUserPaymentCashSources();
       }
     }
 
@@ -699,12 +998,12 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
       if (rowType === 'Dr') {
         return allAccounts.filter((acc: any) => !isEmployee(acc) && !isGeneralBankOrCash(acc));
       } else {
-        return getSortedBankCash();
+        return getUserPaymentCashSources();
       }
     }
 
     return allAccounts;
-  }, [activeEntryId, voucher.entries, allAccounts, mode, user, bankAndCashLedgers, revenueAndSalesLedgers, billCollectionClientAccounts, restrictToOwnPettyCash, isAdminOrFinance]);
+  }, [activeEntryId, voucher.entries, allAccounts, mode, user, bankAndCashLedgers, revenueAndSalesLedgers, billCollectionClientAccounts, sundryCreditorAccounts, restrictToOwnPettyCash, isAdminOrFinance, getOwnPettyCashAccount]);
 
   const searchFilteredAccounts = useMemo(() => {
     if (!accountSearchText.trim()) return filteredAccounts;
@@ -727,10 +1026,14 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
   const handleSelectAccount = useCallback((acc: any) => {
     if (activeEntryId) {
       const effectiveType = acc.isLedgerAccount ? 'Category' : acc.type;
+      const isBankAcc = !!acc.isBank;
+      const isPettyAcc = !!acc.isPettyCash;
       const entryUpdates: any = {
         accountId: acc.id,
         accountName: acc.type === 'Staff' && acc.enrollmentNo ? `${acc.name} (${acc.enrollmentNo})` : acc.name,
         accountType: effectiveType,
+        isBank: isBankAcc,
+        isPettyCash: isPettyAcc,
       };
 
       if (acc.type === 'Lead') {
@@ -743,19 +1046,33 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
         updateVoucher({ leadId: acc.leadId, leadName: acc.leadName || acc.name });
       }
 
+      const activeEntry = voucher.entries.find((e) => e.id === activeEntryId);
+      const otherEntry = voucher.entries.find((e) => e.id !== activeEntryId);
+
       if (mode === 'sales') {
         updateVoucher({ narration: `Sales billing to ${acc.name}` });
       } else if (mode === 'bill_collection') {
         updateVoucher({ narration: `Received bill collection from ${acc.name}` });
       } else if (mode === 'salary') {
         updateVoucher({ narration: `Salary disbursement to ${acc.name}` });
+      } else if (mode === 'vendor_payment') {
+        updateVoucher({ narration: `Payment made to vendor ${acc.name}` });
+      } else if (mode === 'contra') {
+        const isCr = activeEntry?.type === 'Cr';
+        const fromName = isCr ? acc.name : (otherEntry?.accountName || getOwnPettyCashAccount().name);
+        const toName = isCr ? (otherEntry?.accountName || 'recipient account') : acc.name;
+        if (fromName && toName && toName !== 'recipient account') {
+          updateVoucher({ narration: `Funds transferred from ${fromName} to ${toName}` });
+        } else {
+          updateVoucher({ narration: `Transfer involving ${acc.name}` });
+        }
       }
 
       updateEntry(activeEntryId, entryUpdates);
     }
     setPickerVisible(false);
     setActiveEntryId(null);
-  }, [activeEntryId, updateEntry, updateVoucher, mode]);
+  }, [activeEntryId, voucher.entries, updateEntry, updateVoucher, mode, getOwnPettyCashAccount]);
 
   const handleSelectLead = useCallback((l: any) => {
     const leadName = l.sender_name || `Client-${l.lead_no}`;
@@ -787,6 +1104,12 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
     setDateText(formatted);
     const parsed = parseDDMMYYYYToDate(formatted);
     if (parsed) {
+      const now = new Date();
+      const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+      if (parsed.getTime() > endOfToday.getTime()) {
+        Alert.alert('Future Date Prohibited', 'Future date voucher entries cannot be entered. Please select today or an earlier date.');
+        return;
+      }
       updateVoucher({ date: parsed });
     }
   };
@@ -798,7 +1121,20 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
         Alert.alert('Invalid Date', 'Please enter a valid date in DD-MM-YYYY format.');
         return;
       }
-      updateVoucher({ date: parsedDate });
+
+      // ── Future Date Enforcement ───────────────────────────────────────────
+      const now = new Date();
+      const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+      if (parsedDate.getTime() > endOfToday.getTime()) {
+        Alert.alert('Future Date Prohibited', 'Future date voucher entries cannot be entered. Please select today or an earlier date.');
+        return;
+      }
+
+      // ── Backdate Detection (Entry Date vs Voucher Date) ───────────────────
+      const isBackdated =
+        parsedDate.getFullYear() !== now.getFullYear() ||
+        parsedDate.getMonth() !== now.getMonth() ||
+        parsedDate.getDate() !== now.getDate();
 
       let type: "Payment" | "Receipt" | "Contra" | "Journal" | "Sales" | "Purchase" = initialType || "Journal";
       if (mode === 'bill_collection' || mode === 'receipt') {
@@ -814,6 +1150,51 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
       } else if (mode === 'purchase') {
         type = 'Purchase';
       }
+
+      // ── Contra Counter-Validation (Debit / Credit) ─────────────────────────
+      if (type === 'Contra') {
+        const drEntry = voucher.entries.find((e) => e.type === 'Dr');
+        const crEntry = voucher.entries.find((e) => e.type === 'Cr');
+
+        if (!drEntry?.accountId || !crEntry?.accountId) {
+          Alert.alert('Incomplete Contra Voucher', 'Contra fund transfer requires selecting both Debit and Credit accounts.');
+          return;
+        }
+
+        if (String(drEntry.accountId) === String(crEntry.accountId)) {
+          Alert.alert(
+            'Contra Counter-Validation Failed',
+            'Debit and Credit cannot be the same ledger account. Source and destination cash/bank accounts must be distinct.'
+          );
+          return;
+        }
+
+        const isCashOrBankAcc = (accId: string) => {
+          const acc = allAccounts.find((a: any) => String(a.id) === String(accId));
+          if (!acc) return false;
+          const a = acc as any;
+          if (a.isBank || a.isPettyCash) return true;
+          const subL = (a.sub || '').toLowerCase();
+          const nameL = (a.name || '').toLowerCase();
+          return subL.includes('bank') || subL.includes('cash') || nameL.includes('bank') || nameL.includes('cash');
+        };
+
+        if (!isCashOrBankAcc(drEntry.accountId) || !isCashOrBankAcc(crEntry.accountId)) {
+          Alert.alert('Invalid Contra Entry', 'Contra vouchers strictly mobilize funds between Cash or Bank accounts.');
+          return;
+        }
+      }
+
+      const requiresCounterValidation = type === 'Contra' || isBackdated;
+      updateVoucher({
+        date: parsedDate,
+        isValidated: !requiresCounterValidation,
+        isCounterValidated: !requiresCounterValidation,
+        isBackdated,
+        entryDate: now,
+        validationStatus: requiresCounterValidation ? 'Unvalidated' : 'Validated',
+        approvalPending: requiresCounterValidation,
+      });
 
       const isSalesOrPurchase = type === 'Sales' || type === 'Purchase';
       const hasStaffOrExpenseEntry = voucher.entries.some((entry) => {
@@ -873,7 +1254,11 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
         }
       }
 
-      Alert.alert('Success', 'Voucher posted successfully.');
+      const successTitle = requiresCounterValidation ? 'Voucher Recorded (Pending Validation)' : 'Success';
+      const successMsg = requiresCounterValidation
+        ? `Voucher posted as UNVALIDATED entry pending counter-validation (${type === 'Contra' ? 'Contra Transfer' : 'Backdated Entry: recording date ' + formatDateToDDMMYYYY(now) + ' ≠ voucher date ' + dateText}). It will show in ledger statements in a distinct color and will be excluded from balance calculation until validated.`
+        : 'Voucher posted successfully.';
+      Alert.alert(successTitle, successMsg);
       applyModeTemplate(mode, dateText);
     } catch (err: any) {
       const detailedMsg = err.response?.data?.message || err.response?.data?.error || err.message;
@@ -884,27 +1269,62 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
   const headerInfo = useMemo(() => {
     switch (mode) {
       case 'payment':
-        return { title: 'Payment Voucher', subtitle: 'Dr All Ledgers • Cr Bank/Cash-in-Hand' };
+        return {
+          title: 'Payment Voucher',
+          subtitle: isAdminOrFinance
+            ? 'Dr All Ledgers • Cr Selected Bank / Petty Cash'
+            : 'Dr All Ledgers • Cr Own Petty Cash / Bank',
+        };
       case 'receipt':
-        return { title: 'Receipt Voucher', subtitle: 'Dr Bank/Cash-in-Hand • Cr All Ledgers' };
+        return {
+          title: 'Receipt Voucher',
+          subtitle: isAdminOrFinance
+            ? 'Dr Selected Bank / Petty Cash • Cr Income / Sundry Debtors'
+            : 'Dr Own Petty Cash • Cr Income / Sundry Debtors',
+        };
       case 'sales':
         return { title: 'Sales Voucher', subtitle: 'Dr Client (Sundry Debtors) • Cr Sales / Revenue Account' };
       case 'bill_collection':
-        return { title: 'Client Receipt (Bill Collection)', subtitle: 'Dr Own Petty Cash / Bank • Cr Client (Accepted/Tax Invoice/Fully Paid)' };
+        return {
+          title: 'Client Receipt (Bill Collection)',
+          subtitle: isAdminOrFinance
+            ? 'Dr Selected Bank / Petty Cash • Cr Client (Sundry Debtors)'
+            : 'Dr Own Petty Cash • Cr Client (Sundry Debtors)',
+        };
       case 'vendor_payment':
-        return { title: 'Vendor Payment', subtitle: 'Dr Vendor Account • Cr Bank/Cash' };
+        return {
+          title: 'Vendor Payment',
+          subtitle: isAdminOrFinance
+            ? 'Dr Vendor (Sundry Creditors) • Cr Selected Bank / Petty Cash'
+            : 'Dr Vendor (Sundry Creditors) • Cr Own Petty Cash',
+        };
       case 'salary':
-        return { title: 'Staff Payment (Salary)', subtitle: 'Dr Employee Ledger • Cr Bank/Cash' };
+        return {
+          title: 'Staff Payment (Salary)',
+          subtitle: isAdminOrFinance
+            ? 'Dr Employee / Registered User • Cr Selected Bank / Petty Cash'
+            : 'Dr Employee / Registered User • Cr Own Petty Cash',
+        };
       case 'expense':
-        return { title: 'Expense Voucher', subtitle: 'Dr Direct/Indirect Expense • Cr Bank/Cash' };
+        return {
+          title: 'Expense Voucher',
+          subtitle: isAdminOrFinance
+            ? 'Dr Direct/Indirect Expense • Cr Selected Bank / Petty Cash'
+            : 'Dr Direct/Indirect Expense • Cr Own Petty Cash',
+        };
       case 'contra':
-        return { title: 'Cash Transfer (Contra)', subtitle: 'Dr Bank/Cash (Receiver) • Cr Cash/Bank (Giver)' };
+        return {
+          title: 'Cash Transfer (Contra)',
+          subtitle: isAdminOrFinance
+            ? 'Dr Selected Bank / Petty Cash • Cr Selected Bank / Petty Cash'
+            : 'Dr Selected Petty Cash Book / Bank • Cr Own Petty Cash',
+        };
       case 'journal':
         return { title: 'Journal Voucher', subtitle: 'Dr & Cr Ledgers (Non-Cash Adjustments)' };
       default:
         return { title: 'Voucher Entry', subtitle: 'Maintain proper double-entry ledger book' };
     }
-  }, [mode]);
+  }, [mode, isAdminOrFinance]);
 
   const VOUCHER_TABS = useMemo(() => [
     { key: 'payment', label: 'Payment' },
@@ -993,9 +1413,16 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
               value={parseDDMMYYYYToDate(dateText) || new Date()}
               mode="date"
               display="default"
+              maximumDate={new Date()}
               onChange={(evt, selectedDate) => {
                 setShowDatePicker(false);
                 if (selectedDate) {
+                  const now = new Date();
+                  const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+                  if (selectedDate.getTime() > endOfToday.getTime()) {
+                    Alert.alert('Future Date Prohibited', 'Future date voucher entries cannot be entered.');
+                    return;
+                  }
                   const formatted = formatDateToDDMMYYYY(selectedDate);
                   setDateText(formatted);
                   updateVoucher({ date: selectedDate });
@@ -1005,42 +1432,47 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
           )}
 
           {/* MAIN VOUCHER WORK AREA */}
-          <View style={{ flex: 1, backgroundColor: '#FCF8E8', padding: 12, justifyContent: 'space-between' }}>
-            <View style={{ flex: 1 }}>
-              {/* Lead / Proj selection line */}
-              {mode !== 'contra' && (
-                <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 16 }}>
-                  <Text style={{ fontSize: 14, color: '#000', fontWeight: 'bold' }}>Lead / Proj: </Text>
-                  <TouchableOpacity
-                    onPress={() => setLeadPickerVisible(true)}
-                    style={{
-                      borderBottomWidth: 1,
-                      borderBottomColor: '#000',
-                      flex: 1,
-                      backgroundColor: '#FFF9D2',
-                      paddingHorizontal: 6,
-                      paddingVertical: 2,
-                      minHeight: 24,
-                      justifyContent: 'center',
-                    }}
-                  >
-                    <Text style={{ fontSize: 14, color: '#000', fontWeight: 'bold' }}>
-                      {voucher.leadName || ''}
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-              )}
-
-              {/* Grid Headers */}
-              <View style={{ flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: '#ccc', paddingBottom: 4, marginBottom: 8 }}>
-                <Text style={{ width: 40, fontSize: 14, fontWeight: 'bold', color: '#000', textAlign: 'center' }} />
-                <Text style={{ flex: 1, fontSize: 14, fontWeight: 'bold', color: '#000', paddingLeft: 8 }}>Particulars</Text>
-                <Text style={{ width: 120, fontSize: 14, fontWeight: 'bold', color: '#000', textAlign: 'right' }}>Amount</Text>
-                {!mode && <Text style={{ width: 30 }} />}
+          <View style={{ flex: 1, backgroundColor: '#FCF8E8', paddingHorizontal: 12, paddingTop: 12 }}>
+            {/* Lead / Proj selection line */}
+            {mode !== 'contra' && (
+              <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
+                <Text style={{ fontSize: 14, color: '#000', fontWeight: 'bold' }}>Lead / Proj: </Text>
+                <TouchableOpacity
+                  onPress={() => setLeadPickerVisible(true)}
+                  style={{
+                    borderBottomWidth: 1,
+                    borderBottomColor: '#000',
+                    flex: 1,
+                    backgroundColor: '#FFF9D2',
+                    paddingHorizontal: 6,
+                    paddingVertical: 2,
+                    minHeight: 24,
+                    justifyContent: 'center',
+                  }}
+                >
+                  <Text style={{ fontSize: 14, color: '#000', fontWeight: 'bold' }}>
+                    {voucher.leadName || ''}
+                  </Text>
+                </TouchableOpacity>
               </View>
+            )}
 
-              {/* Entries List */}
-              <ScrollView style={{ flex: 1 }} keyboardShouldPersistTaps="handled">
+            {/* Grid Headers */}
+            <View style={{ flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: '#ccc', paddingBottom: 4, marginBottom: 8 }}>
+              <Text style={{ width: 40, fontSize: 14, fontWeight: 'bold', color: '#000', textAlign: 'center' }} />
+              <Text style={{ flex: 1, fontSize: 14, fontWeight: 'bold', color: '#000', paddingLeft: 8 }}>Particulars</Text>
+              <Text style={{ width: 120, fontSize: 14, fontWeight: 'bold', color: '#000', textAlign: 'right' }}>Amount</Text>
+              {!mode && <Text style={{ width: 30 }} />}
+            </View>
+
+            {/* Scrollable Container with Entries + Narration + Totals */}
+            <ScrollView
+              style={{ flex: 1 }}
+              contentContainerStyle={{ flexGrow: 1, justifyContent: 'space-between', paddingBottom: 16 }}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
+              <View>
                 {voucher.entries.map((entry) => {
                   const matchedAcc = allAccounts.find((a: any) => a.id === entry.accountId);
                   const displayBal = (matchedAcc as any)?.balance !== undefined ? `₹${Number((matchedAcc as any).balance).toLocaleString('en-IN')}` : '---';
@@ -1095,40 +1527,40 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
                     <Text style={{ color: '#1E4472', fontSize: 13, fontWeight: 'bold' }}>+ Add Row</Text>
                   </TouchableOpacity>
                 )}
-              </ScrollView>
-            </View>
-
-            {/* Bottom Narration & Totals */}
-            <View style={{ borderTopWidth: 1, borderTopColor: '#ccc', paddingTop: 10, marginTop: 4 }}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
-                <Text style={{ fontSize: 13, color: '#000', fontWeight: 'bold' }}>Narration : </Text>
-                <TextInput
-                  style={{
-                    flex: 1,
-                    borderBottomWidth: 1,
-                    borderBottomColor: '#000',
-                    fontSize: 13,
-                    color: '#000',
-                    padding: 0,
-                    marginLeft: 4,
-                    fontStyle: 'italic',
-                  }}
-                  value={voucher.narration}
-                  placeholder=""
-                  onChangeText={(t) => updateVoucher({ narration: t })}
-                />
               </View>
 
-              {/* Totals */}
-              <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 24 }}>
-                <Text style={{ fontSize: 14, color: '#000', fontWeight: 'bold' }}>
-                  Total Dr:  {voucher.totalDr || 0}
-                </Text>
-                <Text style={{ fontSize: 14, color: isBalanced ? '#000' : 'red', fontWeight: 'bold' }}>
-                  Total Cr:  {voucher.totalCr || 0}
-                </Text>
+              {/* Bottom Narration & Totals (inside ScrollView, so keyboard will never cover it) */}
+              <View style={{ borderTopWidth: 1, borderTopColor: '#ccc', paddingTop: 10, marginTop: 12 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
+                  <Text style={{ fontSize: 13, color: '#000', fontWeight: 'bold' }}>Narration : </Text>
+                  <TextInput
+                    style={{
+                      flex: 1,
+                      borderBottomWidth: 1,
+                      borderBottomColor: '#000',
+                      fontSize: 13,
+                      color: '#000',
+                      padding: 0,
+                      marginLeft: 4,
+                      fontStyle: 'italic',
+                    }}
+                    value={voucher.narration}
+                    placeholder=""
+                    onChangeText={(t) => updateVoucher({ narration: t })}
+                  />
+                </View>
+
+                {/* Totals */}
+                <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 24 }}>
+                  <Text style={{ fontSize: 14, color: '#000', fontWeight: 'bold' }}>
+                    Total Dr:  {voucher.totalDr || 0}
+                  </Text>
+                  <Text style={{ fontSize: 14, color: isBalanced ? '#000' : 'red', fontWeight: 'bold' }}>
+                    Total Cr:  {voucher.totalCr || 0}
+                  </Text>
+                </View>
               </View>
-            </View>
+            </ScrollView>
           </View>
 
           {/* BOTTOM BAR */}
@@ -1137,7 +1569,7 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
               backgroundColor: '#E2E8F0',
               borderTopWidth: 1,
               borderTopColor: '#ccc',
-              paddingBottom: Platform.OS === 'android' ? Math.max(insets.bottom, 48) + 16 : Math.max(insets.bottom, 16),
+              paddingBottom: Math.max(insets.bottom, 12),
             }}
           >
             <View style={{ height: 48, flexDirection: 'row', alignItems: 'center' }}>

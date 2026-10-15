@@ -187,6 +187,75 @@ function isSameDayAsShiftStart(att: any, shiftStartDate: Date): boolean {
   return false;
 }
 
+function normalizeShiftCode(code: any): string {
+  if (!code) return '';
+  const s = String(code).trim();
+  const map: Record<string, string> = {
+    Day: 'D', D: 'D', day: 'D', d: 'D',
+    Morning: 'M', M: 'M', morning: 'M', m: 'M',
+    Afternoon: 'A', A: 'A', afternoon: 'A', a: 'A',
+    Night: 'N', Night1: 'N', N: 'N', night: 'N', night1: 'N', n: 'N',
+    Night2: 'N2', Night12: 'N2', N2: 'N2', night2: 'N2', night12: 'N2', n2: 'N2',
+    General: 'G', G: 'G', general: 'G', g: 'G',
+  };
+  return map[s] || s.toUpperCase();
+}
+
+function normalizeName(str: any): string {
+  if (!str) return '';
+  return String(str)
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
+}
+
+function isSiteMatching(att: any, leadIdStr: string, siteNameStr?: string): boolean {
+  if (!att) return false;
+
+  // 1. Direct ID matching (leadId, siteId, clientId)
+  const attLeadId =
+    typeof att.leadId === 'object' && att.leadId !== null
+      ? att.leadId._id
+      : att.leadId || att.siteId || att.clientId || att.lead_id;
+
+  if (attLeadId && leadIdStr && String(attLeadId) === String(leadIdStr)) {
+    return true;
+  }
+
+  // 2. Comprehensive Name matching across all variations
+  if (siteNameStr) {
+    const normTarget = normalizeName(siteNameStr);
+    if (!normTarget) return false;
+
+    const leadObj = typeof att.leadId === 'object' && att.leadId !== null ? att.leadId : null;
+    const candidates = [
+      att.site_name,
+      att.siteName,
+      att.site,
+      att.clientName,
+      att.client_name,
+      att.clientLeadName,
+      att.dutyShift?.siteName,
+      leadObj?.sender_name,
+      leadObj?.name,
+      leadObj?.client_name,
+      leadObj?.displayName,
+      att.lead?.sender_name,
+      att.lead?.name,
+    ];
+
+    for (const cand of candidates) {
+      if (!cand) continue;
+      const normCand = normalizeName(cand);
+      if (!normCand) continue;
+      if (normCand === normTarget) return true;
+      if (normCand.length >= 4 && normTarget.includes(normCand)) return true;
+      if (normTarget.length >= 4 && normCand.includes(normTarget)) return true;
+    }
+  }
+
+  return false;
+}
+
 // ─── Service ──────────────────────────────────────────────────────────────────
 
 class MissedShiftCheckerService {
@@ -220,6 +289,39 @@ class MissedShiftCheckerService {
         if (!isNaN(t)) this.lastAlertTimestamp = t;
       }
     } catch (_) {}
+  }
+
+  /** Ensures lastAttendance has data even after background resume or fresh startup */
+  public async _ensureAttendanceCacheLoaded(): Promise<void> {
+    if (this.lastAttendance && this.lastAttendance.length > 0) return;
+    try {
+      const raw = await AsyncStorage.getItem('cached_active_attendance');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          this.lastAttendance = parsed;
+        }
+      }
+    } catch (_) {}
+  }
+
+  /** Checks if a site is currently manned by an active worker on duty or valid attendance */
+  public _isSiteManned(leadId: string, siteName?: string): boolean {
+    return (this.lastAttendance || []).some((att: any) => {
+      // 1. Ongoing active duty
+      if (!att.dutyEnd) {
+        const st = String(att.status ?? '').trim().toLowerCase();
+        const isNotAbsent = !['a', 'absent', 'l', 'leave', 'off', 'weekly off', 'w'].includes(st);
+        if (isNotAbsent && isSiteMatching(att, leadId, siteName)) return true;
+      }
+
+      // 2. Marked present / NR / weekly off today
+      const st = String(att.status ?? '').trim().toLowerCase();
+      const isHandled = ['present', 'nr', 'no reliever', 'w', 'weekly off'].includes(st) || att.isExemptDay === true;
+      if (isHandled && isSiteMatching(att, leadId, siteName)) return true;
+
+      return false;
+    });
   }
 
   /** Subscribe to active missed shift alert state changes */
@@ -480,6 +582,19 @@ class MissedShiftCheckerService {
     this.lastAlertTimestamp = now;
     AsyncStorage.setItem(LAST_MISSED_SHIFT_ALERT_KEY, String(now)).catch(() => {});
 
+    // Verify site is not already manned by an active worker on duty
+    await this._ensureAttendanceCacheLoaded();
+    const isMannedNow = this._isSiteManned(alertInfo.leadId, alertInfo.siteName);
+
+    if (isMannedNow) {
+      console.log(
+        `[MissedShiftChecker] Suppressing triggerAlarm: "${alertInfo.siteName}" is manned by active worker.`
+      );
+      await this.clearAlarmsForShift(alertInfo.leadId, alertInfo.shiftCode, alertInfo.siteName);
+      await this.silenceAlarm();
+      return;
+    }
+
     this.activeAlert = alertInfo;
     this._notify();
 
@@ -555,12 +670,21 @@ class MissedShiftCheckerService {
           if (stored) {
             await AsyncStorage.removeItem('active_missed_shift_alert');
             const alertInfo: ActiveMissedShiftAlert = JSON.parse(stored);
-            const title = '🚨 Shift Still Unmanned';
-            const shiftLabel = alertInfo.shiftName
-              ? `${alertInfo.shiftName} (${alertInfo.shiftStartTime})`
-              : alertInfo.shiftStartTime;
-            const message = `Still no attendance marked at:\n\n"${alertInfo.siteName}"\nShift: ${shiftLabel}\n\n🔁 Auto-Repeat: Alert will repeat every 15 minutes until attendance is marked or 'No Reliever' is selected.\n\nPlease take immediate action.`;
-            this.triggerAlarm(alertInfo, title, message, true);
+            await this._ensureAttendanceCacheLoaded();
+            const isManned = this._isSiteManned(alertInfo.leadId, alertInfo.siteName);
+            if (!isManned) {
+              const title = '🚨 Shift Still Unmanned';
+              const shiftLabel = alertInfo.shiftName
+                ? `${alertInfo.shiftName} (${alertInfo.shiftStartTime})`
+                : alertInfo.shiftStartTime;
+              const message = `Still no attendance marked at:\n\n"${alertInfo.siteName}"\nShift: ${shiftLabel}\n\n🔁 Auto-Repeat: Alert will repeat every 15 minutes until attendance is marked or 'No Reliever' is selected.\n\nPlease take immediate action.`;
+              this.triggerAlarm(alertInfo, title, message, true);
+            } else {
+              console.log(
+                `[MissedShiftChecker] Dropping stored alert on app active: site "${alertInfo.siteName}" is manned.`
+              );
+              await this.clearAlarmsForShift(alertInfo.leadId, alertInfo.shiftCode, alertInfo.siteName);
+            }
           }
         } catch (e) {
           console.warn('[MissedShiftChecker] Failed to restore background alert:', e);
@@ -647,6 +771,17 @@ class MissedShiftCheckerService {
         if (now - alarm.fireAtMs > 180 * 60_000) continue; // Prune expired
 
         if (now >= alarm.fireAtMs) {
+          // Verify if site has become manned since alarm was scheduled
+          await this._ensureAttendanceCacheLoaded();
+          const isMannedNow = this._isSiteManned(alarm.leadId, alarm.siteName);
+
+          if (isMannedNow) {
+            console.log(
+              `[MissedShiftChecker] Dropping pending alarm: site "${alarm.siteName}" is currently manned.`
+            );
+            continue;
+          }
+
           if (!firedThisTick) {
             // Enforce 15-minute minimum gap before ringing any alert
             if (this.lastAlertTimestamp > 0 && now - this.lastAlertTimestamp < MIN_ALERT_GAP_MS) {
@@ -749,21 +884,42 @@ class MissedShiftCheckerService {
 
         const elapsedMins = (Date.now() - shiftStartDate.getTime()) / 60_000;
 
-        // 4. Filter that day attendance in collection attendance
-        const todayRecords = (allAttendance || []).filter((att: any) => {
-          const attLeadId =
-            typeof att.leadId === 'object' && att.leadId !== null
-              ? att.leadId._id
-              : att.leadId || att.siteId;
-          return (
-            String(attLeadId) === String(lead._id) &&
-            att.shiftCode === shift.shiftCode &&
-            isSameDayAsShiftStart(att, shiftStartDate)
+        // 4. Find all attendance records for this lead/site
+        const siteRecords = (allAttendance || []).filter((att: any) =>
+          isSiteMatching(att, String(lead._id), siteName)
+        );
+
+        // Helper to check shift match flexibly (normalized codes and names)
+        const isMatchingShift = (att: any) => {
+          const normShiftCode = normalizeShiftCode(shift.shiftCode || shift.shiftName);
+          const normAttCode = normalizeShiftCode(
+            att.shiftCode || att.shiftName || att.shiftPeriod || att.dutyShift?.shiftName
           );
+          if (normShiftCode && normAttCode && normShiftCode === normAttCode) return true;
+
+          const sName = String(shift.shiftName || shift.shiftCode || '').trim().toLowerCase();
+          const aName = String(
+            att.shiftName || att.shiftPeriod || att.dutyShift?.shiftName || att.shiftCode || ''
+          )
+            .trim()
+            .toLowerCase();
+          if (sName && aName && (sName === aName || sName.includes(aName) || aName.includes(sName)))
+            return true;
+
+          return false;
+        };
+
+        // 4a. Check if any worker is actively ON DUTY right now at this site (!att.dutyEnd)
+        const hasActiveWorkerOnDuty = siteRecords.some((att: any) => {
+          const isDutyOngoing = !att.dutyEnd;
+          const st = String(att.status ?? '').trim().toLowerCase();
+          const isNotAbsent = !['a', 'absent', 'l', 'leave', 'off', 'weekly off', 'w'].includes(st);
+          return isDutyOngoing && isNotAbsent;
         });
 
-        // 4a. Check if Weekly Off (W), exempt day, or No Reliever (NR) was marked in attendance
-        const hasHandledAttendance = todayRecords.some((att: any) => {
+        // 4b. Check if Weekly Off (W), exempt day, or No Reliever (NR) was marked in attendance
+        const hasHandledAttendance = siteRecords.some((att: any) => {
+          if (!isMatchingShift(att) && !isSameDayAsShiftStart(att, shiftStartDate)) return false;
           const st = String(att.status ?? '').trim().toLowerCase();
           return (
             st === 'w' ||
@@ -774,29 +930,32 @@ class MissedShiftCheckerService {
           );
         });
 
-        if (hasHandledAttendance) {
-          clearedShifts.add(`${lead._id}|${shift.shiftCode}`);
-          continue;
-        }
-
-        // 4b. Check if any worker is actively on duty
-        const hasActiveDuty = todayRecords.some((att: any) => {
-          const isDutyOngoing = !att.dutyEnd;
+        // 4c. Check if valid attendance (present / completed duty) for this shift today
+        const hasValidAttendance = siteRecords.some((att: any) => {
+          if (!isMatchingShift(att)) return false;
+          if (!isSameDayAsShiftStart(att, shiftStartDate)) return false;
           const st = String(att.status ?? '').trim().toLowerCase();
-          const isNotAbsent = !['a', 'absent', 'l', 'leave'].includes(st);
-          return isDutyOngoing && isNotAbsent;
+          return !['a', 'absent', 'l', 'leave', 'off', 'weekly off', 'w'].includes(st);
         });
 
-        // 4c. Check if valid attendance (present / completed duty)
-        const hasValidAttendance = todayRecords.some((att: any) => {
-          const st = String(att.status ?? '').trim().toLowerCase();
-          return !['a', 'absent', 'l', 'leave'].includes(st);
-        });
-
-        const isManned = hasActiveDuty || hasValidAttendance;
+        const isManned = hasActiveWorkerOnDuty || hasHandledAttendance || hasValidAttendance;
 
         if (isManned) {
+          clearedShifts.add(String(lead._id));
+          clearedShifts.add(normalizeName(siteName));
           clearedShifts.add(`${lead._id}|${shift.shiftCode}`);
+          if (shift.shiftCode) clearedShifts.add(`${lead._id}|${normalizeShiftCode(shift.shiftCode)}`);
+          if (shift.shiftName) clearedShifts.add(`${lead._id}|${shift.shiftName}`);
+
+          // If this site/shift is currently ringing an alert, silence it immediately!
+          if (
+            this.activeAlert &&
+            (String(this.activeAlert.leadId) === String(lead._id) ||
+              (this.activeAlert.siteName && isSiteMatching({ site_name: this.activeAlert.siteName }, String(lead._id), siteName)))
+          ) {
+            console.log(`[MissedShiftChecker] Silencing active alert: site "${siteName}" is manned by on-duty worker.`);
+            this.silenceAlarm();
+          }
           continue;
         }
 
@@ -862,11 +1021,13 @@ class MissedShiftCheckerService {
     // Batch clear alarms for all manned/exempt shifts in a single disk operation
     if (clearedShifts.size > 0) {
       this._batchClearAlarms(clearedShifts).catch(() => {});
+      // Persist manned sites cache for background tasks
+      AsyncStorage.setItem('manned_sites_cache', JSON.stringify(Array.from(clearedShifts))).catch(() => {});
     }
 
     // Persist pending alarms to AsyncStorage for background/killed-app firing
     if (pendingToSave.length > 0) {
-      this._mergePendingAlarms(pendingToSave).catch(() => {});
+      this._mergePendingAlarms(pendingToSave, clearedShifts).catch(() => {});
     }
   }
 
@@ -878,9 +1039,13 @@ class MissedShiftCheckerService {
       const raw = await AsyncStorage.getItem(MISSED_SHIFT_ALARMS_KEY);
       if (!raw) return;
       const existing: PendingAlarm[] = JSON.parse(raw);
-      const filtered = existing.filter(
-        (a) => !clearedSet.has(`${a.leadId}|${a.shiftCode}`)
-      );
+      const filtered = existing.filter((a) => {
+        if (clearedSet.has(String(a.leadId))) return false;
+        if (clearedSet.has(normalizeName(a.siteName))) return false;
+        if (clearedSet.has(`${a.leadId}|${a.shiftCode}`)) return false;
+        if (a.shiftCode && clearedSet.has(`${a.leadId}|${normalizeShiftCode(a.shiftCode)}`)) return false;
+        return true;
+      });
       if (filtered.length !== existing.length) {
         await AsyncStorage.setItem(MISSED_SHIFT_ALARMS_KEY, JSON.stringify(filtered));
       }
@@ -893,8 +1058,9 @@ class MissedShiftCheckerService {
    * Merges newly computed pending alarms into AsyncStorage.
    * - Existing entries with the same key are NOT overwritten (idempotent).
    * - Entries whose fireAtMs is already > 180 min past are pruned.
+   * - Excludes any alarms for sites that are manned.
    */
-  private async _mergePendingAlarms(incoming: PendingAlarm[]): Promise<void> {
+  private async _mergePendingAlarms(incoming: PendingAlarm[], clearedSet?: Set<string>): Promise<void> {
     try {
       const raw = await AsyncStorage.getItem(MISSED_SHIFT_ALARMS_KEY);
       const existing: PendingAlarm[] = raw ? JSON.parse(raw) : [];
@@ -902,11 +1068,18 @@ class MissedShiftCheckerService {
       const existingKeys = new Set(existing.map((a) => a.key));
       const now = Date.now();
 
-      // Prune stale entries (> 180 min past fireAtMs)
-      const pruned = existing.filter((a) => now - a.fireAtMs < 180 * 60_000);
+      // Prune stale entries (> 180 min past fireAtMs) and manned sites
+      const pruned = existing.filter((a) => {
+        if (now - a.fireAtMs >= 180 * 60_000) return false;
+        if (clearedSet && (clearedSet.has(String(a.leadId)) || clearedSet.has(normalizeName(a.siteName)))) return false;
+        return true;
+      });
 
-      // Add only new keys
+      // Add only new keys that are not manned
       for (const alarm of incoming) {
+        if (clearedSet && (clearedSet.has(String(alarm.leadId)) || clearedSet.has(normalizeName(alarm.siteName)))) {
+          continue;
+        }
         if (!existingKeys.has(alarm.key)) {
           pruned.push(alarm);
         }
@@ -926,16 +1099,29 @@ class MissedShiftCheckerService {
    * Removes the alarm entries for that site+shift from AsyncStorage so
    * the background task no longer fires for them.
    */
-  async clearAlarmsForShift(leadId: string, shiftCode: string): Promise<void> {
+  async clearAlarmsForShift(leadId?: string, shiftCode?: string, siteName?: string): Promise<void> {
     try {
       const raw = await AsyncStorage.getItem(MISSED_SHIFT_ALARMS_KEY);
       if (!raw) return;
       const existing: PendingAlarm[] = JSON.parse(raw);
-      const filtered = existing.filter(
-        (a) => !(String(a.leadId) === String(leadId) && a.shiftCode === shiftCode)
-      );
+      const normSite = siteName ? normalizeName(siteName) : '';
+      const normShift = shiftCode ? normalizeShiftCode(shiftCode) : '';
+
+      const filtered = existing.filter((a) => {
+        const matchesLead = leadId && String(a.leadId) === String(leadId);
+        const matchesSite = normSite && normalizeName(a.siteName) === normSite;
+        if (!matchesLead && !matchesSite) return true;
+
+        if (!shiftCode) return false;
+
+        const aNormShift = normalizeShiftCode(a.shiftCode);
+        if (a.shiftCode === shiftCode || (normShift && aNormShift === normShift)) {
+          return false;
+        }
+        return true;
+      });
       await AsyncStorage.setItem(MISSED_SHIFT_ALARMS_KEY, JSON.stringify(filtered));
-      console.log(`[MissedShiftChecker] Cleared alarms for lead=${leadId} shift=${shiftCode}`);
+      console.log(`[MissedShiftChecker] Cleared alarms for lead=${leadId} site=${siteName} shift=${shiftCode}`);
     } catch (err) {
       console.warn('[MissedShiftChecker] clearAlarmsForShift failed:', err);
     }

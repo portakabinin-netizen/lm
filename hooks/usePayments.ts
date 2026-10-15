@@ -233,6 +233,14 @@ export const usePayments = (token: string, dbName?: string) => {
         authH['x-tenant-id'] = dbName;
     }
 
+    // Reset payment states whenever corporate tenant changes
+    useEffect(() => {
+        setTransactions([]);
+        setSummary(null);
+        setLeads([]);
+        setStaff({ employees: [], transporters: [], contacts: [] });
+    }, [dbName]);
+
     const fetchTransactions = useCallback(async (params?: Record<string, string>) => {
         try {
             setLoading(true); setError(null);

@@ -269,10 +269,57 @@ const ShowLeads = React.memo(
 
     // ── doWA — open WhatsApp → silent save ────────────────────────────────────
     const doWA = useCallback(async () => {
-      Linking.openURL(`https://wa.me/${mobile?.with91 ?? mPlain}`).catch(() => null);
-      await saveUserAction(`WhatsApp message initiated`);
+      const cleanPhone = (item.sender_mobile || mPlain || '').replace(/\D/g, '').slice(-10);
+      const targetPhone = cleanPhone ? `91${cleanPhone}` : (mobile?.with91 ?? mPlain);
+      const hasOneOrNoActivity = acts.length <= 1;
+
+      const vCardMessage = hasOneOrNoActivity
+        ? `📇 *DIGITAL VISITING CARD*\n\n` +
+          `🏢 *${corporateName || 'portakabin.in'}*\n` +
+          (corpProfileImage ? `🖼️ Profile: ${corpProfileImage}\n` : '') +
+          `👤 *${userDisplayName || currentUser}*\n` +
+          `📱 Mobile: ${userMobile || 'N/A'}\n` +
+          `✉️ Email: ${corporateEmail || 'info@portakabin.in'}\n` +
+          (corporateAddress ? `📍 Address: ${corporateAddress}\n` : '') +
+          (item.product_name ? `\n📦 *Requirement:* ${item.product_name}` : '')
+        : '';
+
+      if (targetPhone) {
+        const waUrl = vCardMessage
+          ? `whatsapp://send?phone=${targetPhone}&text=${encodeURIComponent(vCardMessage)}`
+          : `https://wa.me/${targetPhone}`;
+        const fallbackUrl = `https://wa.me/${targetPhone}${vCardMessage ? `?text=${encodeURIComponent(vCardMessage)}` : ''}`;
+
+        try {
+          const supported = await Linking.canOpenURL(waUrl);
+          if (supported) {
+            await Linking.openURL(waUrl);
+          } else {
+            await Linking.openURL(fallbackUrl);
+          }
+        } catch {
+          Linking.openURL(fallbackUrl).catch(() => null);
+        }
+      }
+
+      await saveUserAction(hasOneOrNoActivity ? `Visiting card sent via WhatsApp to ${cleanPhone || targetPhone}` : `WhatsApp message initiated`);
       onStatusChange();
-    }, [mobile, mPlain, saveUserAction, onStatusChange]);
+    }, [
+      mobile,
+      mPlain,
+      acts,
+      item.sender_mobile,
+      item.product_name,
+      corporateName,
+      corpProfileImage,
+      userDisplayName,
+      currentUser,
+      userMobile,
+      corporateEmail,
+      corporateAddress,
+      saveUserAction,
+      onStatusChange,
+    ]);
 
     // ── doEmail — open mail → silent save ─────────────────────────────────────
     const doEmail = useCallback(async () => {
@@ -284,44 +331,58 @@ const ShowLeads = React.memo(
     // ── shareLead — share via WhatsApp/SMS/native share ───────────────────────
     const shareLead = useCallback(async () => {
       const message =
-        `🏢 ${corporateName || 'portakabin.in'}\n` +
+        `📇 *DIGITAL VISITING CARD*\n\n` +
+        `🏢 *${corporateName || 'portakabin.in'}*\n` +
         (corpProfileImage ? `🖼️ Profile: ${corpProfileImage}\n` : '') +
-        `👤 ${userDisplayName || currentUser}\n` +
+        `👤 *${userDisplayName || currentUser}*\n` +
         `📱 Mobile: ${userMobile || 'N/A'}\n` +
         `✉️ Email: ${corporateEmail || 'info@portakabin.in'}\n` +
-        (corporateAddress ? `📍 Address: ${corporateAddress}` : '');
+        (corporateAddress ? `📍 Address: ${corporateAddress}\n` : '') +
+        (item.product_name ? `\n📦 *Requirement:* ${item.product_name}` : '');
 
+      const cleanPhone = (item.sender_mobile || mPlain || '').replace(/\D/g, '').slice(-10);
+      const targetPhone = cleanPhone ? `91${cleanPhone}` : (mobile?.with91 ?? mPlain);
+
+      // ── If activity has 1 record (or no activity) → send visiting card directly to sender_mobile no instead of selecting contact in WhatsApp app ──
+      if (acts.length <= 1 && targetPhone) {
+        const waDirectUrl = `whatsapp://send?phone=${targetPhone}&text=${encodeURIComponent(message)}`;
+        const waWebUrl = `https://wa.me/${targetPhone}?text=${encodeURIComponent(message)}`;
+
+        try {
+          const supported = await Linking.canOpenURL(waDirectUrl);
+          if (supported) {
+            await Linking.openURL(waDirectUrl);
+          } else {
+            await Linking.openURL(waWebUrl);
+          }
+          await saveUserAction(`Visiting card sent via WhatsApp to ${cleanPhone || targetPhone}`);
+          onStatusChange();
+          return;
+        } catch {
+          // Fallback to SMS if WhatsApp fails
+          const smsUrl = `sms:${mobile?.withPlus91 ?? targetPhone}?body=${encodeURIComponent(message)}`;
+          Linking.openURL(smsUrl).catch(() =>
+            appService.showToast('Could not open WhatsApp or SMS', 'Error')
+          );
+          await saveUserAction(`Visiting card sent via SMS to ${cleanPhone || targetPhone}`);
+          onStatusChange();
+          return;
+        }
+      }
+
+      // ── Has more than 1 activity record → use native share sheet ────────────────
       if (visitingCardUri) {
         try {
           await Sharing.shareAsync(visitingCardUri, {
             dialogTitle: 'Share Digital Visiting Card',
             mimeType: 'image/png',
           });
-          if (acts.length === 0) {
-            await saveUserAction('Supplier contacted via Digital Card');
-            onStatusChange();
-          }
           return;
         } catch {
           appService.showToast('Could not share visiting card', 'Error');
         }
       }
 
-      // ── If no activity yet → send directly to buyer via WhatsApp/SMS ──────────
-      if (acts.length === 0) {
-        const waUrl = `https://wa.me/${mobile?.with91 ?? mPlain}?text=${encodeURIComponent(message)}`;
-        Linking.openURL(waUrl).catch(() => {
-          const smsUrl = `sms:${mobile?.withPlus91 ?? mPlain}?body=${encodeURIComponent(message)}`;
-          Linking.openURL(smsUrl).catch(() =>
-            appService.showToast('Could not open WhatsApp or SMS', 'Error')
-          );
-        });
-        await saveUserAction('Supplier contacted via WA/SMS');
-        onStatusChange();
-        return;
-      }
-
-      // ── Has activity → use native share sheet ────────────────────────────────
       try {
         await Share.share({ message });
       } catch {
@@ -331,6 +392,8 @@ const ShowLeads = React.memo(
       mPlain,
       mobile,
       acts,
+      item.sender_mobile,
+      item.product_name,
       currentUser,
       corporateName,
       corporateEmail,

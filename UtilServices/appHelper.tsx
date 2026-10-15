@@ -92,20 +92,10 @@ class AppService {
   }
 
   private formatCamelCase(str: string): string {
-    if (!str) return 'Server';
-    const lower = str.toLowerCase();
-    if (lower === 'onrender') return 'OnRender';
-    if (lower === 'oracle') return 'Oracle';
-    if (lower === 'vercel') return 'Vercel';
-    if (lower === 'railway') return 'Railway';
-    if (lower === 'local') return 'Local';
-    if (lower === 'render') return 'Render';
-    if (lower === 'machin') return 'Machin';
-    if (lower === 'server') return 'Server';
-
-    return str
-      .split(/[-_\s]+/)
-      .filter(Boolean)
+    if (!str || !str.trim()) return 'Server';
+    const words = str.trim().split(/[-_\s]+/).filter(Boolean);
+    if (words.length === 0) return 'Server';
+    return words
       .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
       .join('');
   }
@@ -119,11 +109,11 @@ class AppService {
     const targetClean = cleanUrl(raw);
     const targetHost = targetClean.split('/')[0].split(':')[0];
 
-    // 1. Dynamic check against EXPO_PUBLIC_API_URL environment variables
+    // 1. Dynamic check against .env variable name after EXPO_PUBLIC_API_URL_
     const publicEnv = this.getExpoPublicEnv();
     for (const [key, val] of Object.entries(publicEnv)) {
       if (
-        key.startsWith('EXPO_PUBLIC_API_URL') &&
+        (key.startsWith('EXPO_PUBLIC_API_URL') || key.startsWith('API_URL')) &&
         typeof val === 'string' &&
         val.trim()
       ) {
@@ -139,20 +129,16 @@ class AppService {
           if (key.startsWith('EXPO_PUBLIC_API_URL_')) {
             return this.formatCamelCase(key.replace('EXPO_PUBLIC_API_URL_', ''));
           }
-          return this.formatCamelCase(key.replace('EXPO_PUBLIC_API_URL', ''));
+          if (key.startsWith('API_URL_')) {
+            return this.formatCamelCase(key.replace('API_URL_', ''));
+          }
+          const suffix = key.replace(/^EXPO_PUBLIC_API_URL|^API_URL/, '');
+          return suffix ? this.formatCamelCase(suffix) : 'Primary';
         }
       }
     }
 
-    // 2. Fallbacks for known providers/IPs
-    const lower = raw.toLowerCase();
-    if (lower.includes('onrender.com') || lower.includes('render')) return 'OnRender';
-    if (lower.includes('137.23.37.25') || lower.includes('80.225.215.140') || lower.includes('oracle')) return 'Oracle';
-    if (lower.includes('vercel.app') || lower.includes('vercel')) return 'Vercel';
-    if (lower.includes('railway.app') || lower.includes('railway')) return 'Railway';
-    if (lower.includes('localhost') || lower.includes('127.0.0.1')) return 'Local';
-
-    // 3. Fallback to host/server
+    // 2. Fallback to host
     if (targetHost) return this.formatCamelCase(targetHost);
     return 'Server';
   }
@@ -172,45 +158,15 @@ class AppService {
 
     const rawCandidates: string[] = [];
 
-    // 1. Capture all variables matching prefix EXPO_PUBLIC_API_URL_
+    // Dynamically retrieve all API URL candidates from .env / environment variables
     for (let i = 0; i < envEntries.length; i++) {
       const [key, val] = envEntries[i];
       if (
-        key.startsWith('EXPO_PUBLIC_API_URL_') &&
+        (key.startsWith('EXPO_PUBLIC_API_URL') || key.startsWith('API_URL')) &&
         typeof val === 'string' &&
         urlPattern.test(val.trim())
       ) {
         rawCandidates.push(val.trim());
-      }
-    }
-
-    // 2. Capture any exact EXPO_PUBLIC_API_URL variables (e.g. EXPO_PUBLIC_API_URL, EXPO_PUBLIC_API_URL1, etc.)
-    for (let i = 0; i < envEntries.length; i++) {
-      const [key, val] = envEntries[i];
-      if (
-        !key.startsWith('EXPO_PUBLIC_API_URL_') &&
-        key.startsWith('EXPO_PUBLIC_API_URL') &&
-        typeof val === 'string' &&
-        urlPattern.test(val.trim())
-      ) {
-        rawCandidates.push(val.trim());
-      }
-    }
-
-    // Static references for inlining into APK bundle (only EXPO_PUBLIC_API_URL*)
-    const staticFallbacks: (string | undefined)[] = [
-      process.env.EXPO_PUBLIC_API_URL_MACHIN,
-      process.env.EXPO_PUBLIC_API_URL_ORACLE,
-      process.env.EXPO_PUBLIC_API_URL_ONRENDER,
-      process.env.EXPO_PUBLIC_API_URL_RENDER,
-      process.env.EXPO_PUBLIC_API_URL_CF,
-      process.env.EXPO_PUBLIC_API_URL,
-      process.env.EXPO_PUBLIC_API_URL1,
-      process.env.EXPO_PUBLIC_API_URL2,
-    ];
-    for (const fb of staticFallbacks) {
-      if (fb && typeof fb === 'string' && urlPattern.test(fb.trim())) {
-        rawCandidates.push(fb.trim());
       }
     }
 
@@ -798,9 +754,16 @@ class AppService {
     toDate?: string
   ): Promise<any> {
     try {
-      const params: any = { employeeId: userId };
-      if (fromDate) params.from_date = fromDate;
-      if (toDate) params.to_date = toDate;
+      const params: any = {};
+      if (userId && String(userId) !== 'undefined' && String(userId) !== 'null') {
+        params.employeeId = userId;
+      }
+      if (fromDate && String(fromDate) !== 'undefined' && String(fromDate) !== 'null') {
+        params.from_date = fromDate;
+      }
+      if (toDate && String(toDate) !== 'undefined' && String(toDate) !== 'null') {
+        params.to_date = toDate;
+      }
 
       const res = await this.httpClient.get('service/hr/attendance', {
         headers: { Authorization: `Bearer ${token}` },

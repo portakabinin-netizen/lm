@@ -1,10 +1,10 @@
 {
   "name": "backend",
   "version": "1.0.0",
-  "main": "server.js",
+  "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "dev": "nodemon index.js"
+    "start": "node --max-old-space-size=2048 index.js",
+    "dev": "nodemon --quiet --exec \"node --max-old-space-size=2048\" index.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",
@@ -14,10 +14,14 @@
     "exceljs": "^4.4.0",
     "express": "^4.21.2",
     "helmet": "^8.1.0",
+    "imapflow": "^1.2.9",
     "jsonwebtoken": "^9.0.2",
+    "mailparser": "^3.9.3",
     "mongoose": "^7.8.7",
+    "multer": "^2.1.1",
     "socket.io": "^4.8.1",
-    "twilio": "^5.11.1"
+    "twilio": "^5.11.1",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@react-native-community/cli": "latest",

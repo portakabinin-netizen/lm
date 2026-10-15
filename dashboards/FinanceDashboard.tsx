@@ -2996,6 +2996,16 @@ export default function FinanceDashboard({ token, userId, name, dbName, graphOnl
     }, [token, dbName]);
 
     useEffect(() => {
+        setVouchersList([]);
+        setAttendanceList([]);
+        setMasterData({ groups: [], ledgers: [] });
+        setPettyCashSummary({
+            totalVault: 0,
+            totalDebit: 0,
+            totalCredit: 0,
+            activeCount: 0,
+            books: [],
+        });
         if (!dbName) return;
         fetchExtraData();
     }, [fetchExtraData, dbName]);

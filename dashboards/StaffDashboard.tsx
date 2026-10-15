@@ -90,7 +90,8 @@ const isTokenValid = (token: string, userId: string, dbName: string): boolean =>
   try {
     const decoded: any = jwtDecode(token);
     if (decoded.exp && decoded.exp * 1000 < Date.now()) return false;
-    if (decoded.id !== userId || decoded.dbName !== dbName) return false;
+    const decUserId = decoded.userId || decoded.id || decoded._id;
+    if (decUserId !== userId || decoded.dbName !== dbName) return false;
     return true;
   } catch {
     return false;
@@ -172,7 +173,7 @@ const StaffDashboard = ({
     if (propRefMobile) setReferenceMobile(propRefMobile);
   }, [propRefMobile]);
 
-  // ── Wipe state if userId changes (security) ──────────────────────────────
+  // ── Wipe state if userId or dbName changes ──────────────────────────────
   useEffect(() => {
     setEmployee(null);
     setAttendance([]);
@@ -180,7 +181,7 @@ const StaffDashboard = ({
     setProjects([]);
     setIssuedArticles([]);
     setSelectedSite(null);
-  }, [userId]);
+  }, [userId, dbName]);
 
   const isOwnWorker = useMemo(() => {
     const w = (employee?.mobile ?? '').replace(/\D/g, '').slice(-10);

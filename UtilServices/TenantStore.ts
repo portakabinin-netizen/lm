@@ -133,6 +133,12 @@ class TenantStore {
     });
   }
 
+  /** Reset old tenant state and re-initialize for new corporate tenant */
+  async switchTenant(newDbName: string) {
+    this.clear();
+    await this.init(newDbName);
+  }
+
   // ── Public read API ─────────────────────────────────────────────────────────
 
   get<T = any>(domain: TenantDomain): T | null {

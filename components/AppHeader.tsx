@@ -170,6 +170,7 @@ export const AppHeader = React.memo(function AppHeader({
   // ── Handlers ──────────────────────────────────────────────────────────────
   const handleSwitch = async (id: string) => {
     setCorpSelectorVisible(false);
+    if (id === user?.dbName) return;
     setLatestCorpImg(null);
     await switchCorporate(id);
   };

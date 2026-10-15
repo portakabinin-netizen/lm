@@ -404,7 +404,7 @@ export default function AdminDashboard({ token, userId, name, dbName }: Props) {
               <ActivityTicker activities={aggregatedActivities} />
             </View>
           </View>
-          <LeadAnalytics isDark={isDark} token={token} dbName={user?.dbName} />
+          <LeadAnalytics key={dbName} isDark={isDark} token={token} dbName={dbName || user?.dbName} />
           {/* 📢 Broadcast Composer (CorpAdmin/Admin only — auto-hides for other roles) */}
           <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
             <BroadcastAlertModal showSender={true} />
@@ -415,8 +415,10 @@ export default function AdminDashboard({ token, userId, name, dbName }: Props) {
       {/* ── PROJECT TAB ────────────────────────────────────────────────────── */}
       {mainTab === 'Project' && (
         <ProjectDashboard
+          key={dbName}
           token={token}
           userId={userId}
+          dbName={dbName}
           corporateId={user?.corporateId ?? ''}
           corpAdminId={user?.corpAdminId ?? ''}
           name={name || user?.name}
@@ -426,12 +428,13 @@ export default function AdminDashboard({ token, userId, name, dbName }: Props) {
 
       {/* ── MONITOR TAB ──────────────────────────────────────────────────── */}
       {mainTab === 'Monitor' && (
-        <StaffMonitoringPanel token={token} />
+        <StaffMonitoringPanel key={dbName} token={token} />
       )}
 
       {/* ── FINANCE TAB ────────────────────────────────────────────────────── */}
       {mainTab === 'Finance' && (
         <FinanceDashboard
+          key={dbName}
           token={token}
           userId={userId}
           name={name || user?.name || ''}

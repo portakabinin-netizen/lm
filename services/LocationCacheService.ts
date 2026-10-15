@@ -150,4 +150,23 @@ export class LocationCacheService {
     
     return null;
   }
+
+  /**
+   * Clear all location caches (memory + storage) on corporate switch / logout
+   */
+  static async clearCache(): Promise<void> {
+    this.memoryCache.profiles = null;
+    this.memoryCache.leads = null;
+    this.memoryCache.gps = null;
+    try {
+      await AsyncStorage.multiRemove([
+        CACHE_KEYS.PROFILE_LOCATIONS,
+        CACHE_KEYS.LEAD_LOCATIONS,
+        CACHE_KEYS.RAW_GPS,
+      ]);
+    } catch (e) {
+      console.warn('Failed to clear location cache', e);
+    }
+  }
 }
+

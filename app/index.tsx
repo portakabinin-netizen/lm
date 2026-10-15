@@ -924,10 +924,11 @@ export default function DynamicHomeScreen() {
         previewUri={activeField === 'CorpProfileImage' ? previewUri : null}
       />
 
-      {/* DashboardRenderer: React.memo + primitive props = never remounts
-          unless token/userId/name/corporateId actually change */}
+      {/* DashboardRenderer: Keyed by dbName so switching corporate unmounts previous
+          corporate state completely and cleanly mounts the new corporate dashboard */}
       <View style={{ flex: 1 }}>
         <DashboardRenderer
+          key={`${user?.dbName || 'none'}_${user?.userId || 'none'}`}
           role={resolvedRole}
           token={dashToken}
           userId={dashUserId}

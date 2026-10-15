@@ -277,6 +277,13 @@ export function useAttendance() {
     return () => clearInterval(id);
   }, [dutyStatus]);
 
+  // ── Reset duty and profile when corporate changes to avoid showing old corporate data ──
+  useEffect(() => {
+    setActiveDuty(null);
+    setDutyStatus('OFF');
+    setEmployeeProfile(null);
+  }, [user?.dbName]);
+
   // ── Bootstrap: restore active duty from backend on mount
   useEffect(() => {
     if (!employeeId || !token || !user?.dbName) return;

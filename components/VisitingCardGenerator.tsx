@@ -274,10 +274,13 @@ export default function VisitingCardGenerator() {
 const styles = StyleSheet.create({
   hiddenContainer: {
     position: 'absolute',
-    top: 0,
-    left: 0,
-    zIndex: -1,
-    opacity: 1, // keeping it 1 so image network requests don't get cancelled by Android
+    left: -9999,
+    top: -9999,
+    width: 380,
+    height: 240,
+    opacity: 1,
+    zIndex: -99999,
+    pointerEvents: 'none',
   },
   cardContainer: {
     width: 380,

@@ -78,6 +78,12 @@ export const useLeadAnalytics = (
     };
 
     useEffect(() => {
+        setAnalytics({
+            sourceData: [],
+            statusData: [],
+            totalCount: 0,
+            financeTrend: [],
+        });
         fetchData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [token, dbName, filters.fromDate, filters.toDate, filters.source]);

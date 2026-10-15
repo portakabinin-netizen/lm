@@ -9,13 +9,11 @@ const userMaster = require("../models/userMaster");
  */
 const tenantMiddleware = async (req, res, next) => {
     try {
-        // 1. Identification (Priority: Header > Body > Query > Token)
-        // Explicit corporate selection (x-tenant-id header) MUST take precedence over the default dbName in the JWT token.
-        let dbName = req.headers['x-tenant-id'] 
-                  || req.headers['x-db-name']
+        // 1. Identification (Priority: Token > Header > Body > Query)
+        let dbName = req.user?.dbName 
+                  || req.headers['x-tenant-id']       // ← Frontend sends this explicitly
                   || req.body?.dbName 
-                  || req.query?.dbName
-                  || req.user?.dbName;
+                  || req.query?.dbName;
         
         if (!dbName) {
             console.error("❌ [Middleware] No dbName found in request");
@@ -26,16 +24,13 @@ const tenantMiddleware = async (req, res, next) => {
         }
 
         // 2. Resolve Connection
-        const normalizedDb = dbConnector.normalizeTenantDb(dbName);
-        const tenantConnection = await dbConnector.getTenantConnection(normalizedDb);
+        const tenantConnection = await dbConnector.getTenantConnection(dbName);
 
         // 3. Instantiate Models and Attach to Request
         req.tenantModels = getTenantModels(tenantConnection);
-        req.tenantDbName = normalizedDb;
+        req.tenantDbName = dbName;
 
-        if (typeof global.setActiveCorporate === "function") {
-            global.setActiveCorporate(normalizedDb);
-        }
+        console.log(`🏢 [Tenant] Resolved dbName: ${dbName} | Models: ${Object.keys(req.tenantModels || {}).join(', ')}`);
 
         // 4. Resolve Hierarchical Locations (HO, RO, BO Logic)
         if (req.user && req.user.userRole !== "CorpAdmin") {

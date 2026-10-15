@@ -49,8 +49,7 @@ const userMasterSchema = new mongoose.Schema({
         durationHrs: { type: Number, default: 8 },
         endOn: { type: String, default: "17:00" }, // HH:mm
         groupName: { type: String, enum: ["MANG", "DaNi"], default: "MANG" },
-        shiftName: { type: String, default: "General" },
-        exemptDays: { type: [String], default: ["Sun"] }
+        shiftName: { type: String, default: "General" }
     },
 
     allowCashFlow: { type: Boolean, default: false },
@@ -71,13 +70,10 @@ const userMasterSchema = new mongoose.Schema({
     collection: "userMaster"
 });
 
-// ⚡ High-Performance Query Indexes
-userMasterSchema.index({ userEmail: 1 }, { sparse: true });
-userMasterSchema.index({ userActive: 1 });
-userMasterSchema.index({ "accessCorporate.dbName": 1 });
+// 🚀 Database Indexes for userMaster
 userMasterSchema.index({ "accessCorporate.dbName": 1, userActive: 1 });
-userMasterSchema.index({ userDisplayName: 1 });
-userMasterSchema.index({ userRole: 1 });
+userMasterSchema.index({ userRole: 1, userActive: 1 });
+userMasterSchema.index({ userEmail: 1 }, { sparse: true });
 
 // ── Middleware: Password Hashing ────────────────────────
 userMasterSchema.pre("save", async function (next) {

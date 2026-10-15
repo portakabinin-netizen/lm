@@ -3,7 +3,7 @@ import { appService } from "@/UtilServices/appHelper";
 import { appModules } from "@/UtilServices/appModals";
 import { documentDirectory, downloadAsync } from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
-import { getSocket, joinTenantRoom } from "@/hooks/Socket";
+import { getSocket, joinTenantRoom, leaveTenantRoom } from "@/hooks/Socket";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { TextInput } from "react-native";
 import ShowLeads from "@/dashboards/showLeads";
@@ -47,7 +47,7 @@ export function useLeadDashboard({
   const tokenRef = useRef(token);
   const isDarkRef = useRef(isDark);
   const nameRef = useRef(name);
-  const userRef = useRef(user); // 🚀 NEW: Reference to user to check dbName
+  const userRef = useRef(user); // 🚀 Reference to user to check dbName
 
   useEffect(() => { tokenRef.current = token; }, [token]);
   useEffect(() => { isDarkRef.current = isDark; }, [isDark]);
@@ -101,6 +101,20 @@ export function useLeadDashboard({
   useEffect(() => { fetchRef.current = fetchLeads; }, [fetchLeads]);
   useEffect(() => { fetchAllRef.current = fetchAllLeads; }, [fetchAllLeads]);
 
+  // Reset old tenant leads when corporate tenant switches
+  const currentDbName = user?.dbName;
+  const prevDbNameRef = useRef(currentDbName);
+  useEffect(() => {
+    if (prevDbNameRef.current && currentDbName && prevDbNameRef.current !== currentDbName) {
+      setLeads([]);
+      setAllLeads([]);
+      setSyncProgress({ text: "", visible: false, overallPercent: 0, stats: { totalFetched: 0, uniqueCount: 0, duplicateCount: 0 } });
+      fetchLeads(false);
+      fetchAllLeads(true);
+    }
+    prevDbNameRef.current = currentDbName;
+  }, [currentDbName, fetchLeads, fetchAllLeads]);
+
   useEffect(() => {
     const unsub = appModules.subscribe((type, state) => {
       if (type === "lead" && !(state as any).visible) fetchRef.current(false);
@@ -141,6 +155,7 @@ export function useLeadDashboard({
     });
 
     return () => {
+      if (user?.dbName) leaveTenantRoom(user.dbName);
       socket.off("lead:created", onUpdate);
       socket.off("lead:updated", onUpdate);
       socket.off("lead:deleted", onUpdate);

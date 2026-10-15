@@ -14,6 +14,7 @@ export interface VoucherEntry {
   amount: number;
   partyName?: string;
   isBank?: boolean;
+  isPettyCash?: boolean;
   leadId?: string;
   leadName?: string;
 }
@@ -26,6 +27,12 @@ export interface Voucher {
   totalCr: number;
   leadId?: string;
   leadName?: string;
+  isValidated?: boolean;
+  isCounterValidated?: boolean;
+  isBackdated?: boolean;
+  entryDate?: Date;
+  validationStatus?: "Validated" | "Unvalidated" | "Pending";
+  approvalPending?: boolean;
 }
 
 // ─── Fixed Account Categories ─────────────────────────────────────────────────
@@ -129,6 +136,12 @@ export const useVouchers = (token: string, dbName?: string) => {
           date: v.date,
           narration: v.narration,
           leadId: v.leadId || null,
+          isValidated: v.isValidated,
+          isCounterValidated: v.isCounterValidated,
+          isBackdated: v.isBackdated,
+          entryDate: v.entryDate || new Date(),
+          validationStatus: v.validationStatus,
+          approvalPending: v.approvalPending,
           entries: v.entries.map((entry) => ({
             ledgerId: entry.accountId,
             ledgerName: entry.accountName,

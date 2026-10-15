@@ -101,9 +101,11 @@ ts_errors.txt
 scratch/
 history/
 *.log
-emulator_screen.png
+emulator_screen*.png
 cloudflared.exe
 index.js
+.vscode/
+.bat_scripts/
 
 # Python backend (tracked separately on hibiz-py branch)
 python/

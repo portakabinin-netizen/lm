@@ -1463,6 +1463,7 @@ export const AttendanceModal: React.FC<Props> = ({
   };
 
   const fetchPaySheetData = async (empId: string) => {
+    if (!empId || String(empId) === 'undefined' || String(empId) === 'null') return;
     try {
       const s = await getSession();
       if (!s?.token) return;

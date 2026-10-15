@@ -83,6 +83,15 @@ async function checkMissedShiftAlarmsInBackground(): Promise<void> {
     const now = Date.now();
     const LAST_ALERT_KEY = 'missed_shift_last_alert_time';
     const MIN_GAP_MS = 15 * 60_000; // 15-minute minimum gap between alerts
+    const { AppState } = require('react-native');
+    if (AppState?.currentState === 'active') {
+      // In foreground: MissedShiftCheckerService handles checks with live attendance
+      return;
+    }
+
+    const mannedCacheRaw = await AsyncStorage.getItem('manned_sites_cache');
+    const mannedSites: string[] = mannedCacheRaw ? JSON.parse(mannedCacheRaw) : [];
+    const mannedSet = new Set(mannedSites.map((s) => String(s).toLowerCase().replace(/[^a-z0-9]/g, '')));
 
     const lastAlertStr = await AsyncStorage.getItem(LAST_ALERT_KEY);
     const lastAlertTime = lastAlertStr ? Number(lastAlertStr) : 0;
@@ -94,6 +103,14 @@ async function checkMissedShiftAlarmsInBackground(): Promise<void> {
       // Prune entries older than 180 min past their fire time
       if (now - alarm.fireAtMs > 180 * 60_000) {
         console.log(`[GEO_TASK] Pruning expired alarm: ${alarm.key}`);
+        continue;
+      }
+
+      // Drop alarm if site is currently manned
+      const normSite = String(alarm.siteName || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+      const leadIdStr = String(alarm.leadId || '');
+      if (mannedSet.has(leadIdStr) || mannedSet.has(normSite)) {
+        console.log(`[GEO_TASK] Dropping alarm: site "${alarm.siteName}" is manned.`);
         continue;
       }
 

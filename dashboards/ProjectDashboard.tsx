@@ -265,6 +265,9 @@ const ProjectDashboard: React.FC<Props> = ({
     }
   }, [name, propUserProfileImage, user?.userDisplayName, user?.name, user?.userProfileImage]);
 
+  const userRoleStr = user?.userRole || (user as any)?.role || '';
+  const userDbName = user?.dbName || '';
+
   const fetchData = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
     try {
@@ -273,7 +276,7 @@ const ProjectDashboard: React.FC<Props> = ({
         const session = await appService.getSession().catch(() => null);
         authToken = session?.token || '';
       }
-      const activeDb = tenantDbName || user?.dbName || '';
+      const activeDb = tenantDbName || userDbName || '';
       const reqHeaders = {
         ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
         ...(activeDb ? { 'x-tenant-id': activeDb } : {}),
@@ -289,18 +292,27 @@ const ProjectDashboard: React.FC<Props> = ({
       ]);
       if (empRes.data?.success) {
         setWorkers(empRes.data.data || []);
-        AsyncStorage.setItem('cached_workers', JSON.stringify(empRes.data.data || [])).catch(() => {});
+        if (activeDb) {
+          AsyncStorage.setItem(`cached_workers_${activeDb}`, JSON.stringify(empRes.data.data || [])).catch(() => {});
+        }
       }
       if (activeRes.data?.success) setActiveStaff(activeRes.data.data || []);
       if (clientRes.data?.success) {
         const loadedClients = clientRes.data.data || [];
         setClients(loadedClients);
-        AsyncStorage.setItem('cached_clients', JSON.stringify(loadedClients)).catch(() => {});
+        if (activeDb) {
+          AsyncStorage.setItem(`cached_clients_${activeDb}`, JSON.stringify(loadedClients)).catch(() => {});
+        }
 
-        const currentRole = String(user?.userRole || (user as any)?.role || '').trim();
+        const currentRole = String(userRoleStr).trim();
         const loadedAtt = attRes.data?.data || (Array.isArray(attRes.data) ? attRes.data : []);
+        const activeList = activeRes.data?.data || [];
+        const combinedAtt = [...loadedAtt, ...activeList];
+        AsyncStorage.setItem('cached_active_attendance', JSON.stringify(combinedAtt)).catch(() => {});
         if (loadedClients.length > 0 && currentRole.toLowerCase() === 'project') {
-          missedShiftChecker.checkAll(loadedClients, loadedAtt, currentRole);
+          setTimeout(() => {
+            missedShiftChecker.checkAll(loadedClients, combinedAtt, currentRole);
+          }, 300);
         }
       }
     } catch (e) {
@@ -308,34 +320,76 @@ const ProjectDashboard: React.FC<Props> = ({
     } finally {
       if (!silent) setLoading(false);
     }
-  }, [token, tenantDbName, user]);
+  }, [token, tenantDbName, userDbName, userRoleStr]);
+
+  // Keep missedShiftChecker synced whenever active staff updates
+  useEffect(() => {
+    if (activeStaff && activeStaff.length > 0 && clients && clients.length > 0) {
+      const currentRole = String(userRoleStr || user?.userRole || (user as any)?.role || '').trim();
+      if (currentRole.toLowerCase() === 'project') {
+        missedShiftChecker.checkAll(clients, activeStaff, currentRole);
+      }
+    }
+  }, [activeStaff, clients, userRoleStr]);
+
+  // Clean stale non-tenant cache and wipe state on tenant change
+  useEffect(() => {
+    setWorkers([]);
+    setClients([]);
+    setActiveStaff([]);
+    AsyncStorage.multiRemove(['cached_workers', 'cached_clients']).catch(() => {});
+  }, [tenantDbName]);
 
   useEffect(() => {
-    AsyncStorage.getItem('cached_workers').then((data) => {
-      if (data) {
-        try {
-          const parsed = JSON.parse(data);
-          if (Array.isArray(parsed) && parsed.length > 0) setWorkers(parsed);
-        } catch {}
-      }
-    }).catch(() => {});
-    AsyncStorage.getItem('cached_clients').then((data) => {
-      if (data) {
-        try {
-          const parsed = JSON.parse(data);
-          if (Array.isArray(parsed) && parsed.length > 0) setClients(parsed);
-        } catch {}
-      }
-    }).catch(() => {});
+    let isMounted = true;
+    const activeDb = tenantDbName || userDbName || '';
+
+    // Fast-path: Preload cached data immediately to show UI without blocking
+    if (activeDb) {
+      Promise.all([
+        AsyncStorage.getItem(`cached_workers_${activeDb}`),
+        AsyncStorage.getItem(`cached_clients_${activeDb}`),
+      ]).then(([workersData, clientsData]) => {
+        if (!isMounted) return;
+        let hasCache = false;
+        if (workersData) {
+          try {
+            const parsed = JSON.parse(workersData);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              setWorkers(parsed);
+              hasCache = true;
+            }
+          } catch {}
+        }
+        if (clientsData) {
+          try {
+            const parsed = JSON.parse(clientsData);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              setClients(parsed);
+              hasCache = true;
+            }
+          } catch {}
+        }
+        if (hasCache) {
+          setLoading(false); // Immediate unblock
+        }
+      }).catch(() => {});
+    }
 
     appService.getSession().then((session) => {
+      if (!isMounted) return;
       if (session) {
         if (!name) setUserName(session.userDisplayName || session.displayName || session.name || session.employeeName || 'User');
         if (!propUserProfileImage) setUserProfileImage(session.photo || session.userProfileImage || session.employeeImage || session.photo_url || session.profileimage || session.profileImage || '');
       }
     });
+
     fetchData();
-  }, [fetchData]);
+
+    return () => {
+      isMounted = false;
+    };
+  }, [fetchData, tenantDbName, userDbName]);
 
   // Real-time Socket Event Subscription for Attendance, Staff, Leads & Active Staff Synchronization
   useEffect(() => {
@@ -734,7 +788,7 @@ const ProjectDashboard: React.FC<Props> = ({
           </View>
         ) : (dutyStatus === 'ON' || isUserAdmin) ? (
           <LiveTracker 
-            activeStaff={isUserAdmin ? activeStaff : []} 
+            activeStaff={activeStaff} 
             leads={clients} 
             employees={workers} 
             name={userName || user?.name || user?.userDisplayName || ''}
@@ -754,103 +808,138 @@ const ProjectDashboard: React.FC<Props> = ({
         )}
       </View>
 
-      {/* Modals */}
-      <AddEmployeeModal
-        visible={addEmpVisible}
-        employee={selectedItem}
-        onClose={() => setAddEmpVisible(false)}
-        onComplete={fetchData}
-        onEditComplete={fetchData}
-      />
+      {/* Modals - Lazy conditional rendering so they don't block initial render */}
+      {addEmpVisible && (
+        <AddEmployeeModal
+          visible={addEmpVisible}
+          employee={selectedItem}
+          onClose={() => setAddEmpVisible(false)}
+          onComplete={fetchData}
+          onEditComplete={fetchData}
+        />
+      )}
 
-      <LeadModal
-        visible={addLeadVisible}
-        leadInfo={selectedItem ? {
-          name: selectedItem.sender_name,
-          status: selectedItem.status,
-          product: selectedItem.product_name
-        } : undefined}
-        onClose={() => setAddLeadVisible(false)}
-        type={modalType === 'add' ? 'addLead' : 'edit'}
-        mobile={selectedItem?.sender_mobile}
-      />
+      {addLeadVisible && (
+        <LeadModal
+          visible={addLeadVisible}
+          leadInfo={selectedItem ? {
+            name: selectedItem.sender_name,
+            status: selectedItem.status,
+            product: selectedItem.product_name
+          } : undefined}
+          onClose={() => setAddLeadVisible(false)}
+          type={modalType === 'add' ? 'addLead' : 'edit'}
+          mobile={selectedItem?.sender_mobile}
+        />
+      )}
 
       {/* Operation Modals */}
-      <SiteVisitModal visible={siteVisitVisible} lead={selectedItem} leads={clients} onClose={() => setSiteVisitVisible(false)} onComplete={fetchData} />
-      <ClientMeetModal visible={clientMeetVisible} lead={selectedItem} leads={clients} onClose={() => setClientMeetVisible(false)} onComplete={fetchData} />
-      <WorkProgressModal visible={workProgressVisible} lead={selectedItem} leads={clients} onClose={() => setWorkProgressVisible(false)} onComplete={fetchData} />
-      <AttendanceModal visible={attendanceVisible} onClose={() => setAttendanceVisible(false)} onComplete={() => {}} leads={clients} />
-      <ExpenseModal visible={expenseVisible} lead={selectedItem} leads={clients} onClose={() => setExpenseVisible(false)} onComplete={fetchData} />
-      <VoucherEntryModal visible={voucherVisible} onClose={() => setVoucherVisible(false)} token={token} mode={voucherMode} restrictToOwnPettyCash={true} />
-      <ProjectGalleryModal visible={galleryVisible} onClose={() => setGalleryVisible(false)} clients={clients} />
-      <BillCollectionModal visible={billCollectionVisible} onClose={() => setBillCollectionVisible(false)} token={token} />
-      <StaffFinanceModal visible={staffFinanceVisible} onClose={() => setStaffFinanceVisible(false)} token={token} />
+      {siteVisitVisible && (
+        <SiteVisitModal visible={siteVisitVisible} lead={selectedItem} leads={clients} onClose={() => setSiteVisitVisible(false)} onComplete={fetchData} />
+      )}
+      {clientMeetVisible && (
+        <ClientMeetModal visible={clientMeetVisible} lead={selectedItem} leads={clients} onClose={() => setClientMeetVisible(false)} onComplete={fetchData} />
+      )}
+      {workProgressVisible && (
+        <WorkProgressModal visible={workProgressVisible} lead={selectedItem} leads={clients} onClose={() => setWorkProgressVisible(false)} onComplete={fetchData} />
+      )}
+      {attendanceVisible && (
+        <AttendanceModal visible={attendanceVisible} onClose={() => setAttendanceVisible(false)} onComplete={() => {}} leads={clients} />
+      )}
+      {expenseVisible && (
+        <ExpenseModal visible={expenseVisible} lead={selectedItem} leads={clients} onClose={() => setExpenseVisible(false)} onComplete={fetchData} />
+      )}
+      {galleryVisible && (
+        <ProjectGalleryModal visible={galleryVisible} onClose={() => setGalleryVisible(false)} clients={clients} />
+      )}
+      {billCollectionVisible && (
+        <BillCollectionModal visible={billCollectionVisible} onClose={() => setBillCollectionVisible(false)} token={token} />
+      )}
+      {staffFinanceVisible && (
+        <StaffFinanceModal visible={staffFinanceVisible} onClose={() => setStaffFinanceVisible(false)} token={token} />
+      )}
 
       {/* Custom Sub-menu Modals */}
-      <StaffListModal
-        visible={staffListVisible}
-        onClose={() => setStaffListVisible(false)}
-        workers={workers}
-        mode={staffModalMode}
-        token={token}
-        onEditWorker={(w) => {
-          setSelectedItem(w);
-          setModalType("edit");
-          setAddEmpVisible(true);
-        }}
-        onRefresh={fetchData}
-      />
+      {staffListVisible && (
+        <StaffListModal
+          visible={staffListVisible}
+          onClose={() => setStaffListVisible(false)}
+          workers={workers}
+          mode={staffModalMode}
+          token={token}
+          onEditWorker={(w) => {
+            setSelectedItem(w);
+            setModalType("edit");
+            setAddEmpVisible(true);
+          }}
+          onRefresh={fetchData}
+        />
+      )}
 
-      <AttendanceLogModal
-        visible={attendanceLogVisible}
-        onClose={() => setAttendanceLogVisible(false)}
-        token={token}
-        clients={clients}
-        mode={attendanceLogMode}
-        tenantDbName={tenantDbName}
-      />
+      {attendanceLogVisible && (
+        <AttendanceLogModal
+          visible={attendanceLogVisible}
+          onClose={() => setAttendanceLogVisible(false)}
+          token={token}
+          clients={clients}
+          mode={attendanceLogMode}
+          tenantDbName={tenantDbName}
+        />
+      )}
 
-      <SalaryRegisterModal
-        visible={salaryRegisterVisible}
-        onClose={() => setSalaryRegisterVisible(false)}
-        token={token}
-        user={user}
-      />
+      {salaryRegisterVisible && (
+        <SalaryRegisterModal
+          visible={salaryRegisterVisible}
+          onClose={() => setSalaryRegisterVisible(false)}
+          token={token}
+          user={user}
+        />
+      )}
 
-      <PenaltyRegisterModal
-        visible={penaltyRegisterVisible}
-        onClose={() => setPenaltyRegisterVisible(false)}
-        token={token}
-        user={user}
-      />
+      {penaltyRegisterVisible && (
+        <PenaltyRegisterModal
+          visible={penaltyRegisterVisible}
+          onClose={() => setPenaltyRegisterVisible(false)}
+          token={token}
+          user={user}
+        />
+      )}
 
-      <SitewiseAttendanceRegisterModal
-        visible={attendanceRegisterVisible}
-        onClose={() => setAttendanceRegisterVisible(false)}
-        leads={clients}
-        token={token}
-        user={user}
-      />
+      {attendanceRegisterVisible && (
+        <SitewiseAttendanceRegisterModal
+          visible={attendanceRegisterVisible}
+          onClose={() => setAttendanceRegisterVisible(false)}
+          leads={clients}
+          token={token}
+          user={user}
+        />
+      )}
 
       {/* Chat Room Modal */}
-      <ChatRoomModal
-        visible={chatVisible}
-        onClose={() => setChatVisible(false)}
-        token={token}
-        userId={userId}
-        name={userName}
-        onUnseenCountChange={setUnseenCount}
-        onBroadcastUnseenChange={setBroadcastUnseenCount}
-        onGroupUnseenChange={setGroupUnseenCount}
-      />
+      {chatVisible && (
+        <ChatRoomModal
+          visible={chatVisible}
+          onClose={() => setChatVisible(false)}
+          token={token}
+          userId={userId}
+          name={userName}
+          onUnseenCountChange={setUnseenCount}
+          onBroadcastUnseenChange={setBroadcastUnseenCount}
+          onGroupUnseenChange={setGroupUnseenCount}
+        />
+      )}
 
       {/* Voucher Entry Modal */}
-      <VoucherEntryModal
-        visible={voucherVisible}
-        onClose={() => setVoucherVisible(false)}
-        token={token}
-        dbName={tenantDbName}
-      />
+      {voucherVisible && (
+        <VoucherEntryModal
+          visible={voucherVisible}
+          onClose={() => setVoucherVisible(false)}
+          token={token}
+          mode={voucherMode}
+          restrictToOwnPettyCash={true}
+          dbName={tenantDbName}
+        />
+      )}
 
     </SafeAreaView>
   );
@@ -1376,8 +1465,7 @@ const AttendanceLogModal: React.FC<AttendanceLogModalProps> = ({ visible, onClos
       const candidateEmpIds = [
         ...new Set([
           ...mergedLogs.map((l: any) => String(l.employeeId?._id || l.employeeId || '')),
-          ...fetchedEmployees.map((e: any) => String(e._id || e.id || '')),
-        ].filter(Boolean))
+        ].filter((id) => Boolean(id) && id !== 'undefined' && id !== 'null'))
       ];
 
       if (candidateEmpIds.length > 0) {
@@ -1417,7 +1505,9 @@ const AttendanceLogModal: React.FC<AttendanceLogModalProps> = ({ visible, onClos
       const activeLeads = mergedLeads.length > 0 ? mergedLeads : (clients || []);
       const currentRole = String(user?.userRole || (user as any)?.role || '').trim();
       if (activeLeads && activeLeads.length > 0 && currentRole.toLowerCase() === 'project') {
-        missedShiftChecker.checkAll(activeLeads, mergedLogs, currentRole);
+        const activeList = activeStaffRes?.data?.data || [];
+        const combined = [...mergedLogs, ...activeList];
+        missedShiftChecker.checkAll(activeLeads, combined, currentRole);
       }
     } catch (e: any) {
       console.warn('[AttendanceLogModal] fetchLogs warning:', e?.message);

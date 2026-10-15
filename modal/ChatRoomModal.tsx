@@ -120,7 +120,7 @@ export const ChatRoomModal = forwardRef(
       };
 
       const handleConnectError = (err: any) => {
-        console.error('❌ Socket connection error:', err.message);
+        console.warn('⚠️ Socket connection retry:', err.message);
       };
 
       if (socket.connected) {

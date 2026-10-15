@@ -436,7 +436,26 @@ export default function LedgerMasterScreen() {
     }
   };
 
-  const handleDeleteItem = (type: 'ledger' | 'voucher', id: string) => {
+  const handleDeleteItem = (type: 'ledger' | 'voucher', id: string, itemData?: any) => {
+    if (type === 'voucher' && itemData) {
+      const isUnval =
+        (itemData as any).validationStatus === 'Validated' || (itemData as any).isValidated === true
+          ? false
+          : (itemData as any).validationStatus === 'Unvalidated' ||
+            (itemData as any).validationStatus === 'Pending' ||
+            (itemData as any).isValidated === false ||
+            (itemData as any).isCounterValidated === false;
+
+      const isCounterApproved = !isUnval;
+      if (isCounterApproved) {
+        Alert.alert(
+          'Cannot Delete Voucher',
+          'This voucher is counter-approved and validated. Validated financial records are protected and cannot be deleted.'
+        );
+        return;
+      }
+    }
+
     Alert.alert(
       `Delete ${type === 'ledger' ? 'Ledger' : 'Voucher'}`,
       `Are you sure you want to delete this ${type}? This action is permanent.`,
@@ -462,6 +481,35 @@ export default function LedgerMasterScreen() {
                 err?.response?.data?.message ||
                   err?.response?.data?.error ||
                   'Could not delete item.'
+              );
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleValidateVoucher = (id: string, voucherNo: string) => {
+    Alert.alert(
+      'Counter-Validate Voucher',
+      `Are you sure you want to counter-validate voucher "${voucherNo}"?\n\nOnce validated, its amounts will be merged into the ledger balance calculation and deletion will be permanently locked.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Validate & Lock',
+          onPress: async () => {
+            try {
+              const res = await appService.httpClient.post(`finance/vouchers/${id}/validate`, {
+                corporateId,
+              });
+              if (res.data?.success) {
+                appService.showToast('Voucher validated & balances updated', 'Success');
+                fetchData();
+              }
+            } catch (err: any) {
+              Alert.alert(
+                'Validation Failed',
+                err?.response?.data?.message || err?.message || 'Could not validate voucher'
               );
             }
           },
@@ -580,234 +628,310 @@ export default function LedgerMasterScreen() {
         </TouchableOpacity>
       )}
 
-      <ScrollView
-        contentContainerStyle={{ paddingBottom: 40 }}
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={C.primary} />
-        }
-      >
-        <ErrorBanner message={error} />
-
-        {activeTab === 'ledger' ? (
-          <View>
-            {filteredLedgers.map((l, idx) => {
-              const hasBalance = Math.abs(l.currentBalance ?? 0) > 0;
-              return (
-                <Swipeable
-                  key={l._id || idx}
-                  renderRightActions={() => (
-                    <View style={localStyles.actionsContainer}>
+      {activeTab === 'ledger' ? (
+        <FlatList
+          data={filteredLedgers}
+          keyExtractor={(l, idx) => l._id || String(idx)}
+          contentContainerStyle={{ paddingBottom: 60 }}
+          initialNumToRender={15}
+          maxToRenderPerBatch={10}
+          windowSize={5}
+          removeClippedSubviews={Platform.OS !== 'web'}
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={C.primary} />
+          }
+          ListHeaderComponent={<ErrorBanner message={error} />}
+          ListEmptyComponent={
+            <View style={{ alignItems: 'center', marginTop: 40 }}>
+              <Ionicons name="book-outline" size={64} color="#CBD5E1" />
+              <Text style={{ color: th.txtSec, marginTop: 12, fontSize: 15 }}>
+                No Ledgers Found
+              </Text>
+            </View>
+          }
+          renderItem={({ item: l, index: idx }) => {
+            const hasBalance = Math.abs(l.currentBalance ?? 0) > 0;
+            return (
+              <Swipeable
+                renderRightActions={() => (
+                  <View style={localStyles.actionsContainer}>
+                    <TouchableOpacity
+                      onPress={() => openEditModal('ledger', l)}
+                      style={[localStyles.actionButton, { backgroundColor: COLORS.primary }]}
+                    >
+                      <Ionicons name="create" size={22} color="#fff" />
+                    </TouchableOpacity>
+                    {!l.isDefault && (
                       <TouchableOpacity
-                        onPress={() => openEditModal('ledger', l)}
-                        style={[localStyles.actionButton, { backgroundColor: COLORS.primary }]}
+                        onPress={() => handleDeleteItem('ledger', l._id)}
+                        disabled={hasBalance}
+                        style={[
+                          localStyles.actionButton,
+                          {
+                            backgroundColor: hasBalance ? '#F87171' : 'red',
+                            opacity: hasBalance ? 0.5 : 1,
+                          },
+                        ]}
                       >
-                        <Ionicons name="create" size={22} color="#fff" />
+                        <Ionicons name="trash" size={22} color="#fff" />
                       </TouchableOpacity>
-                      {!l.isDefault && (
-                        <TouchableOpacity
-                          onPress={() => handleDeleteItem('ledger', l._id)}
-                          disabled={hasBalance}
-                          style={[
-                            localStyles.actionButton,
-                            {
-                              backgroundColor: hasBalance ? '#F87171' : 'red',
-                              opacity: hasBalance ? 0.5 : 1,
-                            },
-                          ]}
-                        >
-                          <Ionicons name="trash" size={22} color="#fff" />
-                        </TouchableOpacity>
+                    )}
+                  </View>
+                )}
+              >
+                <View
+                  style={[
+                    localStyles.card,
+                    { backgroundColor: th.card, borderColor: th.border, borderWidth: 1 },
+                  ]}
+                >
+                  <View style={localStyles.cardContent}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                      <Text style={[localStyles.cardTitle, { color: th.txt }]}>
+                        {l.ledgerName}
+                      </Text>
+                      {l.leadIds?.length > 0 && (
+                        <Ionicons
+                          name="link"
+                          size={14}
+                          color={C.primary}
+                          style={{ marginLeft: 8 }}
+                        />
                       )}
                     </View>
-                  )}
-                >
-                  <View
-                    style={[
-                      localStyles.card,
-                      { backgroundColor: th.card, borderColor: th.border, borderWidth: 1 },
-                    ]}
-                  >
-                    <View style={localStyles.cardContent}>
-                      <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                        <Text style={[localStyles.cardTitle, { color: th.txt }]}>
-                          {l.ledgerName}
-                        </Text>
-                        {l.leadIds?.length > 0 && (
-                          <Ionicons
-                            name="link"
-                            size={14}
-                            color={C.primary}
-                            style={{ marginLeft: 8 }}
-                          />
-                        )}
-                      </View>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 4 }}>
-                        <Text style={[localStyles.cardSubtitle, { color: th.txtSec }]}>
-                          {l.groupName}
-                        </Text>
-                        <Text
-                          style={[
-                            localStyles.cardSubtitle,
-                            {
-                              fontWeight: '700',
-                              color: (l.currentBalance ?? 0) >= 0 ? '#10B981' : '#EF4444',
-                              marginLeft: 12,
-                            },
-                          ]}
-                        >
-                          Bal: ₹
-                          {Math.abs(l.currentBalance ?? l.openingBalance ?? 0).toLocaleString(
-                            'en-IN'
-                          )}{' '}
-                          {(l.currentBalance ?? 0) >= 0 ? 'Dr' : 'Cr'}
-                        </Text>
-                      </View>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 4 }}>
+                      <Text style={[localStyles.cardSubtitle, { color: th.txtSec }]}>
+                        {l.groupName}
+                      </Text>
+                      <Text
+                        style={[
+                          localStyles.cardSubtitle,
+                          {
+                            fontWeight: '700',
+                            color: (l.currentBalance ?? 0) >= 0 ? '#10B981' : '#EF4444',
+                            marginLeft: 12,
+                          },
+                        ]}
+                      >
+                        Bal: ₹
+                        {Math.abs(l.currentBalance ?? l.openingBalance ?? 0).toLocaleString(
+                          'en-IN'
+                        )}{' '}
+                        {(l.currentBalance ?? 0) >= 0 ? 'Dr' : 'Cr'}
+                      </Text>
                     </View>
                   </View>
-                </Swipeable>
-              );
-            })}
-            {filteredLedgers.length === 0 && (
-              <View style={{ alignItems: 'center', marginTop: 40 }}>
-                <Ionicons name="book-outline" size={64} color="#CBD5E1" />
-                <Text style={{ color: th.txtSec, marginTop: 12, fontSize: 15 }}>
-                  No Ledgers Found
-                </Text>
-              </View>
-            )}
-          </View>
-        ) : (
-          <View>
-            {filteredVouchers.map((v, idx) => {
-              const totalAmount =
-                v.entries
-                  ?.filter((e: any) => e.debit > 0)
-                  .reduce((sum: number, e: any) => sum + (e.debit || 0), 0) || 0;
-              const drNames = v.entries
+                </View>
+              </Swipeable>
+            );
+          }}
+        />
+      ) : (
+        <FlatList
+          data={filteredVouchers}
+          keyExtractor={(v, idx) => v._id || String(idx)}
+          contentContainerStyle={{ paddingBottom: 60 }}
+          initialNumToRender={12}
+          maxToRenderPerBatch={10}
+          windowSize={5}
+          removeClippedSubviews={Platform.OS !== 'web'}
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={C.primary} />
+          }
+          ListHeaderComponent={<ErrorBanner message={error} />}
+          ListEmptyComponent={
+            <View style={{ alignItems: 'center', marginTop: 40 }}>
+              <Ionicons name="receipt-outline" size={64} color="#CBD5E1" />
+              <Text style={{ color: th.txtSec, marginTop: 12, fontSize: 15 }}>
+                No Vouchers Found
+              </Text>
+            </View>
+          }
+          renderItem={({ item: v, index: idx }) => {
+            const totalAmount =
+              v.entries
                 ?.filter((e: any) => e.debit > 0)
-                .map((e: any) => e.ledgerName)
-                .join(', ');
-              const crNames = v.entries
+                .reduce((sum: number, e: any) => sum + (e.debit || 0), 0) || 0;
+            const drAmount =
+              v.entries
+                ?.filter((e: any) => e.debit > 0)
+                .reduce((sum: number, e: any) => sum + (e.debit || 0), 0) || totalAmount;
+            const crAmount =
+              v.entries
                 ?.filter((e: any) => e.credit > 0)
-                .map((e: any) => e.ledgerName)
-                .join(', ');
+                .reduce((sum: number, e: any) => sum + (e.credit || 0), 0) || totalAmount;
+            const drNames = v.entries
+              ?.filter((e: any) => e.debit > 0)
+              .map((e: any) => e.ledgerName)
+              .join(', ');
+            const crNames = v.entries
+              ?.filter((e: any) => e.credit > 0)
+              .map((e: any) => e.ledgerName)
+              .join(', ');
 
-              return (
-                <Swipeable
-                  key={v._id || idx}
-                  renderRightActions={() => (
-                    <View style={localStyles.actionsContainer}>
+            const isUnvalidated =
+              (v as any).validationStatus === 'Validated' || (v as any).isValidated === true
+                ? false
+                : (v as any).validationStatus === 'Unvalidated' ||
+                  (v as any).validationStatus === 'Pending' ||
+                  (v as any).isValidated === false ||
+                  (v as any).isCounterValidated === false;
+
+            const isCounterApproved = !isUnvalidated;
+
+            const vDateStr = v.date ? new Date(v.date).toDateString() : '';
+            const eDateStr = (v as any).entryDate
+              ? new Date((v as any).entryDate).toDateString()
+              : (v as any).createdAt
+              ? new Date((v as any).createdAt).toDateString()
+              : '';
+            const isBackdated =
+              (v as any).isBackdated || (Boolean(vDateStr && eDateStr) && vDateStr !== eDateStr);
+
+            return (
+              <Swipeable
+                renderRightActions={() => (
+                  <View style={[localStyles.actionsContainer, { width: !isCounterApproved ? 210 : 140, marginBottom: 6 }]}>
+                    {!isCounterApproved && (
                       <TouchableOpacity
-                        onPress={() => openEditModal('voucher', v)}
-                        style={[localStyles.actionButton, { backgroundColor: COLORS.primary }]}
+                        onPress={() => handleValidateVoucher(v._id, v.voucherNo)}
+                        style={[localStyles.actionButton, { backgroundColor: '#10B981' }]}
                       >
-                        <Ionicons name="create" size={22} color="#fff" />
+                        <Ionicons name="checkmark-done" size={22} color="#fff" />
                       </TouchableOpacity>
+                    )}
+                    <TouchableOpacity
+                      onPress={() => openEditModal('voucher', v)}
+                      style={[localStyles.actionButton, { backgroundColor: COLORS.primary }]}
+                    >
+                      <Ionicons name="create" size={22} color="#fff" />
+                    </TouchableOpacity>
+                    {!isCounterApproved ? (
                       <TouchableOpacity
-                        onPress={() => handleDeleteItem('voucher', v._id)}
+                        onPress={() => handleDeleteItem('voucher', v._id, v)}
                         style={[localStyles.actionButton, { backgroundColor: 'red' }]}
                       >
                         <Ionicons name="trash" size={22} color="#fff" />
                       </TouchableOpacity>
-                    </View>
-                  )}
+                    ) : (
+                      <TouchableOpacity
+                        onPress={() =>
+                          Alert.alert(
+                            'Cannot Delete Voucher',
+                            'This voucher has been counter-approved and validated. Validated financial records are protected and cannot be deleted.'
+                          )
+                        }
+                        style={[localStyles.actionButton, { backgroundColor: '#64748B' }]}
+                      >
+                        <Ionicons name="lock-closed" size={20} color="#fff" />
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                )}
+              >
+                <View
+                  style={[
+                    localStyles.card,
+                    {
+                      paddingVertical: 9,
+                      paddingHorizontal: 12,
+                      marginBottom: 6,
+                      backgroundColor: isUnvalidated ? (isDark ? '#261C02' : '#FFFBEB') : th.card,
+                      borderColor: isUnvalidated ? '#F59E0B' : th.border,
+                      borderWidth: 1,
+                      borderLeftWidth: isUnvalidated ? 4 : 1,
+                      borderLeftColor: isUnvalidated ? '#F59E0B' : th.border,
+                    },
+                  ]}
                 >
-                  <View
-                    style={[
-                      localStyles.card,
-                      { backgroundColor: th.card, borderColor: th.border, borderWidth: 1 },
-                    ]}
-                  >
-                    <View style={localStyles.cardContent}>
-                      <View style={localStyles.cardHeaderRow}>
-                        <View>
-                          <Text style={[localStyles.cardTitle, { color: th.txt }]}>
-                            {v.voucherNo}
+                  <View style={localStyles.cardContent}>
+                    {/* Line 1: Voucher No, Voucher Type, Date and Backend Badge in single line */}
+                    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', flexShrink: 1, gap: 6 }}>
+                        <Text style={[localStyles.cardTitle, { color: th.txt, fontSize: 13.5, fontWeight: '700' }]} numberOfLines={1}>
+                          {v.voucherNo}
+                        </Text>
+                        <View
+                          style={{
+                            backgroundColor: C.primary + '18',
+                            paddingHorizontal: 6,
+                            paddingVertical: 1,
+                            borderRadius: 4,
+                          }}
+                        >
+                          <Text style={{ color: C.primary, fontSize: 10, fontWeight: '700' }}>
+                            {v.voucherType}
                           </Text>
+                        </View>
+                        <Text style={{ fontSize: 11, color: th.txtSec }}>
+                          {appService.formatDate(v.date)}
+                        </Text>
+                      </View>
+
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginLeft: 6 }}>
+                        {isBackdated && (
                           <View
                             style={{
-                              backgroundColor: C.primary + '20',
-                              paddingHorizontal: 8,
-                              paddingVertical: 2,
-                              borderRadius: 6,
-                              marginTop: 6,
-                              alignSelf: 'flex-start',
+                              backgroundColor: '#EDE9FE',
+                              paddingHorizontal: 5,
+                              paddingVertical: 1,
+                              borderRadius: 4,
+                              borderWidth: 0.5,
+                              borderColor: '#DDD6FE',
                             }}
                           >
-                            <Text style={{ color: C.primary, fontSize: 11, fontWeight: '700' }}>
-                              {v.voucherType}
+                            <Text style={{ color: '#6D28D9', fontSize: 9.5, fontWeight: '800' }}>
+                              ⏳ BACKDATED
                             </Text>
                           </View>
-                        </View>
-                        <View style={localStyles.cardActionGroup}>
-                          <TouchableOpacity
-                            onPress={() => openEditModal('voucher', v)}
-                            style={[
-                              localStyles.cardActionButton,
-                              { backgroundColor: COLORS.primary },
-                            ]}
+                        )}
+                        {isUnvalidated && (
+                          <View
+                            style={{
+                              backgroundColor: '#FEF3C7',
+                              paddingHorizontal: 5,
+                              paddingVertical: 1,
+                              borderRadius: 4,
+                              borderWidth: 0.5,
+                              borderColor: '#FDE68A',
+                            }}
                           >
-                            <Ionicons name="create" size={18} color="#fff" />
-                          </TouchableOpacity>
-                          <TouchableOpacity
-                            onPress={() => handleDeleteItem('voucher', v._id)}
-                            style={[localStyles.cardActionButton, { backgroundColor: 'red' }]}
-                          >
-                            <Ionicons name="trash" size={18} color="#fff" />
-                          </TouchableOpacity>
-                        </View>
+                            <Text style={{ color: '#D97706', fontSize: 9.5, fontWeight: '800' }}>
+                              ⚠️ UNVALIDATED
+                            </Text>
+                          </View>
+                        )}
                       </View>
+                    </View>
 
-                      <Text style={[localStyles.cardSubtitle, { color: th.txtSec, marginTop: 2 }]}>
-                        {appService.formatDate(v.date)}
-                      </Text>
-
-                      {v.narration ? (
-                        <Text
-                          style={[localStyles.cardSubtitle, { color: th.txt, marginTop: 4 }]}
-                          numberOfLines={2}
-                        >
-                          "{v.narration}"
-                        </Text>
-                      ) : null}
-
-                      <View
-                        style={{
-                          borderTopWidth: 0.5,
-                          borderColor: th.border,
-                          marginTop: 8,
-                          paddingTop: 6,
-                        }}
-                      >
-                        <Text style={{ fontSize: 12, color: th.txtSec }}>
-                          <Text style={{ fontWeight: '700', color: '#10B981' }}>Dr: </Text>
-                          {drNames || 'None'}
-                        </Text>
-                        <Text style={{ fontSize: 12, color: th.txtSec, marginTop: 2 }}>
-                          <Text style={{ fontWeight: '700', color: '#EF4444' }}>Cr: </Text>
-                          {crNames || 'None'}
-                        </Text>
-                      </View>
-
-                      <Text style={[localStyles.cardMeta, { marginTop: 6 }]}>
-                        Amount: ₹{totalAmount.toLocaleString('en-IN')}
+                    {/* Line 2: Dr. Ledger Name Amount, Cr Ledger Name, Amount (Wrapped to show full ledger names) */}
+                    <View style={{ marginTop: 3 }}>
+                      <Text style={{ fontSize: 11.5, color: th.txt, lineHeight: 16 }}>
+                        <Text style={{ fontWeight: '700', color: '#10B981' }}>Dr. </Text>
+                        <Text>{drNames || 'None'} </Text>
+                        <Text style={{ fontWeight: '700', color: isDark ? '#34D399' : '#059669' }}>₹{drAmount.toLocaleString('en-IN')}</Text>
+                        <Text style={{ color: th.txtSec, fontWeight: '600' }}>, </Text>
+                        <Text style={{ fontWeight: '700', color: '#EF4444' }}>Cr. </Text>
+                        <Text>{crNames || 'None'} </Text>
+                        <Text style={{ fontWeight: '700', color: isDark ? '#F87171' : '#DC2626' }}>₹{crAmount.toLocaleString('en-IN')}</Text>
                       </Text>
                     </View>
+
+                    {/* Line 3: Narration */}
+                    {v.narration ? (
+                      <Text
+                        style={{ fontSize: 11, color: th.txtSec, marginTop: 2, fontStyle: 'italic', lineHeight: 15 }}
+                      >
+                        {v.narration.startsWith('"') ? v.narration : `"${v.narration}"`}
+                      </Text>
+                    ) : null}
                   </View>
-                </Swipeable>
-              );
-            })}
-            {filteredVouchers.length === 0 && (
-              <View style={{ alignItems: 'center', marginTop: 40 }}>
-                <Ionicons name="receipt-outline" size={64} color="#CBD5E1" />
-                <Text style={{ color: th.txtSec, marginTop: 12, fontSize: 15 }}>
-                  No Vouchers Found
-                </Text>
-              </View>
-            )}
-          </View>
-        )}
-      </ScrollView>
+                </View>
+              </Swipeable>
+            );
+          }}
+        />
+      )}
 
       <Modal visible={uploadModalVisible} transparent animationType="slide">
         <View style={localStyles.modalContainer}>

@@ -550,6 +550,27 @@ export const ShiftChangeModal: React.FC<Props> = ({
     Record<string, boolean>
   >({});
 
+  // Per-card prev-shift multi-select: Record<leadId, Record<workerId, boolean>>
+  const [prevShiftSelected, setPrevShiftSelected] = useState<Record<string, Record<string, boolean>>>({});
+
+  const togglePrevShiftWorker = (leadId: string, workerId: string, defaultChecked = false) => {
+    setPrevShiftSelected((prev) => {
+      const current = prev[leadId]?.[workerId];
+      const val = current !== undefined ? !current : !defaultChecked;
+      return {
+        ...prev,
+        [leadId]: {
+          ...(prev[leadId] || {}),
+          [workerId]: val,
+        },
+      };
+    });
+  };
+
+  const clearPrevShiftSelected = (leadId: string) => {
+    setPrevShiftSelected((prev) => ({ ...prev, [leadId]: {} }));
+  };
+
   // Filter out users from userMaster / admin roles
   const isEligibleWorker = (emp: any) => {
     if (!emp) return false;
@@ -632,8 +653,10 @@ export const ShiftChangeModal: React.FC<Props> = ({
 
   // ── Site-aware shift resolver ────────────────────────────────────────────
   // Priority: siteShifts on lead (matching shiftCode) > worker profile
-  const getSiteAwareShiftDetails = (employee: any, lead?: any) => {
-    const workerShiftCode = employee?.selectedShift || '';
+  const getSiteAwareShiftDetails = (employee: any, lead?: any, preferredShiftCode?: string) => {
+    const profileDetails = employee ? getEmployeeShiftDetails(employee) : null;
+    const workerShiftCode =
+      preferredShiftCode || employee?.selectedShift || profileDetails?.shiftCode || '';
     const siteShifts: any[] = lead?.siteShifts || [];
     const activeShifts = siteShifts.filter((s: any) => s.active !== false);
 
@@ -906,44 +929,6 @@ export const ShiftChangeModal: React.FC<Props> = ({
                 shiftInfo.durationHrs
               );
 
-              // ── Auto-end active shift for single guard ──
-              const siteActiveWorkers = activeStaff.filter(
-                (s: any) =>
-                  String(s.leadId?._id || s.leadId || '') === String(lead._id) &&
-                  String(s.employeeId?._id || s.employeeId || '') !== String(employeeId)
-              );
-
-              if (siteActiveWorkers.length > 0) {
-                const locData = await refreshGPS().catch(() => null);
-                const geo = locData
-                  ? {
-                      lat: locData.latitude,
-                      long: locData.longitude,
-                      address: locData.resolvedName,
-                    }
-                  : null;
-
-                for (const worker of siteActiveWorkers) {
-                  const attendanceId = worker.attendanceId || worker._id;
-                  const endNowISO = new Date().toISOString();
-                  try {
-                    await appService.httpClient.put(
-                      `service/hr/attendance/${attendanceId}`,
-                      {
-                        dutyEnd: endNowISO,
-                        forcedOff: true,
-                        forcedOffReason: 'Shift Change / Handover (Auto-End Active Shift)',
-                        location: geo,
-                        $push: geo ? { geoHistory: { ...geo, type: 'end', time: endNowISO } } : {},
-                      },
-                      { headers: { Authorization: `Bearer ${token}` } }
-                    );
-                  } catch (err) {
-                    console.error(`Failed to auto-end active worker ${worker._id}`, err);
-                  }
-                }
-              }
-
               const res = await appService.httpClient.post(
                 'service/hr/attendance',
                 {
@@ -962,6 +947,9 @@ export const ShiftChangeModal: React.FC<Props> = ({
                   shiftPeriod: shiftInfo.shiftPeriod,
                   shiftType: shiftInfo.shiftType,
                   shiftLockHours: shiftInfo.durationHrs,
+                  dutyEnd: null,
+                  forcedOff: false,
+                  forcedOffReason: '',
                   requestPermission,
                 },
                 { headers: { Authorization: `Bearer ${token}` } }
@@ -973,8 +961,9 @@ export const ShiftChangeModal: React.FC<Props> = ({
                     `Duty started for ${employee.name}${employee.enrollment_no ? ` (${employee.enrollment_no})` : ''}`,
                   'Success'
                 );
+                setExpandedLeads((prev) => ({ ...prev, [lead._id]: false }));
+                clearPrevShiftSelected(lead._id);
                 onRefresh();
-                onClose();
               } else {
                 appService.showToast(res.data?.message || 'Failed to start duty', 'Error');
               }
@@ -1082,46 +1071,6 @@ export const ShiftChangeModal: React.FC<Props> = ({
               const shiftInfo = getSiteAwareShiftDetails(employee, lead);
               const { isLate } = checkIsLateDynamic(shiftInfo.startTime);
 
-              // ── Auto-end active shift for single guard ──
-              const siteActiveWorkers = activeStaff.filter(
-                (s: any) =>
-                  String(s.leadId?._id || s.leadId || '') === String(lead._id) &&
-                  !endedAttendanceIds.has(s.attendanceId || s._id) &&
-                  !eligibleIds.includes(String(s.employeeId?._id || s.employeeId || ''))
-              );
-
-              if (siteActiveWorkers.length > 0) {
-                const locData = await refreshGPS().catch(() => null);
-                const geo = locData
-                  ? {
-                      lat: locData.latitude,
-                      long: locData.longitude,
-                      address: locData.resolvedName,
-                    }
-                  : null;
-
-                for (const worker of siteActiveWorkers) {
-                  const attendanceId = worker.attendanceId || worker._id;
-                  const endNowISO = new Date().toISOString();
-                  try {
-                    await appService.httpClient.put(
-                      `service/hr/attendance/${attendanceId}`,
-                      {
-                        dutyEnd: endNowISO,
-                        forcedOff: true,
-                        forcedOffReason: 'Shift Change / Handover (Auto-End Active Shift)',
-                        location: geo,
-                        $push: geo ? { geoHistory: { ...geo, type: 'end', time: endNowISO } } : {},
-                      },
-                      { headers: { Authorization: `Bearer ${token}` } }
-                    );
-                    endedAttendanceIds.add(attendanceId);
-                  } catch (err) {
-                    console.error(`Failed to auto-end active worker ${worker._id}`, err);
-                  }
-                }
-              }
-
               try {
                 const nowISO = new Date().toISOString();
                 const dutyStartISO = getSnappedDutyStart(shiftInfo.startTime);
@@ -1147,6 +1096,9 @@ export const ShiftChangeModal: React.FC<Props> = ({
                     shiftPeriod: shiftInfo.shiftPeriod,
                     shiftType: shiftInfo.shiftType,
                     shiftLockHours: shiftInfo.durationHrs,
+                    dutyEnd: null,
+                    forcedOff: false,
+                    forcedOffReason: '',
                   },
                   { headers: { Authorization: `Bearer ${token}` } }
                 );
@@ -1177,8 +1129,159 @@ export const ShiftChangeModal: React.FC<Props> = ({
             setShowEmployeeSelectorForSite((prev) => ({ ...prev, [leadId]: false }));
             onRefresh();
             if (count > 0) {
-              onClose();
+              setExpandedLeads((prev) => ({ ...prev, [leadId]: false }));
             }
+          },
+        },
+      ]
+    );
+  };
+
+  /** Start duty for selected previous-shift workers at a site */
+  const handleStartDutyForPrevShift = async (leadId: string, lead: any, prevShiftWorkers: any[]) => {
+    const isSingleWorker = prevShiftWorkers.length === 1;
+    let selectedWorkerIds = Object.keys(prevShiftSelected[leadId] || {}).filter(
+      (id) => prevShiftSelected[leadId]?.[id]
+    );
+    if (selectedWorkerIds.length === 0 && isSingleWorker) {
+      const singleWorker = prevShiftWorkers[0];
+      if (prevShiftSelected[leadId]?.[singleWorker.id] !== false) {
+        selectedWorkerIds = [singleWorker.id];
+      }
+    }
+
+    if (selectedWorkerIds.length === 0) {
+      appService.showToast('Please select at least one worker to start duty', 'Info');
+      return;
+    }
+
+    // ── ONE WORKER · ONE SHIFT · ONE ATTENDANCE (frontend guard) ──────────
+    const blockedNames: string[] = [];
+    const eligibleIds = selectedWorkerIds.filter((id) => {
+      const isActive = activeStaff.some(
+        (s: any) => String(s.employeeId?._id || s.employeeId) === String(id)
+      );
+      if (isActive) {
+        const emp = employees.find((e: any) => String(e._id) === id);
+        blockedNames.push(
+          emp ? `${emp.name}${emp.enrollment_no ? ` (${emp.enrollment_no})` : ''}` : id
+        );
+      }
+      return !isActive;
+    });
+
+    if (eligibleIds.length === 0) {
+      Alert.alert(
+        '⚠️ All Already On Duty',
+        `${blockedNames.join(', ')} ${blockedNames.length === 1 ? 'is' : 'are'} already on duty. End their shifts first.`,
+        [{ text: 'OK' }]
+      );
+      return;
+    }
+    if (blockedNames.length > 0) {
+      appService.showToast(`Skipped: ${blockedNames.join(', ')} (already on duty)`, 'Info');
+    }
+
+    const bulkSiteShifts = (lead?.siteShifts || []).filter((s: any) => s.active !== false);
+    if (bulkSiteShifts.length === 0) {
+      Alert.alert(
+        '🚫 Shifts Not Configured',
+        `"${lead?.sender_name || 'This site'}" has no shift configuration.\n\nDuty cannot start until site shifts are set up.`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Setup Shifts', onPress: () => setEnquiryLead(lead) },
+        ]
+      );
+      return;
+    }
+
+    const names = eligibleIds
+      .map((id) => {
+        const emp = employees.find((e: any) => String(e._id) === id);
+        return emp ? `${emp.name}${emp.enrollment_no ? ` (${emp.enrollment_no})` : ''}` : id;
+      })
+      .join(', ');
+
+    Alert.alert(
+      eligibleIds.length === 1 ? 'Start Duty' : 'Start Duties',
+      eligibleIds.length === 1
+        ? `Start assigned duty for ${names} at ${lead.sender_name || 'Site'}?`
+        : `Start assigned duty for ${eligibleIds.length} worker(s):\n${names}\nat ${lead.sender_name || 'Site'}?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: eligibleIds.length === 1 ? 'Start' : 'Start All',
+          onPress: async () => {
+            setLoading(true);
+            let count = 0;
+            const failedNames: string[] = [];
+            const endedAttendanceIds = new Set<string>();
+
+            for (const empId of eligibleIds) {
+              const employee = employees.find((e: any) => String(e._id) === String(empId));
+              if (!employee) continue;
+              const rate = employee.rate || 0;
+              const prevWorker = prevShiftWorkers.find((w: any) => String(w.id) === String(empId));
+              const shiftInfo = getSiteAwareShiftDetails(employee, lead, prevWorker?.shiftCode);
+              const { isLate } = checkIsLateDynamic(shiftInfo.startTime);
+
+              try {
+                const nowISO = new Date().toISOString();
+                const dutyStartISO = getSnappedDutyStart(shiftInfo.startTime);
+                const dutyEndScheduled = getScheduledEndTime(
+                  shiftInfo.startTime,
+                  shiftInfo.durationHrs
+                );
+                const res = await appService.httpClient.post(
+                  'service/hr/attendance',
+                  {
+                    employeeId: empId,
+                    leadId: lead._id,
+                    clientId: lead.clientId || null,
+                    status: 'Present',
+                    dutyLevel: 1,
+                    rate,
+                    isLate,
+                    date: dutyStartISO.split('T')[0],
+                    dutyStart: nowISO,
+                    dutyStartScheduled: dutyStartISO,
+                    dutyEndScheduled,
+                    shiftCode: shiftInfo.shiftCode,
+                    shiftPeriod: shiftInfo.shiftPeriod,
+                    shiftType: shiftInfo.shiftType,
+                    shiftLockHours: shiftInfo.durationHrs,
+                    dutyEnd: null,
+                    forcedOff: false,
+                    forcedOffReason: '',
+                  },
+                  { headers: { Authorization: `Bearer ${token}` } }
+                );
+                if (res.data?.success) {
+                  count++;
+                } else if (res.data?.alreadyOnDuty) {
+                  failedNames.push(
+                    employee.name + (employee.enrollment_no ? ` (${employee.enrollment_no})` : '')
+                  );
+                } else {
+                  appService.showToast(res.data?.message || `Failed for ${employee.name}`, 'Error');
+                }
+              } catch (err: any) {
+                const errData = err?.response?.data;
+                if (errData?.alreadyOnDuty) {
+                  failedNames.push(employee.name);
+                } else {
+                  appService.showToast(errData?.message || `Failed for ${employee.name}`, 'Error');
+                }
+              }
+            }
+            setLoading(false);
+            let msg = `Started duty for ${count} worker(s)`;
+            if (failedNames.length > 0)
+              msg += `\nSkipped (already on duty): ${failedNames.join(', ')}`;
+            appService.showToast(msg, count > 0 ? 'Success' : 'Error');
+            clearPrevShiftSelected(leadId);
+            if (count > 0) setExpandedLeads((prev) => ({ ...prev, [leadId]: false }));
+            onRefresh();
           },
         },
       ]
@@ -2581,12 +2684,28 @@ export const ShiftChangeModal: React.FC<Props> = ({
                                             btnColor = '#10b981';
                                           }
 
+                                          const matchedSlot = siteShifts.find(
+                                            (ss: any) => ss.shiftCode === sCode
+                                          );
+                                          const slotCapacity = matchedSlot?.workerSlots || matchedSlot?.maxWorkers || 1;
+
+                                          const isSingleWorker = prevShift.length === 1;
+                                          const isChecked = isSingleWorker
+                                            ? (prevShiftSelected[leadId]?.[worker.id] ?? true)
+                                            : !!(prevShiftSelected[leadId]?.[worker.id]);
+
                                           return (
-                                            <View
+                                            <TouchableOpacity
                                               key={worker.id}
+                                              activeOpacity={0.7}
+                                              onPress={() => {
+                                                if (isStartEnabled) {
+                                                  togglePrevShiftWorker(leadId, worker.id, isSingleWorker);
+                                                }
+                                              }}
                                               style={{
-                                                backgroundColor: '#fffbeb',
-                                                borderColor: '#fcd34d',
+                                                backgroundColor: isChecked ? '#f0fdf4' : '#fffbeb',
+                                                borderColor: isChecked ? '#86efac' : '#fcd34d',
                                                 borderWidth: 1,
                                                 borderRadius: 6,
                                                 padding: 5,
@@ -2596,6 +2715,19 @@ export const ShiftChangeModal: React.FC<Props> = ({
                                                 marginBottom: 2,
                                               }}
                                             >
+                                              {/* Checkbox for all shifts */}
+                                              <View style={{ paddingRight: 6 }}>
+                                                <Ionicons
+                                                  name={isChecked ? 'checkbox' : 'square-outline'}
+                                                  size={20}
+                                                  color={
+                                                    isStartEnabled
+                                                      ? (isChecked ? '#10b981' : COLORS.primary)
+                                                      : '#cbd5e1'
+                                                  }
+                                                />
+                                              </View>
+
                                               <View style={{ flex: 1, marginRight: 6 }}>
                                                 <View
                                                   style={{
@@ -2633,6 +2765,11 @@ export const ShiftChangeModal: React.FC<Props> = ({
                                                   >
                                                     {worker.name}
                                                   </Text>
+                                                  {slotCapacity > 1 && (
+                                                    <Text style={{ fontSize: 10, color: '#6b7280', fontWeight: '600' }}>
+                                                      ({slotCapacity} slots)
+                                                    </Text>
+                                                  )}
                                                 </View>
                                                 <Text
                                                   style={{
@@ -2645,36 +2782,67 @@ export const ShiftChangeModal: React.FC<Props> = ({
                                                   Prev Shift ended
                                                 </Text>
                                               </View>
-                                              <TouchableOpacity
-                                                onPress={() => handleStartDuty(worker.id, lead)}
-                                                disabled={!isStartEnabled}
-                                                style={{
-                                                  backgroundColor: btnColor,
-                                                  paddingHorizontal: 8,
-                                                  paddingVertical: 3.5,
-                                                  borderRadius: 4,
-                                                  flexDirection: 'row',
-                                                  alignItems: 'center',
-                                                  gap: 2,
-                                                  minWidth: 60,
-                                                  justifyContent: 'center',
-                                                }}
-                                              >
-                                                <Ionicons name={iconName} size={14} color="#fff" />
-                                                <Text
+
+                                              {/* Status indicator when cannot start right now */}
+                                              {!isStartEnabled && (
+                                                <View
                                                   style={{
-                                                    fontSize: 12,
-                                                    color: '#fff',
-                                                    fontWeight: '700',
+                                                    backgroundColor: '#f1f5f9',
+                                                    borderColor: '#cbd5e1',
+                                                    borderWidth: 1,
+                                                    paddingHorizontal: 6,
+                                                    paddingVertical: 2,
+                                                    borderRadius: 4,
+                                                    flexDirection: 'row',
+                                                    alignItems: 'center',
+                                                    gap: 2,
                                                   }}
                                                 >
-                                                  {btnText}
-                                                </Text>
-                                              </TouchableOpacity>
-                                            </View>
+                                                  <Ionicons name="hand-left" size={12} color="#64748b" />
+                                                  <Text style={{ fontSize: 11, color: '#64748b', fontWeight: '700' }}>
+                                                    WAIT
+                                                  </Text>
+                                                </View>
+                                              )}
+                                            </TouchableOpacity>
                                           );
                                         })}
                                       </View>
+
+                                      {/* ── Single Start Duty button for all shifts / selected workers ── */}
+                                      {(() => {
+                                        const isSingleWorker = prevShift.length === 1;
+                                        let selectedWorkerIds = Object.keys(prevShiftSelected[leadId] || {}).filter(
+                                          (id) => prevShiftSelected[leadId]?.[id]
+                                        );
+                                        if (selectedWorkerIds.length === 0 && isSingleWorker) {
+                                          if (prevShiftSelected[leadId]?.[prevShift[0].id] !== false) {
+                                            selectedWorkerIds = [prevShift[0].id];
+                                          }
+                                        }
+                                        const count = selectedWorkerIds.length;
+                                        return (
+                                          <TouchableOpacity
+                                            onPress={() => handleStartDutyForPrevShift(leadId, lead, prevShift)}
+                                            style={{
+                                              marginTop: 4,
+                                              backgroundColor: count > 0 ? '#10b981' : '#94a3b8',
+                                              borderRadius: 6,
+                                              paddingVertical: 7,
+                                              paddingHorizontal: 12,
+                                              flexDirection: 'row',
+                                              alignItems: 'center',
+                                              justifyContent: 'center',
+                                              gap: 5,
+                                            }}
+                                          >
+                                            <Ionicons name="power" size={15} color="#fff" />
+                                            <Text style={{ fontSize: 13, fontWeight: '700', color: '#fff' }}>
+                                              {count > 0 ? `Start Duty (${count})` : 'Select Worker to Start Duty'}
+                                            </Text>
+                                          </TouchableOpacity>
+                                        );
+                                      })()}
                                     </View>
                                   )}
 

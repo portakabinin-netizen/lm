@@ -299,6 +299,19 @@ export default function PartyLedgersScreen() {
         );
     }, [ledgers]);
 
+    /* ── Helper to determine unvalidated/pending validation status ─── */
+    const isVoucherUnvalidated = useCallback((v: any) => {
+        // If explicitly validated, it is valid
+        if (v.validationStatus === "Validated" || v.isValidated === true) return false;
+        // Only entries explicitly marked Unvalidated or isValidated === false require counter validation
+        return (
+            v.validationStatus === "Unvalidated" ||
+            v.validationStatus === "Pending" ||
+            v.isValidated === false ||
+            v.isCounterValidated === false
+        );
+    }, []);
+
     /* ── Compute Opening Balance for selected period ─── */
     const periodOpeningBalance = useMemo(() => {
         if (!selectedLedger) return 0;
@@ -312,9 +325,10 @@ export default function PartyLedgersScreen() {
         const sDate = parseDDMMYYYYToDate(startVal);
         if (!sDate) return initialOpening;
 
-        // Sum up all transactions before sDate
+        // Sum up all transactions before sDate (excluding unvalidated entries)
         let sum = initialOpening;
         transactions.forEach((v) => {
+            if (isVoucherUnvalidated(v)) return; // Do NOT consider unvalidated entry in balance calculation
             const date = new Date(v.date || v.createdAt);
             if (date.getTime() < sDate.getTime()) {
                 const entry = (v.entries ?? []).find(
@@ -326,7 +340,7 @@ export default function PartyLedgersScreen() {
             }
         });
         return sum;
-    }, [transactions, selectedLedger, startDate]);
+    }, [transactions, selectedLedger, startDate, isVoucherUnvalidated]);
 
     /* ── Compute Filtered/Sorted Statement Transactions with running bal ─── */
     const processedTransactions = useMemo(() => {
@@ -360,12 +374,17 @@ export default function PartyLedgersScreen() {
         // Compute running balances starting from periodOpeningBalance
         let running = periodOpeningBalance;
         return list.map((v) => {
+            const unval = isVoucherUnvalidated(v);
             const entry = (v.entries ?? []).find(
                 (e: any) => String(e.ledgerId) === String(selectedLedger._id)
             ) ?? {};
             const dr = Number(entry.debit ?? 0);
             const cr = Number(entry.credit ?? 0);
-            running = running + dr - cr;
+
+            // Unvalidated entries are NOT considered in balance calculation!
+            if (!unval) {
+                running = running + dr - cr;
+            }
 
             let oppositeLedgerName = "";
             if (dr > 0) {
@@ -376,18 +395,26 @@ export default function PartyLedgersScreen() {
                 oppositeLedgerName = debits.map((e: any) => (e.ledgerName || "—") + (e.enrollmentNo ? ` (${e.enrollmentNo})` : "")).join(", ");
             }
 
+            // Check if backdated (entry date and voucher date do not match)
+            const vDate = new Date(v.date || v.createdAt);
+            const entryDate = v.entryDate || v.createdAt ? new Date(v.entryDate || v.createdAt) : null;
+            const isBackdated = v.isBackdated || (entryDate && vDate.toDateString() !== entryDate.toDateString());
+
             return {
                 ...v,
                 dr,
                 cr,
+                isUnvalidated: unval,
+                isBackdated,
                 oppositeLedgerName,
                 runningBalance: running
             };
         });
-    }, [transactions, selectedLedger, startDate, endDate, periodOpeningBalance]);
+    }, [transactions, selectedLedger, startDate, endDate, periodOpeningBalance, isVoucherUnvalidated]);
 
-    const totalDr = useMemo(() => processedTransactions.reduce((s, t) => s + t.dr, 0), [processedTransactions]);
-    const totalCr = useMemo(() => processedTransactions.reduce((s, t) => s + t.cr, 0), [processedTransactions]);
+    const totalDr = useMemo(() => processedTransactions.filter(t => !t.isUnvalidated).reduce((s, t) => s + t.dr, 0), [processedTransactions]);
+    const totalCr = useMemo(() => processedTransactions.filter(t => !t.isUnvalidated).reduce((s, t) => s + t.cr, 0), [processedTransactions]);
+    const unvalidatedCount = useMemo(() => processedTransactions.filter(t => t.isUnvalidated).length, [processedTransactions]);
     const periodClosingBalance = periodOpeningBalance + totalDr - totalCr;
 
     /* ── Fetch voucher lines for selected ledger, then show PDF inline ─── */
@@ -426,17 +453,26 @@ export default function PartyLedgersScreen() {
                 const narration = t.narration ?? "—";
                 const voucherNo = t.voucherNumber ?? t.voucher_number ?? t.voucherType ?? "";
                 const balColor = t.runningBalance >= 0 ? "#166534" : "#991b1b";
+                const isUnval = t.isUnvalidated;
+                const rowBg = isUnval ? "background-color: #fffbeb;" : "";
+                const badgeHtml = isUnval 
+                    ? `<span style="background:#fef3c7;color:#b45309;padding:2px 5px;border-radius:3px;font-size:10px;font-weight:700;">⚠️ UNVALIDATED</span> ${t.isBackdated ? '<span style="background:#ede9fe;color:#6d28d9;padding:2px 5px;border-radius:3px;font-size:10px;font-weight:700;">⏳ BACKDATED</span>' : ''}`
+                    : "";
+                const balCell = isUnval
+                    ? `<span style="color:#d97706;font-size:11px;font-weight:700;font-style:italic;">Excluded (Pending Val)</span>`
+                    : `₹${Math.abs(t.runningBalance).toLocaleString("en-IN")} ${t.runningBalance >= 0 ? "Dr" : "Cr"}`;
                 return `
-                    <tr>
+                    <tr style="${rowBg}">
                         <td>${dateStr}</td>
                         <td>
                             ${t.oppositeLedgerName ? `<span style="color:#0f172a;font-weight:600;font-size:13px;">${t.oppositeLedgerName}</span>` : "—"}
+                            ${badgeHtml ? `<br/>${badgeHtml}` : ""}
                             ${narration !== "—" ? `<br/><span style="color:#64748b;font-size:12px;font-style:italic;">"${narration}"</span>` : ""}
                         </td>
                         <td>${voucherNo}</td>
                         <td class="${t.dr > 0 ? 'val-neg' : ''}">${t.dr > 0 ? `₹${t.dr.toLocaleString("en-IN")}` : "—"}</td>
                         <td class="${t.cr > 0 ? 'val-pos' : ''}">${t.cr > 0 ? `₹${t.cr.toLocaleString("en-IN")}` : "—"}</td>
-                        <td style="color:${balColor};font-weight:700;">₹${Math.abs(t.runningBalance).toLocaleString("en-IN")} ${t.runningBalance >= 0 ? "Dr" : "Cr"}</td>
+                        <td style="color:${balColor};font-weight:700;">${balCell}</td>
                     </tr>`;
             }).join("");
 
@@ -539,33 +575,105 @@ export default function PartyLedgersScreen() {
         const date = item.date ?? item.createdAt;
         const dateStr = formatDateCompact(date);
         const voucherNo = item.voucherNumber ?? item.voucher_number ?? item.voucherType ?? "";
+        const isUnval = item.isUnvalidated;
+
+        const handleRowPress = () => {
+            if (!isUnval) return;
+            Alert.alert(
+                "Counter-Validate Voucher",
+                `Voucher "${voucherNo}" is currently UNVALIDATED and excluded from balance calculations.\n\nWould you like to counter-validate this entry now? Once validated, amounts will be merged into the running balance and deletion will be locked.`,
+                [
+                    { text: "Cancel", style: "cancel" },
+                    {
+                        text: "Validate & Lock",
+                        onPress: async () => {
+                            try {
+                                const res = await appService.httpClient.post(`finance/vouchers/${item._id}/validate`, { corporateId });
+                                if (res.data?.success) {
+                                    appService.showToast("Voucher counter-validated & balance updated", "Success");
+                                    fetchMaster();
+                                }
+                            } catch (err: any) {
+                                Alert.alert("Validation Failed", err?.response?.data?.message || err?.message || "Failed to validate voucher");
+                            }
+                        }
+                    }
+                ]
+            );
+        };
 
         return (
-            <View style={[localStyles.tableRow, { borderBottomColor: border }]}>
-                <Text style={[localStyles.tableRowCell, { flex: 1.3, color: txtPri }]} adjustsFontSizeToFit numberOfLines={1}>{dateStr}</Text>
+            <TouchableOpacity
+                activeOpacity={isUnval ? 0.7 : 1}
+                onPress={handleRowPress}
+                style={[
+                    localStyles.tableRow,
+                    {
+                        borderBottomColor: border,
+                        backgroundColor: isUnval
+                            ? (isDark ? '#2a1a05' : '#FFFBEB')
+                            : 'transparent',
+                        borderLeftWidth: isUnval ? 3.5 : 0,
+                        borderLeftColor: '#F59E0B',
+                    }
+                ]}
+            >
+                <View style={{ flex: 1.3 }}>
+                    <Text style={[localStyles.tableRowCell, { color: isUnval ? '#B45309' : txtPri }]} adjustsFontSizeToFit numberOfLines={1}>{dateStr}</Text>
+                    {item.isBackdated && (
+                        <Text style={{ fontSize: 8.5, color: '#7C3AED', fontWeight: '800', marginTop: 1 }}>
+                            Backdated
+                        </Text>
+                    )}
+                </View>
                 <View style={{ flex: 2.8, paddingHorizontal: 4 }}>
                     {item.oppositeLedgerName ? (
-                        <Text style={[localStyles.particularsText, { color: txtPri }]} numberOfLines={2}>
+                        <Text style={[localStyles.particularsText, { color: isUnval ? '#92400E' : txtPri, fontWeight: isUnval ? '700' : '600' }]} numberOfLines={2}>
                             {item.oppositeLedgerName}
                         </Text>
                     ) : null}
+                    {isUnval && (
+                        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 3, marginTop: 2 }}>
+                            <View style={{ backgroundColor: '#FEF3C7', paddingHorizontal: 4, paddingVertical: 1, borderRadius: 3, borderWidth: 0.5, borderColor: '#F59E0B' }}>
+                                <Text style={{ fontSize: 9, fontWeight: '800', color: '#B45309' }}>⚠️ UNVALIDATED</Text>
+                            </View>
+                            {item.isBackdated && (
+                                <View style={{ backgroundColor: '#EDE9FE', paddingHorizontal: 4, paddingVertical: 1, borderRadius: 3, borderWidth: 0.5, borderColor: '#8B5CF6' }}>
+                                    <Text style={{ fontSize: 9, fontWeight: '800', color: '#6D28D9' }}>⏳ BACKDATED</Text>
+                                </View>
+                            )}
+                        </View>
+                    )}
                     {item.narration && item.narration !== "—" ? (
-                        <Text style={[localStyles.narrationText, { color: txtSec }]} numberOfLines={2}>
+                        <Text style={[localStyles.narrationText, { color: txtSec, marginTop: 2 }]} numberOfLines={2}>
                             "{item.narration}"
                         </Text>
                     ) : null}
                 </View>
-                <Text style={[localStyles.tableRowCell, { flex: 1.5, color: txtPri }]} numberOfLines={2}>{voucherNo}</Text>
-                <Text style={[localStyles.tableRowCell, { flex: 1.4, textAlign: "right", color: item.dr > 0 ? COLORS.danger : txtSec }]} adjustsFontSizeToFit numberOfLines={1}>
+                <Text style={[localStyles.tableRowCell, { flex: 1.5, color: isUnval ? '#B45309' : txtPri }]} numberOfLines={2}>{voucherNo}</Text>
+                <Text style={[localStyles.tableRowCell, { flex: 1.4, textAlign: "right", color: item.dr > 0 ? (isUnval ? '#F97316' : COLORS.danger) : txtSec }]} adjustsFontSizeToFit numberOfLines={1}>
                     {item.dr > 0 ? `₹${item.dr.toLocaleString("en-IN")}` : "—"}
                 </Text>
-                <Text style={[localStyles.tableRowCell, { flex: 1.4, textAlign: "right", color: item.cr > 0 ? COLORS.success : txtSec }]} adjustsFontSizeToFit numberOfLines={1}>
+                <Text style={[localStyles.tableRowCell, { flex: 1.4, textAlign: "right", color: item.cr > 0 ? (isUnval ? '#F59E0B' : COLORS.success) : txtSec }]} adjustsFontSizeToFit numberOfLines={1}>
                     {item.cr > 0 ? `₹${item.cr.toLocaleString("en-IN")}` : "—"}
                 </Text>
-                <Text style={[localStyles.tableRowCell, { flex: 2.2, textAlign: "right", fontWeight: "600", color: item.runningBalance >= 0 ? "#166534" : "#991b1b" }]} adjustsFontSizeToFit numberOfLines={1}>
-                    ₹{Math.abs(item.runningBalance).toLocaleString("en-IN")} {item.runningBalance >= 0 ? "Dr" : "Cr"}
-                </Text>
-            </View>
+                <View style={{ flex: 2.2, alignItems: 'flex-end', justifyContent: 'center' }}>
+                    {isUnval ? (
+                        <View style={{ alignItems: 'flex-end' }}>
+                            <Text style={{ fontSize: 10.5, fontWeight: '800', color: '#D97706', fontStyle: 'italic' }}>
+                                Excluded
+                            </Text>
+                            <Text style={{ fontSize: 8.5, color: '#B45309' }}>
+                                (Pending Val)
+                            </Text>
+                        </View>
+                    ) : (
+                        <Text style={[localStyles.tableRowCell, { textAlign: "right", fontWeight: "600", color: item.runningBalance >= 0 ? "#166534" : "#991b1b" }]} adjustsFontSizeToFit numberOfLines={1}>
+                            ₹{Math.abs(item.runningBalance).toLocaleString("en-IN")} {item.runningBalance >= 0 ? "Dr" : "Cr"}
+                        </Text>
+                    )}
+                </View>
+            </TouchableOpacity>
         );
     };
 
@@ -697,6 +805,15 @@ export default function PartyLedgersScreen() {
                         </Text>
                     </View>
                 </View>
+
+                {unvalidatedCount > 0 && (
+                    <View style={{ backgroundColor: isDark ? '#2a1a05' : '#FEF3C7', paddingHorizontal: 12, paddingVertical: 8, flexDirection: 'row', alignItems: 'center', borderBottomWidth: 1, borderBottomColor: isDark ? '#451a03' : '#FDE68A' }}>
+                        <Ionicons name="alert-circle" size={16} color="#D97706" />
+                        <Text style={{ fontSize: 11.5, color: isDark ? '#FBBF24' : '#92400E', fontWeight: '700', marginLeft: 6, flex: 1 }}>
+                            {unvalidatedCount} unvalidated / counter-validation pending entry(s) highlighted in orange and excluded from balance calculation.
+                        </Text>
+                    </View>
+                )}
 
                 {/* Fixed Device Width Table View */}
                 {txnsLoading ? (

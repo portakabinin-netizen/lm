@@ -1,84 +1,172 @@
 /**
  * LiveTracker.tsx
  * ─────────────────────────────────────────────────────────────────────────────
- * Renders a real-time map with:
- *  • Self-marker that moves instantly as the device GPS updates (owns its own
- *    watchPositionAsync — does NOT wait for the prop chain).
- *  • Route polyline merged from server geoHistory (prop) + live foreground
- *    trail accumulated while the map tab is open.
- *  • Staff markers for other on-duty employees.
- *  • Geo-tag / client-match bubble annotations on the trail.
- *  • 3-dot menu: Today's route, route by date, call supervisor, toggle trail.
- *  • Date-picker (last 7 days) to replay any day's route.
+ * High-performance, clean real-time Live Tracker Map View.
+ *
+ * Core Features:
+ *  • Active Duty Workers from Attendance DB (filtered by !dutyEnd & live sockets).
+ *  • Marker ONLY on map — shows ONLY worker image with fallback initial (NO blank circles).
+ *  • Geofencing: Displays site boundaries & checks worker proximity (Inside vs In-Transit).
+ *  • Movement on Route: Smooth polyline with road-snapping (OSRM).
+ *  • Replay Route by Date: Shows route points or clear "No route available" banner.
+ *  • Worker Isolation on Selection: Tapping worker isolates their marker, centers camera,
+ *    and displays their route history.
+ *  • Clean UI: Floating status pills, top controls, and sleek bottom worker card.
  */
 
-import { GPS_CONSTANTS } from '@/constants/gps';
-import { C as COLORS } from '@/hooks/Theme';
-import { S } from '@/styles/styledashboard';
-import { appService } from '@/UtilServices/appHelper';
-import { Ionicons } from '@expo/vector-icons';
-import * as Location from 'expo-location';
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
+  StyleSheet,
+  View,
+  Text,
+  TouchableOpacity,
   ActivityIndicator,
-  Alert,
-  Image,
-  Linking,
   Modal,
   Pressable,
   ScrollView,
-  Text,
-  TouchableOpacity,
-  View,
+  Platform,
+  Linking,
+  Image,
 } from 'react-native';
-import MapView, { Callout, Marker, Polyline } from 'react-native-maps';
-import Svg, { Circle, ClipPath, Defs, Image as SvgImage } from 'react-native-svg';
-import { useUnifiedLocation } from '../hooks/useUnifiedLocation';
+import MapView, { Marker, Polyline, Circle, PROVIDER_GOOGLE } from 'react-native-maps';
+import Svg, { Circle as SvgCircle, ClipPath, Defs, Image as SvgImage } from 'react-native-svg';
+import * as Location from 'expo-location';
+import { Ionicons } from '@expo/vector-icons';
+import { optimizeCloudinaryUrl } from '@/utils/cloudinaryHelper';
+import { appService } from '@/UtilServices/appHelper';
+import { getSocket } from '@/hooks/Socket';
+import { SmartLocationBuffer } from '@/services/SmartLocationBuffer';
+import { LocationSyncService } from '@/services/LocationSyncService';
+import { GeofenceService } from '@/services/GeofenceService';
+import { useUnifiedLocation } from '@/hooks/useUnifiedLocation';
+import { GPS_CONSTANTS } from '@/constants/gps';
 
-// ─── Shared utilities ────────────────────────────────────────────────────────
+// ─── Interfaces ───────────────────────────────────────────────────────────────
+
+export interface LiveTrackerProps {
+  location?: any;
+  employee?: any;
+  name?: string;
+  profileImage?: string;
+  currentMatchedSite?: any;
+  reverseAddress?: string;
+  geoHistory?: any[];
+  activeStaff?: any[];
+  leads?: any[];
+  supervisorMobile?: string;
+  onRefresh?: () => void | Promise<void>;
+  activeDuty?: any;
+  employees?: any[];
+  workerId?: string;
+  token?: string;
+}
+
+export interface NormalizedCoord {
+  latitude: number;
+  longitude: number;
+  timestamp?: number;
+  accuracy?: number | null;
+  speed?: number | null;
+  heading?: number | null;
+}
+
+export interface GeofenceSite {
+  id: string;
+  name: string;
+  latitude: number;
+  longitude: number;
+  radius: number; // in meters
+}
+
+export interface WorkerDisplayInfo {
+  id: string;
+  name: string;
+  photoUrl: string | null;
+  latitude: number;
+  longitude: number;
+  isSelf: boolean;
+  isInsideGeofence: boolean;
+  geofenceSiteName?: string | null;
+  shiftName?: string;
+  dutyStart?: string | null;
+  mobile?: string | null;
+  batteryLevel?: number | null;
+  lastUpdated?: string | number | null;
+  rawStaffData: any;
+}
+
+// ─── Utility Functions ────────────────────────────────────────────────────────
+
 const BASE_URL = (appService.httpClient.defaults.baseURL || '').replace(/\/api\/?$/, '');
 
 function resolveUrl(url: string | null | undefined): string | null {
-  if (!url) return null;
-  if (url.startsWith('http')) return url;
-  const cleanUrl = url.replace(/\\/g, '/').replace(/^\//, '');
-  return `${BASE_URL}/${cleanUrl}`;
+  if (!url || typeof url !== 'string') return null;
+  const trimmed = url.trim();
+  if (!trimmed || trimmed === 'null' || trimmed === 'undefined') return null;
+  if (
+    trimmed.startsWith('http://') ||
+    trimmed.startsWith('https://') ||
+    trimmed.startsWith('data:') ||
+    trimmed.startsWith('file:') ||
+    trimmed.startsWith('content:') ||
+    trimmed.startsWith('blob:')
+  ) {
+    return trimmed;
+  }
+  const clean = trimmed.replace(/\\/g, '/').replace(/^\//, '');
+  return `${BASE_URL}/${clean}`;
 }
 
-function getPhotoUrl(user: any): string | null | undefined {
+function getPhotoUrl(user: any): string | null {
   if (!user) return null;
-  return (
-    user.photo || user.userProfileImage || user.employeeImage || user.photo_url || user.profileimage
-  );
+  const p =
+    user.photo ||
+    user.userProfileImage ||
+    user.profileImage ||
+    user.employeeImage ||
+    user.photo_url ||
+    user.profileimage ||
+    user.profilePhoto ||
+    user.avatar ||
+    user.image ||
+    user.employeeId?.photo ||
+    user.employeeId?.userProfileImage ||
+    user.employeeId?.profileImage ||
+    user.employeeId?.employeeImage ||
+    user.employeeId?.photo_url;
+  return resolveUrl(p);
 }
 
-function getDisplayName(user: any, fallback = 'User'): string {
+function getDisplayName(user: any, fallback = 'Worker'): string {
   if (!user) return fallback;
-  return (user.displayName || user.name || user.employeeName || fallback).replace(
-    'Unknown',
-    'User'
-  );
+  const raw =
+    user.displayName ||
+    user.userDisplayName ||
+    user.name ||
+    user.employeeName ||
+    fallback;
+  return raw.replace('Unknown', 'Worker').trim();
 }
 
-/** Normalise ANY location shape → { lat, lng } numbers (0 if missing). */
-function toLLng(loc: any): { lat: number; lng: number } {
-  return {
-    lat: Number(loc?.coords?.latitude ?? loc?.latitude ?? loc?.lat ?? 0),
-    lng: Number(loc?.coords?.longitude ?? loc?.longitude ?? loc?.long ?? 0),
-  };
-}
-
-function haversineM(lat1: number, lng1: number, lat2: number, lng2: number): number {
-  const R = 6_371_000;
-  const toR = (d: number) => (d * Math.PI) / 180;
+/** Haversine formula to calculate accurate distance in meters */
+function haversineMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371e3;
+  const toR = (v: number) => (v * Math.PI) / 180;
   const dLat = toR(lat2 - lat1);
-  const dLng = toR(lng2 - lng1);
+  const dLon = toR(lon2 - lon1);
   const a =
-    Math.sin(dLat / 2) ** 2 + Math.cos(toR(lat1)) * Math.cos(toR(lat2)) * Math.sin(dLng / 2) ** 2;
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toR(lat1)) * Math.cos(toR(lat2)) * Math.sin(dLon / 2) ** 2;
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-function isSameDay(a: Date, b: Date) {
+function toCoord(loc: any): { lat: number; lng: number } {
+  const lat = Number(loc?.coords?.latitude ?? loc?.latitude ?? loc?.lat ?? 0);
+  const lng = Number(loc?.coords?.longitude ?? loc?.longitude ?? loc?.long ?? 0);
+  return { lat, lng };
+}
+
+function isSameDay(a: Date, b: Date): boolean {
   return (
     a.getFullYear() === b.getFullYear() &&
     a.getMonth() === b.getMonth() &&
@@ -87,42 +175,28 @@ function isSameDay(a: Date, b: Date) {
 }
 
 /**
- * Snap GPS coordinates to roads using OSRM Map Matching.
- * ─────────────────────────────────────────────────────────
- * FREE — no API key required. Uses the public OSRM server
- * (same engine as OpenStreetMap). Batches in groups of 100
- * (OSRM limit) and concatenates results.
- * Falls back to raw coords if offline or server unreachable.
- *
- * OSRM note: coordinates are lon,lat order (opposite of Google).
+ * Snap GPS coordinates to roads using OSRM map matching (free, OSM-backed).
+ * Batches in chunks of 100 with silent fallback to raw coordinates.
  */
 async function snapCoordsToRoads(
   coords: Array<{ latitude: number; longitude: number }>
 ): Promise<Array<{ latitude: number; longitude: number }>> {
   if (coords.length < 2) return coords;
-
-  const BATCH = 100; // OSRM match endpoint limit
+  const BATCH = 100;
   const snapped: Array<{ latitude: number; longitude: number }> = [];
 
   try {
     for (let i = 0; i < coords.length; i += BATCH) {
       const batch = coords.slice(i, i + BATCH);
-
-      // OSRM expects: longitude,latitude;longitude,latitude;...
       const coordStr = batch.map((c) => `${c.longitude},${c.latitude}`).join(';');
-      // radiuses: GPS accuracy window per point (50m is generous for mobile GPS)
-      const radiuses = batch.map(() => '50').join(';');
-
-      const url =
-        `https://router.project-osrm.org/match/v1/driving/${coordStr}` +
-        `?overview=full&geometries=geojson&radiuses=${radiuses}&gaps=ignore`;
+      const radiuses = batch.map(() => '40').join(';');
+      const url = `https://router.project-osrm.org/match/v1/driving/${coordStr}?overview=full&geometries=geojson&radiuses=${radiuses}&gaps=ignore`;
 
       const res = await fetch(url, {
         headers: { Accept: 'application/json' },
-        // 8-second timeout — fall back silently if OSRM is slow
         signal: (() => {
           try {
-            return AbortSignal.timeout(8000);
+            return AbortSignal.timeout(6000);
           } catch {
             return undefined as any;
           }
@@ -130,1765 +204,1174 @@ async function snapCoordsToRoads(
       });
 
       if (!res.ok) {
-        snapped.push(...batch); // server error → keep raw batch
+        snapped.push(...batch);
         continue;
       }
 
       const data = await res.json();
-
-      // OSRM returns matchings[].geometry.coordinates: [[lon, lat], ...]
       const matchings: any[] = data.matchings || [];
       if (matchings.length > 0) {
-        for (const matching of matchings) {
-          const geoCoords: [number, number][] = matching?.geometry?.coordinates || [];
+        for (const m of matchings) {
+          const geoCoords: [number, number][] = m?.geometry?.coordinates || [];
           geoCoords.forEach(([lng, lat]) => {
             if (lat && lng) snapped.push({ latitude: lat, longitude: lng });
           });
         }
       } else {
-        snapped.push(...batch); // no match → keep raw batch
+        snapped.push(...batch);
       }
     }
     return snapped.length > 1 ? snapped : coords;
   } catch {
-    // Network error or timeout — fall back to raw coords
     return coords;
   }
 }
 
-function dayLabel(d: Date): string {
-  const today = new Date();
-  const yest = new Date();
-  yest.setDate(today.getDate() - 1);
-  if (isSameDay(d, today)) return 'Today';
-  if (isSameDay(d, yest)) return 'Yesterday';
-  return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
+// ─── PURE WORKER AVATAR MARKER (NO TEXT CALLOUTS, NEVER BLANK) ────────────────
+
+let _workerClipCounter = 0;
+
+interface WorkerMarkerProps {
+  worker: WorkerDisplayInfo;
+  isSelected: boolean;
+  isIsolated: boolean;
+  onPress: (worker: WorkerDisplayInfo) => void;
 }
 
-const getMatchedSiteName = (lat: number, lng: number, leads: any[]): string | null => {
-  if (!lat || !lng || !leads || leads.length === 0) return null;
-  let minDist = 10; // strict 10-meter threshold
-  let matchedName: string | null = null;
-  for (const lead of leads) {
-    const lLat = Number(lead.location?.lat);
-    const lLng = Number(lead.location?.long);
-    if (!lLat || !lLng) continue;
-    const d = haversineM(lat, lng, lLat, lLng);
-    if (d < minDist) {
-      minDist = d;
-      matchedName = lead.sender_name || lead.name || 'Client';
-    }
-  }
-  return matchedName;
-};
+const WorkerImageMarker: React.FC<WorkerMarkerProps> = React.memo(
+  ({ worker, isSelected, isIsolated, onPress }) => {
+    const { photoUrl, name, isSelf, isInsideGeofence, latitude, longitude } = worker;
+    const [ready, setReady] = useState(false);
+    const [err, setErr] = useState(false);
+    const clipId = useRef(`w_clip_${++_workerClipCounter}`).current;
 
-/**
- * Resolve a staff record's best-known coordinate.
- * ─────────────────────────────────────────────────────────
- * Priority (highest wins):
- *  1. Latest streamed GPS tick (geoHistory) — pushed live via the
- *     `attendance:geo_update` socket event, so it is always more current
- *     than the lat/long snapshot taken when the active-staff list was
- *     last fully fetched. It must win over the top-level field, never lose
- *     to it, or "active worker sync" silently stalls on the map after the
- *     very first render.
- *  2. Top-level lat/long (or location.lat/long) snapshot.
- *  3. Assigned site coordinates (siteLat/siteLong, or the matched lead's
- *     location) — flagged isAssumed, since this is not a live GPS fix.
- *  4. Duty-start tick — isAssumed + isStartLoc.
- */
-function resolveStaffLocation(
-  staff: any,
-  leads: any[] = []
-): {
-  lat: number;
-  lng: number;
-  isAssumed: boolean;
-  isStartLoc: boolean;
-} {
-  const latestGeo = staff.geoHistory?.[staff.geoHistory.length - 1];
+    const url = resolveUrl(photoUrl);
 
-  const lat = Number(latestGeo?.lat || staff.lat || staff.location?.lat || 0);
-  const lng = Number(latestGeo?.long || staff.long || staff.location?.long || 0);
+    // Marker dimensions (sharp SVG circle, no transform scale clipping)
+    const MS = isSelected || isIsolated ? 54 : 46;
+    const BD = 3;
+    const IN = MS - BD * 2;
+    const R = MS / 2;
 
-  if (lat && lng) return { lat, lng, isAssumed: false, isStartLoc: false };
+    const ringColor = isIsolated
+      ? '#8b5cf6'
+      : isSelf
+        ? '#2563eb'
+        : isInsideGeofence
+          ? '#10b981'
+          : '#f59e0b';
 
-  let siteLat = Number(staff.siteLat || 0);
-  let siteLng = Number(staff.siteLong || 0);
+    const initialChar = (name || 'W').trim().charAt(0).toUpperCase();
 
-  if (!siteLat || !siteLng) {
-    if (typeof staff.leadId === 'object' && staff.leadId?.location?.lat) {
-      siteLat = Number(staff.leadId.location.lat);
-      siteLng = Number(staff.leadId.location.long);
-    } else if (leads.length && staff.leadId) {
-      const leadIdStr = String(staff.leadId._id || staff.leadId);
-      const matchedLead = leads.find((l: any) => String(l._id) === leadIdStr);
-      if (matchedLead?.location?.lat && matchedLead?.location?.long) {
-        siteLat = Number(matchedLead.location.lat);
-        siteLng = Number(matchedLead.location.long);
+    useEffect(() => {
+      setReady(false);
+      setErr(false);
+      if (!url) {
+        setReady(true);
       }
-    }
-  }
-
-  if (siteLat && siteLng) return { lat: siteLat, lng: siteLng, isAssumed: true, isStartLoc: false };
-
-  const startGeo = staff.geoHistory?.find((g: any) => g.type === 'start');
-  if (startGeo?.lat && startGeo?.long) {
-    return {
-      lat: Number(startGeo.lat),
-      lng: Number(startGeo.long),
-      isAssumed: true,
-      isStartLoc: true,
-    };
-  }
-
-  return { lat: 0, lng: 0, isAssumed: false, isStartLoc: false };
-}
-
-const getEmployeeShiftDetails = (employee: any) => {
-  // If registered user from userMaster (or user role is present / no employmentHistory)
-  const isRegisteredUser =
-    employee?.userRole || employee?.role || (!employee?.employmentHistory && employee?.dutyShift);
-  if (isRegisteredUser && employee?.dutyShift) {
-    const ds = employee.dutyShift;
-    const shiftName = ds.shiftName || 'General';
-    const startTime = ds.startFrom || ds.startTime || '09:00';
-    const groupName =
-      ds.groupName ||
-      (shiftName === 'Day' || shiftName === 'Night2' || shiftName === 'Night12' ? 'DaNi' : 'MANG');
-    const durationHrs = ds.durationHrs || ds.shiftHours || (groupName === 'DaNi' ? 12 : 8);
-    const shiftType = durationHrs === 12 ? '12hr' : '8hr';
-
-    // Calculate endTime
-    const [h, m] = startTime.split(':').map(Number);
-    const endHrs = (h + durationHrs) % 24;
-    const endTime = `${String(endHrs).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
-
-    let shiftPeriod = 'General';
-    let shiftCode = 'G';
-    if (shiftName === 'Night2') {
-      shiftCode = 'N2';
-      shiftPeriod = 'Night12';
-    } else if (shiftName === 'Night1' || shiftName === 'Night') {
-      shiftCode = 'N';
-      shiftPeriod = 'Night';
-    } else if (shiftName === 'Morning') {
-      shiftCode = 'M';
-      shiftPeriod = 'Morning';
-    } else if (shiftName === 'Afternoon') {
-      shiftCode = 'A';
-      shiftPeriod = 'Afternoon';
-    } else if (shiftName === 'Day') {
-      shiftCode = 'D';
-      shiftPeriod = 'Day';
-    } else if (['Morning', 'Afternoon', 'Night', 'General', 'Day', 'Night12'].includes(shiftName)) {
-      shiftPeriod = shiftName === 'Night' && durationHrs === 12 ? 'Night12' : shiftName;
-      shiftCode = shiftName.substring(0, 1);
-    }
-
-    return {
-      shiftName,
-      shiftCode,
-      shiftPeriod,
-      shiftType,
-      durationHrs,
-      startTime,
-      endTime,
-      groupName,
-    };
-  }
-
-  // Priority 1: active employmentHistory entry (canonical source of truth)
-  const activeHistEntry =
-    employee?.employmentHistory?.find((e: any) => e.active) ||
-    (employee?.employmentHistory?.length
-      ? employee.employmentHistory[employee.employmentHistory.length - 1]
-      : null);
-
-  if (activeHistEntry) {
-    const { shiftName: sName, groupName: gName, shiftStartTime, shiftHours } = activeHistEntry;
-    const shiftName = sName || 'General';
-    const groupName =
-      gName ||
-      (shiftName === 'Day' || shiftName === 'Night' || shiftName === 'Night12' ? 'DaNi' : 'MANG');
-    const startTime = shiftStartTime || '08:00';
-    const durationHrs = shiftHours || (groupName === 'DaNi' ? 12 : 8);
-    const shiftType = groupName === 'DaNi' ? '12hr' : '8hr';
-    const [h, m] = startTime.split(':').map(Number);
-    const endHrs = (h + durationHrs) % 24;
-    const endTime = `${String(endHrs).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
-
-    // Derive short shift CODE (for UI display and backend shiftCode field)
-    // Derive shiftPeriod (must match backend enum: Morning|Afternoon|Night|General|Day|Night12)
-    let shiftCode = 'G';
-    let shiftPeriod = 'General'; // default
-    if (groupName === 'DaNi') {
-      if (shiftName === 'Day') {
-        shiftCode = 'D';
-        shiftPeriod = 'Day';
-      } else if (shiftName === 'Night') {
-        shiftCode = 'N2';
-        shiftPeriod = 'Night12'; // ← enum value for DaNi Night (12hr)
-      }
-    } else {
-      // MANG group
-      if (shiftName === 'Morning') {
-        shiftCode = 'M';
-        shiftPeriod = 'Morning';
-      } else if (shiftName === 'Afternoon') {
-        shiftCode = 'A';
-        shiftPeriod = 'Afternoon';
-      } else if (shiftName === 'Night') {
-        shiftCode = 'N';
-        shiftPeriod = 'Night';
-      } else if (shiftName === 'General') {
-        shiftCode = 'G';
-        shiftPeriod = 'General';
-      }
-    }
-
-    return {
-      shiftName,
-      shiftCode,
-      shiftPeriod,
-      shiftType,
-      durationHrs,
-      startTime,
-      endTime,
-      groupName,
-    };
-  }
-
-  // Priority 2: root-level selectedShift / dutyShift (legacy fallback)
-  const rootShiftCode = employee?.selectedShift || '';
-  let shiftName = employee?.dutyShift?.shiftName || 'General';
-
-  // Resolve shift details dynamically from userMaster or employee database
-  let startTime = employee?.dutyShift?.startFrom || employee?.dutyShift?.startTime || '09:00';
-
-  const activeEntry =
-    employee?.employmentHistory?.find((e: any) => e.active) ||
-    (employee?.employmentHistory?.length
-      ? employee.employmentHistory[employee.employmentHistory.length - 1]
-      : null);
-
-  let durationHrs = employee?.dutyShift?.durationHrs || employee?.dutyShift?.shiftHours || 0;
-  let groupName = employee?.dutyShift?.groupName || '';
-
-  if (activeEntry) {
-    startTime = activeEntry.shiftStartTime || startTime;
-    durationHrs = activeEntry.shiftHours || durationHrs;
-    groupName = activeEntry.groupName || groupName;
-  }
-
-  if (!groupName) {
-    groupName =
-      rootShiftCode === 'D' ||
-      rootShiftCode === 'N2' ||
-      shiftName === 'Day' ||
-      shiftName === 'Night2' ||
-      shiftName === 'Night12'
-        ? 'DaNi'
-        : 'MANG';
-  }
-  if (!durationHrs) {
-    durationHrs = groupName === 'DaNi' ? 12 : 8;
-  }
-
-  const [h, m] = startTime.split(':').map(Number);
-  const endHrs = (h + durationHrs) % 24;
-  let endTime = `${String(endHrs).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
-  let shiftType = durationHrs === 12 ? '12hr' : '8hr';
-
-  // Map root shiftCode / shiftName → enum-safe shiftPeriod
-  let shiftPeriod = 'General';
-  if (rootShiftCode === 'N2') {
-    shiftPeriod = 'Night12';
-    shiftType = '12hr';
-    durationHrs = 12;
-  } else if (rootShiftCode === 'D') {
-    shiftPeriod = 'Day';
-    shiftType = '12hr';
-    durationHrs = 12;
-  } else if (rootShiftCode === 'M') {
-    shiftPeriod = 'Morning';
-  } else if (rootShiftCode === 'A') {
-    shiftPeriod = 'Afternoon';
-  } else if (rootShiftCode === 'N') {
-    shiftPeriod = 'Night';
-  } else if (['Morning', 'Afternoon', 'Night', 'General', 'Day', 'Night12'].includes(shiftName)) {
-    shiftPeriod = shiftName === 'Night' && durationHrs === 12 ? 'Night12' : shiftName;
-  }
-
-  const shiftCode = rootShiftCode || 'G';
-  return {
-    shiftName,
-    shiftCode,
-    shiftPeriod,
-    shiftType,
-    durationHrs,
-    startTime,
-    endTime,
-    groupName,
-  };
-};
-
-const getScheduledEndTime = (startTimeStr: string, durationHrs: number) => {
-  const now = new Date();
-  const [h, m] = startTimeStr.split(':').map(Number);
-  const schedStart = new Date();
-  schedStart.setHours(h, m, 0, 0);
-
-  const diffMs = now.getTime() - schedStart.getTime();
-  if (diffMs > 12 * 3_600_000) {
-    schedStart.setDate(schedStart.getDate() + 1);
-  } else if (diffMs < -12 * 3_600_000) {
-    schedStart.setDate(schedStart.getDate() - 1);
-  }
-
-  return new Date(schedStart.getTime() + durationHrs * 3_600_000).toISOString();
-};
-
-// ─── Avatar marker constants ──────────────────────────────────────────────────
-const MS = 54; // marker size (px)
-const BD = 3; // border width
-const IN = MS - BD * 2; // inner diameter
-const R = MS / 2;
-const TW = Math.round(MS * 0.28); // triangle width
-const TH = Math.round(MS * 0.22); // triangle height
-
-let _clipN = 0; // unique SVG clip-path counter
-
-// ─── AvatarMarker ─────────────────────────────────────────────────────────────
-interface AvatarMarkerProps {
-  photoUrl?: string | null;
-  label: string;
-  color?: string;
-  onReady?: () => void;
-}
-
-function AvatarMarker({ photoUrl, label, color = '#3b82f6', onReady }: AvatarMarkerProps) {
-  const url = resolveUrl(photoUrl);
-  const [err, setErr] = useState(false);
-  const clip = useRef(`clip_${++_clipN}`).current;
-
-  useEffect(() => {
-    if (!url || err) onReady?.();
-  }, [url, err]);
-
-  return (
-    <View style={{ width: MS, height: MS + TH, alignItems: 'center' }} collapsable={false}>
-      {/* Circle */}
-      {url && !err ? (
-        <View style={{ width: MS, height: MS }} collapsable={false}>
-          <Svg width={MS} height={MS} viewBox={`0 0 ${MS} ${MS}`}>
-            <Defs>
-              <ClipPath id={clip}>
-                <Circle cx={R} cy={R} r={IN / 2} />
-              </ClipPath>
-            </Defs>
-            <Circle cx={R} cy={R} r={R} fill={color} />
-            <Circle cx={R} cy={R} r={IN / 2 + 1} fill="#fff" />
-            <SvgImage
-              href={url}
-              width={IN}
-              height={IN}
-              x={BD}
-              y={BD}
-              clipPath={`url(#${clip})`}
-              preserveAspectRatio="xMidYMid slice"
-              onLoad={() => setTimeout(() => onReady?.(), 200)}
-            />
-          </Svg>
-        </View>
-      ) : (
-        <View
-          style={{
-            width: MS,
-            height: MS,
-            borderRadius: R,
-            backgroundColor: '#cbd5e1',
-            borderWidth: BD,
-            borderColor: color,
-            justifyContent: 'center',
-            alignItems: 'center',
-          }}
-          collapsable={false}
-        >
-          <Text style={{ fontSize: MS * 0.33, fontWeight: '700', color: '#0f172a' }}>
-            {label.charAt(0).toUpperCase()}
-          </Text>
-        </View>
-      )}
-      {/* Pin tail */}
-      <View
-        style={{
-          width: 0,
-          height: 0,
-          borderLeftWidth: TW / 2,
-          borderLeftColor: 'transparent',
-          borderRightWidth: TW / 2,
-          borderRightColor: 'transparent',
-          borderTopWidth: TH,
-          borderTopColor: color,
-          marginTop: -1,
-        }}
-        collapsable={false}
-      />
-    </View>
-  );
-}
-
-// ─── StaffMarker (memo — position updates via coordinate prop) ─────────────────
-function StaffMarker({
-  staff,
-  selfId,
-  onAction,
-  leads,
-}: {
-  staff: any;
-  selfId?: string;
-  onAction?: (action: 'route' | 'date' | 'call' | 'open_menu') => void;
-  leads?: any[];
-}) {
-  const [ready, setReady] = useState(false);
-  const ref = useRef<any>(null);
-
-  const empId = String(staff.employeeId?._id || staff.employeeId || '');
-  if (empId && empId === String(selfId)) return null;
-
-  const { lat, lng, isAssumed, isStartLoc } = resolveStaffLocation(staff, leads || []);
-  if (!lat || !lng) return null;
-
-  const latestGeo = staff.geoHistory?.[staff.geoHistory.length - 1];
-  const actualAddress = latestGeo?.address || staff.address || '';
-  const isOnline = !staff.dutyEnd;
-  const matchedSiteName = getMatchedSiteName(lat, lng, leads || []);
-  const flagText = isAssumed ? 'File' : 'Live';
-  const displayLabel = `[${flagText}] ${matchedSiteName ? `📍 At ${matchedSiteName}` : actualAddress}`;
-
-  return (
-    <Marker
-      ref={ref}
-      coordinate={{ latitude: lat, longitude: lng }}
-      anchor={{ x: 0.5, y: 1 }}
-      tracksViewChanges={!ready}
-      onPress={(e) => {
-        e.stopPropagation();
-        onAction?.('open_menu');
-      }}
-      style={{ alignItems: 'center', justifyContent: 'center' }}
-    >
-      <View style={{ alignItems: 'center' }}>
-        <AvatarMarker
-          photoUrl={getPhotoUrl(staff)}
-          label={getDisplayName(staff)}
-          color={isStartLoc ? '#8b5cf6' : isAssumed ? '#f59e0b' : '#3b82f6'}
-          onReady={() => setReady(true)}
-        />
-        {isOnline && displayLabel && (
-          <View
-            style={{
-              backgroundColor: 'rgba(255,255,255,0.9)',
-              paddingHorizontal: 6,
-              paddingVertical: 2,
-              borderRadius: 6,
-              marginTop: 2,
-              maxWidth: 120,
-              borderWidth: 1,
-              borderColor: '#f1f5f9',
-            }}
-          >
-            <Text
-              style={{ fontSize: 8, color: '#334155', textAlign: 'center', fontWeight: '700' }}
-              numberOfLines={2}
-            >
-              {displayLabel}
-            </Text>
-          </View>
-        )}
-      </View>
-    </Marker>
-  );
-}
-
-// ─── SelfMarker — NOT memo'd so live coords always propagate ──────────────────
-interface SelfMarkerProps {
-  lat: number;
-  lng: number;
-  employee: any;
-  name: string;
-  profileImage?: string;
-  currentMatchedSite: any;
-  reverseAddress?: string;
-  liveTag?: string; // "10:32 AM" — shown as sub-label while on duty
-  leads?: any[];
-  isMocked?: boolean;
-}
-
-function SelfMarker({
-  lat,
-  lng,
-  employee,
-  name,
-  profileImage,
-  currentMatchedSite,
-  reverseAddress,
-  liveTag,
-  leads,
-  isMocked,
-}: SelfMarkerProps) {
-  const [ready, setReady] = useState(false);
-  const ref = useRef<any>(null);
-
-  if (!lat || !lng) return null;
-
-  const dynamicMatchedSiteName = getMatchedSiteName(lat, lng, leads || []);
-  const displaySubText = dynamicMatchedSiteName
-    ? `📍 At ${dynamicMatchedSiteName}`
-    : currentMatchedSite
-      ? `📍 At ${currentMatchedSite.sender_name}`
-      : reverseAddress || 'Fetching address…';
-
-  return (
-    <Marker
-      ref={ref}
-      coordinate={{ latitude: lat, longitude: lng }}
-      anchor={{ x: 0.5, y: 1 }}
-      tracksViewChanges={true} /* always track — live position must update */
-      onPress={() => ref.current?.showCallout()}
-    >
-      <View style={{ alignItems: 'center' }}>
-        <AvatarMarker
-          photoUrl={profileImage || getPhotoUrl(employee)}
-          label={name || 'Me'}
-          color={isMocked ? '#ef4444' : '#10b981'}
-          onReady={() => setReady(true)}
-        />
-        <View
-          style={{
-            backgroundColor: 'rgba(255,255,255,0.9)',
-            paddingHorizontal: 6,
-            paddingVertical: 2,
-            borderRadius: 6,
-            marginTop: 2,
-            maxWidth: 120,
-            borderWidth: 1,
-            borderColor: isMocked ? '#ef4444' : '#10b981',
-          }}
-        >
-          <Text
-            style={{
-              fontSize: 9,
-              color: isMocked ? '#ef4444' : '#10b981',
-              textAlign: 'center',
-              fontWeight: '800',
-            }}
-            numberOfLines={1}
-          >
-            {isMocked ? '⚠️ [MOCK] ' : ''}
-            {name || 'Me'}
-          </Text>
-        </View>
-      </View>
-      <Callout tooltip>
-        <View style={cs.callout}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-            <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: '#10b981' }} />
-            <Text style={cs.calloutName} numberOfLines={1}>
-              {name || 'You'}
-            </Text>
-          </View>
-          <Text style={cs.calloutSub} numberOfLines={2}>
-            {displaySubText}
-          </Text>
-          {liveTag && (
-            <Text style={{ fontSize: 10, color: '#94a3b8', marginTop: 3 }}>
-              🕐 Updated {liveTag}
-            </Text>
-          )}
-        </View>
-      </Callout>
-    </Marker>
-  );
-}
-
-// ─── GeoTagMarker (site-visit pins on trail) ──────────────────────────────────
-function GeoTagMarker({ loc, index }: { loc: any; index: number }) {
-  const { lat, lng } = toLLng(loc);
-  if (!lat || !lng) return null;
-  return (
-    <Marker
-      key={`gt-${index}`}
-      coordinate={{ latitude: lat, longitude: lng }}
-      anchor={{ x: 0.5, y: 1 }}
-      tracksViewChanges={false}
-    >
-      <View style={{ alignItems: 'center' }}>
-        <View
-          style={{
-            backgroundColor: '#16a34a',
-            paddingHorizontal: 6,
-            paddingVertical: 3,
-            borderRadius: 8,
-            maxWidth: 110,
-            elevation: 4,
-          }}
-        >
-          <Text style={{ color: '#fff', fontSize: 9, fontWeight: '800' }} numberOfLines={1}>
-            📍 {loc.clientName || 'Site Visit'}
-          </Text>
-        </View>
-        <View
-          style={{
-            width: 0,
-            height: 0,
-            borderLeftWidth: 5,
-            borderLeftColor: 'transparent',
-            borderRightWidth: 5,
-            borderRightColor: 'transparent',
-            borderTopWidth: 7,
-            borderTopColor: '#16a34a',
-          }}
-        />
-      </View>
-    </Marker>
-  );
-}
-
-// ─── TrailAnnotation — client bubble or end marker ────────────────────────────
-function TrailAnnotation({ loc, index, leads }: { loc: any; index: number; leads: any[] }) {
-  const ref = useRef<any>(null);
-  const { lat, lng } = toLLng(loc);
-  if (!lat || !lng || loc.type === 'geotag') return null;
-
-  // Client proximity match
-  let matchedName: string | null = null;
-  let minDist = 10;
-  for (const lead of leads) {
-    const lLat = Number(lead.location?.lat);
-    const lLng = Number(lead.location?.long);
-    if (!lLat || !lLng) continue;
-    const d = haversineM(lat, lng, lLat, lLng);
-    if (d < minDist) {
-      minDist = d;
-      matchedName = lead.sender_name || lead.name || 'Client';
-    }
-  }
-
-  const isStart = loc.type === 'start';
-  const isEnd = loc.type === 'end';
-  const isMatch = !!matchedName;
-  const isNotable = isStart || isEnd || isMatch;
-
-  // Plain tick dot
-  if (!isNotable) {
-    const timeStr = loc.timestamp
-      ? new Date(loc.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      : '';
+    }, [url, isSelected, isIsolated]);
 
     return (
       <Marker
-        ref={ref}
-        coordinate={{ latitude: lat, longitude: lng }}
+        coordinate={{ latitude, longitude }}
         anchor={{ x: 0.5, y: 0.5 }}
-        tracksViewChanges={false}
-        onPress={() => ref.current?.showCallout()}
+        tracksViewChanges={!ready}
+        onPress={() => onPress(worker)}
+        style={{ alignItems: 'center', justifyContent: 'center' }}
       >
-        <View
-          style={{
-            width: 8,
-            height: 8,
-            borderRadius: 4,
-            backgroundColor: '#94a3b8',
-            borderWidth: 1.5,
-            borderColor: '#fff',
-          }}
-          collapsable={false}
-        />
-        <Callout tooltip>
-          <View style={cs.callout}>
-            <Text style={cs.calloutName}>Tick</Text>
-            {timeStr ? <Text style={cs.calloutSub}>🕐 {timeStr}</Text> : null}
-            {loc.accuracy ? (
-              <Text style={{ fontSize: 10, color: '#94a3b8', marginTop: 3 }}>
-                ±{Math.round(loc.accuracy)} m
+        <View style={{ width: MS, height: MS, alignItems: 'center', justifyContent: 'center' }} collapsable={false}>
+          {url && !err ? (
+            <View style={{ width: MS, height: MS }} collapsable={false}>
+              <Svg width={MS} height={MS} viewBox={`0 0 ${MS} ${MS}`}>
+                <Defs>
+                  <ClipPath id={clipId}>
+                    <SvgCircle cx={R} cy={R} r={IN / 2} />
+                  </ClipPath>
+                </Defs>
+                {/* Outer colored ring */}
+                <SvgCircle cx={R} cy={R} r={R} fill={ringColor} />
+                {/* Inner white separator ring */}
+                <SvgCircle cx={R} cy={R} r={IN / 2 + 1} fill="#ffffff" />
+                {/* Worker Avatar Image */}
+                <SvgImage
+                  href={url}
+                  width={IN}
+                  height={IN}
+                  x={BD}
+                  y={BD}
+                  clipPath={`url(#${clipId})`}
+                  preserveAspectRatio="xMidYMid slice"
+                  onLoad={() => {
+                    setTimeout(() => setReady(true), 300);
+                  }}
+                />
+              </Svg>
+            </View>
+          ) : (
+            <View
+              style={{
+                width: MS,
+                height: MS,
+                borderRadius: R,
+                backgroundColor: '#f1f5f9',
+                borderWidth: BD,
+                borderColor: ringColor,
+                justifyContent: 'center',
+                alignItems: 'center',
+              }}
+              collapsable={false}
+            >
+              <Text style={{ fontSize: MS * 0.38, fontWeight: '800', color: ringColor }}>
+                {initialChar}
               </Text>
-            ) : null}
-          </View>
-        </Callout>
+            </View>
+          )}
+
+          {/* Status Dot */}
+          <View
+            style={[
+              styles.liveIndicatorDot,
+              { backgroundColor: isInsideGeofence ? '#10b981' : '#f59e0b' },
+            ]}
+          />
+        </View>
       </Marker>
     );
   }
+);
 
-  let bg = '#ef4444';
-  let label = '🏁 Duty End';
-  if (isStart) {
-    bg = '#3b82f6';
-    label = '🚀 Duty Start';
-  } else if (isMatch) {
-    bg = '#f59e0b';
-    label = `📍 ${matchedName}`;
-  }
+// ─── MAIN LIVE TRACKER COMPONENT ──────────────────────────────────────────────
 
-  return (
-    <Marker
-      ref={ref}
-      coordinate={{ latitude: lat, longitude: lng }}
-      anchor={{ x: 0.5, y: 1 }}
-      tracksViewChanges={false}
-      onPress={() => ref.current?.showCallout()}
-    >
-      <View style={{ alignItems: 'center' }}>
-        <View
-          style={{
-            backgroundColor: bg,
-            paddingHorizontal: 7,
-            paddingVertical: 3,
-            borderRadius: 8,
-            maxWidth: 130,
-            elevation: 4,
-          }}
-        >
-          <Text style={{ color: '#fff', fontSize: 9, fontWeight: '800' }} numberOfLines={1}>
-            {label}
-          </Text>
-        </View>
-        <View
-          style={{
-            width: 0,
-            height: 0,
-            borderLeftWidth: 4,
-            borderLeftColor: 'transparent',
-            borderRightWidth: 4,
-            borderRightColor: 'transparent',
-            borderTopWidth: 6,
-            borderTopColor: bg,
-          }}
-        />
-      </View>
-      <Callout tooltip>
-        <View style={cs.callout}>
-          <Text style={cs.calloutName}>
-            {isStart ? 'Duty Start' : isMatch ? matchedName! : 'Duty End'}
-          </Text>
-          {loc.timestamp && (
-            <Text style={cs.calloutSub}>
-              🕐{' '}
-              {new Date(loc.timestamp).toLocaleTimeString([], {
-                hour: '2-digit',
-                minute: '2-digit',
-              })}
-            </Text>
-          )}
-          {loc.accuracy && (
-            <Text style={{ fontSize: 10, color: '#94a3b8' }}>±{Math.round(loc.accuracy)} m</Text>
-          )}
-        </View>
-      </Callout>
-    </Marker>
-  );
-}
-
-// ─── LiveTracker ─────────────────────────────────────────────────────────────
-// ─── SiteCoordinateMarker — Renders site coordinates on the map with start source and site detail
-function SiteCoordinateMarker({
-  staffOrSelf,
-  name,
-  isSelf,
-}: {
-  staffOrSelf: any;
-  name: string;
-  isSelf: boolean;
-}) {
-  const siteLat = Number(staffOrSelf?.siteLat);
-  const siteLong = Number(staffOrSelf?.siteLong);
-
-  if (!siteLat || !siteLong) return null;
-
-  const markedByDevice = staffOrSelf.markedByDevice !== false;
-  const markedBy = markedByDevice ? 'Own' : staffOrSelf.markedByUserName || 'Supervisor';
-  const siteDetail = staffOrSelf.site_name || staffOrSelf.siteName || 'Site Detail';
-  const label = `Start by ${markedBy}`;
-  const bg = '#f59e0b'; // Amber/Orange color for site coordinates
-
-  const ref = useRef<any>(null);
-
-  return (
-    <Marker
-      ref={ref}
-      coordinate={{ latitude: siteLat, longitude: siteLong }}
-      anchor={{ x: 0.5, y: 1 }}
-      tracksViewChanges={false}
-      onPress={() => ref.current?.showCallout()}
-    >
-      <View style={{ alignItems: 'center' }}>
-        <View
-          style={{
-            backgroundColor: bg,
-            paddingHorizontal: 7,
-            paddingVertical: 4,
-            borderRadius: 8,
-            maxWidth: 160,
-            elevation: 4,
-          }}
-        >
-          <Text
-            style={{ color: '#fff', fontSize: 9, fontWeight: '800', textAlign: 'center' }}
-            numberOfLines={2}
-          >
-            {label}
-            {'\n'}
-            {siteDetail}
-          </Text>
-        </View>
-        <View
-          style={{
-            width: 0,
-            height: 0,
-            borderLeftWidth: 4,
-            borderLeftColor: 'transparent',
-            borderRightWidth: 4,
-            borderRightColor: 'transparent',
-            borderTopWidth: 6,
-            borderTopColor: bg,
-          }}
-        />
-      </View>
-      <Callout tooltip>
-        <View style={cs.callout}>
-          <Text style={cs.calloutName}>
-            {isSelf ? 'Your Site Location' : `${name}'s Site Location`}
-          </Text>
-          <Text style={cs.calloutSub} numberOfLines={2}>
-            📍 {siteDetail}
-          </Text>
-          <Text style={{ fontSize: 10, color: bg, marginTop: 3, fontWeight: '700' }}>
-            👤 {label}
-          </Text>
-        </View>
-      </Callout>
-    </Marker>
-  );
-}
-
-export interface LiveTrackerProps {
-  /** Real-time location from useLiveTracker (LocationObject | null) */
-  location?: any;
-  employee?: any;
-  name?: string;
-  profileImage?: string;
-  currentMatchedSite?: any;
-  reverseAddress?: string;
-  /** Server-stored geoHistory from active attendance record */
-  geoHistory?: any[];
-  activeStaff: any[];
-  leads?: any[];
-  supervisorMobile?: string;
-  onRefresh?: () => void;
-  activeDuty?: any;
-  employees?: any[];
-}
-
-export const LiveTracker = ({
+export const LiveTracker: React.FC<LiveTrackerProps> = ({
   location: propLocation,
   employee,
   name,
   profileImage,
-  currentMatchedSite,
-  reverseAddress,
-  geoHistory,
-  activeStaff,
+  geoHistory = [],
+  activeStaff = [],
   leads = [],
   supervisorMobile,
   onRefresh,
   activeDuty,
   employees = [],
-}: LiveTrackerProps) => {
+  workerId,
+}) => {
+  const mapRef = useRef<MapView | null>(null);
+  const isMapReady = useRef<boolean>(false);
+
+  // Unified Location context hook
   const unifiedLoc = useUnifiedLocation('LiveTracker');
-  const tracker = {
-    activeStaff: unifiedLoc.activeStaff,
-    location: unifiedLoc.currentLocation,
-    geoHistory: unifiedLoc.geoHistory,
-    fetchActiveStaff: unifiedLoc.fetchActiveStaff,
-    refreshLocation: unifiedLoc.refreshLiveTrackerLocation,
-    dutyOn: unifiedLoc.dutyOn,
-  };
 
-  const liveLat = tracker.location?.latitude || (propLocation ? toLLng(propLocation).lat : 0);
-  const liveLng = tracker.location?.longitude || (propLocation ? toLLng(propLocation).lng : 0);
-  const liveTime = tracker.location?.timestamp
-    ? new Date(tracker.location.timestamp).toLocaleTimeString([], {
-        hour: '2-digit',
-        minute: '2-digit',
-      })
-    : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  const liveTrail = tracker.geoHistory || [];
+  // Internal live coordinates & trail
+  const [deviceCoords, setDeviceCoords] = useState<NormalizedCoord | null>(null);
+  const [liveTrail, setLiveTrail] = useState<NormalizedCoord[]>([]);
+  const [snappedTrail, setSnappedTrail] = useState<NormalizedCoord[]>([]);
+  const [isFollowing, setIsFollowing] = useState<boolean>(true);
+  const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
+  const [showGeofences, setShowGeofences] = useState<boolean>(true);
+  const [showRoute, setShowRoute] = useState<boolean>(true);
 
-  const mapRef = useRef<MapView>(null);
+  // Worker Selection & Isolation states
+  const [selectedWorker, setSelectedWorker] = useState<WorkerDisplayInfo | null>(null);
+  const [isolatedWorkerId, setIsolatedWorkerId] = useState<string | null>(null);
+  const [isWorkerListVisible, setIsWorkerListVisible] = useState<boolean>(false);
 
-  // ── Road-snapped route (async, cached by routeCoords length) ─────────────
-  const [snappedRoute, setSnappedRoute] = useState<Array<{ latitude: number; longitude: number }>>(
-    []
-  );
-  const lastSnappedLenRef = useRef<number>(0);
-  const mapReady = useRef(false);
+  // Date picker state for route replay
+  const [selectedDate, setSelectedDate] = useState<Date>(new Date());
+  const [isDatePickerVisible, setIsDatePickerVisible] = useState<boolean>(false);
 
-  // Follow on first fix
+  // Real-time map of socket-updated worker coordinates { workerId: { lat, lng, timestamp } }
+  const [socketWorkerLocations, setSocketWorkerLocations] = useState<
+    Record<string, { lat: number; lng: number; timestamp?: any }>
+  >({});
+
+  // 1. Resolve self user id
+  const currentUserId = useMemo(() => {
+    return (
+      workerId ||
+      employee?._id ||
+      employee?.user_id ||
+      employee?.id ||
+      'current_worker'
+    );
+  }, [workerId, employee]);
+
+  // Ensure active staff is fetched if not supplied via prop
   useEffect(() => {
-    if (mapRef.current && mapReady.current && liveLat && liveLng) {
-      mapRef.current.animateToRegion(
+    if (!activeStaff || activeStaff.length === 0) {
+      unifiedLoc.fetchActiveStaff?.();
+    }
+  }, [activeStaff]);
+
+  // Merge active staff from props or unified context
+  const effectiveActiveStaff = useMemo(() => {
+    if (activeStaff && activeStaff.length > 0) return activeStaff;
+    if (unifiedLoc.activeStaff && unifiedLoc.activeStaff.length > 0) return unifiedLoc.activeStaff;
+    return [];
+  }, [activeStaff, unifiedLoc.activeStaff]);
+
+  // 2. Prepare Geofence Sites from Leads & active site
+  const geofences = useMemo<GeofenceSite[]>(() => {
+    const list: GeofenceSite[] = [];
+    (leads || []).forEach((lead: any, idx: number) => {
+      const lat = Number(lead.location?.lat ?? lead.latitude ?? lead.lat);
+      const lng = Number(lead.location?.long ?? lead.longitude ?? lead.long ?? lead.lng);
+      if (lat && lng && !isNaN(lat) && !isNaN(lng)) {
+        list.push({
+          id: String(lead._id || lead.id || `lead-${idx}`),
+          name: lead.sender_name || lead.name || lead.displayName || `Site #${idx + 1}`,
+          latitude: lat,
+          longitude: lng,
+          radius: Number(lead.geofenceRadius || lead.radius || 150),
+        });
+      }
+    });
+
+    if (activeDuty?.siteLat && activeDuty?.siteLong) {
+      const sLat = Number(activeDuty.siteLat);
+      const sLng = Number(activeDuty.siteLong);
+      if (sLat && sLng && !list.some((g) => g.latitude === sLat && g.longitude === sLng)) {
+        list.push({
+          id: 'duty-site',
+          name: activeDuty.site_name || activeDuty.siteName || 'Assigned Site',
+          latitude: sLat,
+          longitude: sLng,
+          radius: 200,
+        });
+      }
+    }
+    return list;
+  }, [leads, activeDuty]);
+
+  // Register geofences in GeofenceService
+  useEffect(() => {
+    geofences.forEach((g) => {
+      GeofenceService.addGeofence({
+        id: g.id,
+        latitude: g.latitude,
+        longitude: g.longitude,
+        radius: g.radius,
+      });
+    });
+  }, [geofences]);
+
+  // 3. Resolve All Active Duty Workers from Attendance DB
+  const displayWorkers = useMemo<WorkerDisplayInfo[]>(() => {
+    const workers: WorkerDisplayInfo[] = [];
+
+    // Filter active staff: only on-duty employees (no dutyEnd)
+    const onDutyList = (effectiveActiveStaff || []).filter((s: any) => {
+      return !s.dutyEnd && s.status !== 'OFF' && s.dutyStatus !== 'OFF';
+    });
+
+    onDutyList.forEach((staff: any) => {
+      const staffEmpId = String(staff.employeeId?._id || staff.employeeId || staff._id || '');
+      const isSelf = staffEmpId === String(currentUserId);
+
+      // Check socket override first
+      let lat = 0;
+      let lng = 0;
+      if (socketWorkerLocations[staffEmpId]) {
+        lat = socketWorkerLocations[staffEmpId].lat;
+        lng = socketWorkerLocations[staffEmpId].lng;
+      } else {
+        const lastTick = staff.geoHistory?.[staff.geoHistory.length - 1];
+        lat = Number(lastTick?.lat ?? lastTick?.latitude ?? staff.lat ?? staff.location?.lat ?? 0);
+        lng = Number(lastTick?.long ?? lastTick?.longitude ?? staff.long ?? staff.location?.long ?? 0);
+      }
+
+      // Fallback to site coordinates if GPS fix not yet streamed
+      if (!lat || !lng) {
+        lat = Number(staff.siteLat || 0);
+        lng = Number(staff.siteLong || 0);
+      }
+
+      if (!lat || !lng) return;
+
+      // Geofence check
+      let isInside = false;
+      let matchedSiteName: string | null = null;
+      for (const fence of geofences) {
+        const d = haversineMeters(lat, lng, fence.latitude, fence.longitude);
+        if (d <= fence.radius) {
+          isInside = true;
+          matchedSiteName = fence.name;
+          break;
+        }
+      }
+
+      const extraEmp = (employees || []).find(
+        (e: any) => String(e._id) === staffEmpId || String(e.id) === staffEmpId
+      );
+
+      const resolvedPhoto =
+        getPhotoUrl(staff) ||
+        getPhotoUrl(extraEmp) ||
+        getPhotoUrl(staff?.employeeId) ||
+        (staff.photoUrl ? resolveUrl(staff.photoUrl) : null);
+
+      workers.push({
+        id: staffEmpId || `staff-${Math.random()}`,
+        name: getDisplayName(extraEmp || staff),
+        photoUrl: resolvedPhoto,
+        latitude: lat,
+        longitude: lng,
+        isSelf,
+        isInsideGeofence: isInside,
+        geofenceSiteName: matchedSiteName,
+        shiftName: staff.shiftName || staff.shiftCode || extraEmp?.shiftName || 'General',
+        dutyStart: staff.dutyStart || null,
+        mobile: staff.mobile || staff.employeeMobile || extraEmp?.mobile || null,
+        batteryLevel: staff.batteryLevel ?? null,
+        lastUpdated: staff.lastUpdated || staff.updatedAt || null,
+        rawStaffData: staff,
+      });
+    });
+
+    // If self device coordinate is active and not already in workers list, add self
+    if (deviceCoords) {
+      const selfIndex = workers.findIndex((w) => w.isSelf);
+      let isInside = false;
+      let matchedSiteName: string | null = null;
+      for (const fence of geofences) {
+        const d = haversineMeters(deviceCoords.latitude, deviceCoords.longitude, fence.latitude, fence.longitude);
+        if (d <= fence.radius) {
+          isInside = true;
+          matchedSiteName = fence.name;
+          break;
+        }
+      }
+
+      const selfItem: WorkerDisplayInfo = {
+        id: String(currentUserId),
+        name: name || getDisplayName(employee, 'You'),
+        photoUrl: resolveUrl(profileImage) || getPhotoUrl(employee),
+        latitude: deviceCoords.latitude,
+        longitude: deviceCoords.longitude,
+        isSelf: true,
+        isInsideGeofence: isInside,
+        geofenceSiteName: matchedSiteName,
+        shiftName: employee?.shiftName || 'General',
+        dutyStart: activeDuty?.dutyStart || null,
+        mobile: employee?.mobile || null,
+        batteryLevel: null,
+        lastUpdated: deviceCoords.timestamp,
+        rawStaffData: employee,
+      };
+
+      if (selfIndex >= 0) {
+        workers[selfIndex] = selfItem;
+      } else {
+        workers.unshift(selfItem);
+      }
+    }
+
+    return workers;
+  }, [
+    effectiveActiveStaff,
+    currentUserId,
+    socketWorkerLocations,
+    geofences,
+    employees,
+    deviceCoords,
+    name,
+    employee,
+    profileImage,
+    activeDuty,
+  ]);
+
+  // Prefetch active worker photos into memory cache so custom markers render immediately
+  useEffect(() => {
+    displayWorkers.forEach((w) => {
+      if (w.photoUrl) {
+        Image.prefetch(w.photoUrl).catch(() => {});
+      }
+    });
+  }, [displayWorkers]);
+
+  // Filtered workers when worker isolation is active
+  const visibleWorkers = useMemo(() => {
+    if (!isolatedWorkerId) return displayWorkers;
+    return displayWorkers.filter((w) => w.id === isolatedWorkerId);
+  }, [displayWorkers, isolatedWorkerId]);
+
+  // Currently isolated worker object
+  const isolatedWorker = useMemo(() => {
+    if (!isolatedWorkerId) return null;
+    return displayWorkers.find((w) => w.id === isolatedWorkerId) || null;
+  }, [displayWorkers, isolatedWorkerId]);
+
+  // 4. Real-time Foreground GPS Tracking with Expo-Location
+  useEffect(() => {
+    let subscriber: Location.LocationSubscription | null = null;
+    let isMounted = true;
+    const socket = getSocket();
+
+    async function startLocationWatch() {
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== 'granted') {
+          console.warn('[LiveTracker] Location permission denied');
+          return;
+        }
+
+        subscriber = await Location.watchPositionAsync(
+          {
+            accuracy: Location.Accuracy.High,
+            timeInterval: 3000,
+            distanceInterval: 10,
+          },
+          async (pos) => {
+            if (!isMounted || !pos?.coords) return;
+            const { latitude, longitude, accuracy, speed, heading } = pos.coords;
+
+            if (accuracy && accuracy > 35) return;
+
+            const point: NormalizedCoord = {
+              latitude,
+              longitude,
+              accuracy,
+              speed,
+              heading,
+              timestamp: pos.timestamp,
+            };
+
+            setDeviceCoords(point);
+            setLiveTrail((prev) => [...prev, point]);
+
+            try {
+              if (socket?.connected) {
+                socket.emit('update_location', {
+                  workerId: currentUserId,
+                  latitude,
+                  longitude,
+                  accuracy,
+                  speed,
+                  heading,
+                  timestamp: new Date().toISOString(),
+                });
+              }
+            } catch {}
+
+            if (activeDuty?._id) {
+              try {
+                const { shouldFlush } = await SmartLocationBuffer.ingest({
+                  latitude,
+                  longitude,
+                  accuracy,
+                  speed,
+                  heading,
+                  timestamp: pos.timestamp,
+                  type: 'tick',
+                });
+
+                if (shouldFlush) {
+                  const compact = await SmartLocationBuffer.drain();
+                  if (compact) {
+                    const session = await appService.getSession();
+                    if (session?.token) {
+                      await LocationSyncService.uploadCompact(compact, {
+                        attendanceId: activeDuty._id,
+                        token: session.token,
+                        dbName: session.dbName || null,
+                        baseURL: appService.httpClient.defaults.baseURL || '',
+                        isExempt: false,
+                      });
+                    }
+                  }
+                }
+              } catch {}
+            }
+          }
+        );
+      } catch (err) {
+        console.warn('[LiveTracker] Location watch error:', err);
+      }
+    }
+
+    startLocationWatch();
+
+    // 5. Socket Listeners for Real-time Worker Location updates
+    const onGeoUpdate = (data: any) => {
+      if (!isMounted || !data) return;
+      const attId = data.attendanceId || data.workerId;
+      const tick = data.tick || data;
+      const lat = Number(tick.lat ?? tick.latitude);
+      const lng = Number(tick.long ?? tick.longitude);
+      if (lat && lng && attId) {
+        setSocketWorkerLocations((prev) => ({
+          ...prev,
+          [String(attId)]: { lat, lng, timestamp: tick.timestamp || Date.now() },
+        }));
+      }
+    };
+
+    const onLiveLocation = (data: any) => {
+      if (!isMounted || !data) return;
+      const wId = data.workerId;
+      const lat = Number(data.latitude);
+      const lng = Number(data.longitude);
+      if (lat && lng && wId) {
+        setSocketWorkerLocations((prev) => ({
+          ...prev,
+          [String(wId)]: { lat, lng, timestamp: data.lastUpdated || Date.now() },
+        }));
+      }
+    };
+
+    socket.on('attendance:geo_update', onGeoUpdate);
+    socket.on('live_location_update', onLiveLocation);
+
+    return () => {
+      isMounted = false;
+      if (subscriber) subscriber.remove();
+      socket.off('attendance:geo_update', onGeoUpdate);
+      socket.off('live_location_update', onLiveLocation);
+    };
+  }, [currentUserId, activeDuty]);
+
+  // 6. Camera Follow Animation
+  useEffect(() => {
+    if (!isFollowing || !mapRef.current || !isMapReady.current) return;
+    const target = isolatedWorker || deviceCoords || displayWorkers[0];
+    if (target?.latitude && target?.longitude) {
+      mapRef.current.animateCamera(
         {
-          latitude: liveLat,
-          longitude: liveLng,
-          latitudeDelta: 0.02,
-          longitudeDelta: 0.02,
+          center: { latitude: target.latitude, longitude: target.longitude },
+          zoom: isolatedWorker ? 17 : 16,
         },
-        600
+        { duration: 600 }
       );
     }
-  }, [liveLat, liveLng]);
+  }, [deviceCoords, isFollowing, isolatedWorker]);
 
-  // Auto-follow live position on every GPS update (if following mode is on)
-  const [isFollowing, setIsFollowing] = useState(true);
+  // 7. Route Coordinates Processing (server history + live trail, supports isolated worker)
+  const routePolylineCoords = useMemo<Array<{ latitude: number; longitude: number }>>(() => {
+    if (!showRoute) return [];
 
-  // ── Staff isolation (declared here so auto-follow effect can reference it) ──
-  const [isolatedStaffIds, setIsolatedStaffIds] = useState<string[]>([]);
-  const [activeWorkerMenuId, setActiveWorkerMenuId] = useState<string | null>(null);
-  const [isListVisible, setIsListVisible] = useState(false);
-  const [selectedMarkerStaff, setSelectedMarkerStaff] = useState<any | null>(null);
-
-  useEffect(() => {
-    if (!isFollowing || !mapRef.current || !mapReady.current || !liveLat || !liveLng) return;
-    if (isolatedStaffIds.length > 0) return;
-    mapRef.current.animateCamera(
-      { center: { latitude: liveLat, longitude: liveLng }, zoom: 16 },
-      { duration: 600 }
-    );
-  }, [liveLat, liveLng, isFollowing, isolatedStaffIds]);
-
-  // ── Route / date state ────────────────────────────────────────────────────
-  const [routeDate, setRouteDate] = useState<Date>(new Date());
-  const [showRoute, setShowRoute] = useState(true);
-  const [menuVisible, setMenuVisible] = useState(false);
-  const [datePickerVisible, setDatePickerVisible] = useState(false);
-
-  // ── Staff isolation continued ─────────────────────────────────────────────
-  const currentRole = (employee?.role || employee?.userRole || 'project').toLowerCase();
-  const filteredStaff = useMemo(
-    () =>
-      activeStaff
-        .filter((s) => {
-          // Prevent rendering self twice (once as SelfMarker, once as StaffMarker)
-          if (
-            String(s._id) === String(employee?._id) ||
-            String(s.employeeId?._id || s.employeeId) === String(employee?._id)
-          )
-            return false;
-          return true;
-        })
-        .sort((a, b) => getDisplayName(a).localeCompare(getDisplayName(b))),
-    [activeStaff, employee]
-  );
-
-  const prevIsolatedRef = useRef<string>('');
-
-  useEffect(() => {
-    const currentIsolatedStr = isolatedStaffIds.sort().join(',');
-    if (currentIsolatedStr === prevIsolatedRef.current) return;
-    prevIsolatedRef.current = currentIsolatedStr;
-
-    if (!mapRef.current || !mapReady.current) return;
-
-    const doFit = (coords: Array<{ latitude: number; longitude: number }>) => {
-      if (coords.length < 2 || !mapRef.current) return;
-      (mapRef.current as any).fitToCoordinates?.(coords, {
-        edgePadding: { top: 80, right: 30, bottom: 100, left: 30 },
-        animated: true,
-      });
-    };
-
-    if (isolatedStaffIds.length > 0) {
-      let workerRoute: { latitude: number; longitude: number }[] = [];
-      const selectedStaffs = activeStaff.filter((s) => isolatedStaffIds.includes(s._id));
-
-      selectedStaffs.forEach((s) => {
-        const { lat: sLat, lng: sLng } = resolveStaffLocation(s, leads);
-        if (sLat && sLng) workerRoute.push({ latitude: sLat, longitude: sLng });
-        (s.geoHistory || []).forEach((loc: any) => {
-          const { lat, lng } = toLLng(loc);
-          if (lat && lng) workerRoute.push({ latitude: lat, longitude: lng });
-        });
-      });
-
-      if (workerRoute.length > 1) {
-        setTimeout(() => doFit(workerRoute), 350);
-      } else if (workerRoute.length === 1) {
-        mapRef.current.animateToRegion(
-          {
-            latitude: workerRoute[0].latitude,
-            longitude: workerRoute[0].longitude,
-            latitudeDelta: 0.04,
-            longitudeDelta: 0.04,
-          },
-          800
-        );
+    let targetHistory: any[] = [];
+    if (isolatedWorker) {
+      if (isolatedWorker.isSelf) {
+        targetHistory = geoHistory || [];
+      } else {
+        targetHistory = isolatedWorker.rawStaffData?.geoHistory || [];
       }
     } else {
-      const allCoords = filteredStaff
-        .map((s) => {
-          const { lat, lng } = resolveStaffLocation(s, leads);
-          return { latitude: lat, longitude: lng };
-        })
-        .filter((c) => c.latitude && c.longitude);
-
-      if (liveLat && liveLng) allCoords.push({ latitude: liveLat, longitude: liveLng });
-
-      if (allCoords.length > 1) {
-        setTimeout(() => doFit(allCoords), 350);
-      } else if (allCoords.length === 1) {
-        mapRef.current.animateToRegion(
-          {
-            latitude: allCoords[0].latitude,
-            longitude: allCoords[0].longitude,
-            latitudeDelta: 0.05,
-            longitudeDelta: 0.05,
-          },
-          800
-        );
-      }
+      targetHistory = geoHistory || [];
     }
-  }, [isolatedStaffIds, activeStaff, filteredStaff, liveLat, liveLng, leads]);
 
-  // ── Route data: merge server geoHistory + live trail ─────────────────────
-  const displayGeoHistory = useMemo(() => {
-    if (isolatedStaffIds.length === 1) {
-      return activeStaff.find((s) => s._id === isolatedStaffIds[0])?.geoHistory || [];
-    }
-    if (isolatedStaffIds.length > 1) return []; // Multiple routes rendered explicitly
-    return geoHistory || [];
-  }, [isolatedStaffIds, activeStaff, geoHistory]);
-
-  /** Server history ticks filtered to the selected date (normalised to MapView coords) */
-  const serverRoute = useMemo<Array<{ latitude: number; longitude: number }>>(() => {
-    if (!showRoute) return [];
-    return displayGeoHistory
+    // Filter server geoHistory ticks for selected date
+    const histPoints: Array<{ latitude: number; longitude: number }> = targetHistory
       .filter((loc: any) => {
-        if (loc.type === 'geotag') return false;
-        if (!loc.timestamp) return true; // include ticks without timestamp in today's route
-        return isSameDay(new Date(loc.timestamp), routeDate);
+        if (!loc.timestamp) return isSameDay(new Date(), selectedDate);
+        return isSameDay(new Date(loc.timestamp), selectedDate);
       })
       .map((loc: any) => {
-        const { lat, lng } = toLLng(loc);
+        const { lat, lng } = toCoord(loc);
         return { latitude: lat, longitude: lng };
       })
-      .filter((c: any) => c.latitude && c.longitude);
-  }, [displayGeoHistory, routeDate, showRoute]);
+      .filter((c) => c.latitude && c.longitude);
 
-  /**
-   * Today's route = server history for today + live trail accumulated this session.
-   * Other dates = server history only.
-   */
-  const routeCoords = useMemo(() => {
-    if (!showRoute) return [];
-    if (isolatedStaffIds.length === 0 && isSameDay(routeDate, new Date())) {
-      // Merge: de-duplicate by keeping unique coords
-      const combined = [...serverRoute, ...liveTrail];
-      return combined;
+    // If today is selected and looking at self (or non-isolated), append live trail
+    if (isSameDay(selectedDate, new Date()) && (!isolatedWorker || isolatedWorker.isSelf)) {
+      const livePoints = liveTrail.map((p) => ({ latitude: p.latitude, longitude: p.longitude }));
+      return [...histPoints, ...livePoints];
     }
-    return serverRoute;
-  }, [serverRoute, liveTrail, routeDate, showRoute, isolatedStaffIds]);
 
-  // ── Async road snapping: runs whenever routeCoords changes meaningfully ──
+    return histPoints;
+  }, [geoHistory, liveTrail, selectedDate, showRoute, isolatedWorker]);
+
+  // Asynchronous Road Snapping (OSRM)
   useEffect(() => {
-    if (routeCoords.length < 2) {
-      setSnappedRoute([]);
-      lastSnappedLenRef.current = 0;
+    if (routePolylineCoords.length < 2) {
+      setSnappedTrail([]);
       return;
     }
-    // Only re-snap when we've accumulated 5+ new points to avoid excessive API calls
-    if (Math.abs(routeCoords.length - lastSnappedLenRef.current) < 5 && snappedRoute.length > 0)
-      return;
 
-    let cancelled = false;
-    snapCoordsToRoads(routeCoords).then((result) => {
-      if (!cancelled) {
-        setSnappedRoute(result);
-        lastSnappedLenRef.current = routeCoords.length;
+    let isCancelled = false;
+    snapCoordsToRoads(routePolylineCoords).then((snapped) => {
+      if (!isCancelled) {
+        setSnappedTrail(snapped);
       }
     });
+
     return () => {
-      cancelled = true;
+      isCancelled = true;
     };
-  }, [routeCoords]);
+  }, [routePolylineCoords.length]);
 
-  // The coords we actually draw: prefer snapped, fall back to raw
-  const displayRouteCoords = snappedRoute.length > 1 ? snappedRoute : routeCoords;
+  const activePolyline = snappedTrail.length > 1 ? snappedTrail : routePolylineCoords;
 
-  // ── Date options (last 7 days) ────────────────────────────────────────────
-  const dateOptions = useMemo<Date[]>(() => {
-    const days: Date[] = [];
-    for (let i = 0; i < 7; i++) {
-      const d = new Date();
-      d.setDate(d.getDate() - i);
-      days.push(d);
+  // Fit camera when replay route changes
+  useEffect(() => {
+    if (!isSameDay(selectedDate, new Date()) && activePolyline.length > 1 && mapRef.current) {
+      setTimeout(() => {
+        (mapRef.current as any)?.fitToCoordinates?.(activePolyline, {
+          edgePadding: { top: 90, right: 40, bottom: 120, left: 40 },
+          animated: true,
+        });
+      }, 300);
     }
-    return days;
-  }, []);
+  }, [selectedDate, activePolyline.length]);
 
-  const fitRoute = useCallback((coords: Array<{ latitude: number; longitude: number }>) => {
-    if (coords.length < 2 || !mapRef.current) return;
-    (mapRef.current as any).fitToCoordinates?.(coords, {
-      edgePadding: { top: 80, right: 30, bottom: 100, left: 30 },
-      animated: true,
-    });
-  }, []);
-
-  const handleCall = useCallback(() => {
-    const n = supervisorMobile || employee?.supervisorMobile || employee?.mobile;
-    if (n) Linking.openURL(`tel:${String(n).replace(/\D/g, '')}`);
-    else Alert.alert('No Contact', 'No supervisor number configured.');
-  }, [supervisorMobile, employee]);
-
-  const focusSelf = useCallback(async () => {
-    if (!mapRef.current) return;
-    setIsFollowing(true);
-    if (liveLat && liveLng) {
-      mapRef.current.animateToRegion({
-        latitude: liveLat,
-        longitude: liveLng,
-        latitudeDelta: 0.015,
-        longitudeDelta: 0.015,
-      });
-      return;
-    }
-    try {
-      const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-      mapRef.current.animateToRegion({
-        latitude: pos.coords.latitude,
-        longitude: pos.coords.longitude,
-        latitudeDelta: 0.02,
-        longitudeDelta: 0.02,
-      });
-    } catch {
-      /* ignore */
-    }
-  }, [liveLat, liveLng]);
-
-  const [isRefreshing, setIsRefreshing] = useState(false);
-
-  const handleRefresh = async (isAuto = false) => {
+  // 8. Manual Refresh Handler
+  const handleManualRefresh = useCallback(async () => {
     if (isRefreshing) return;
-    if (!isAuto) setIsRefreshing(true);
+    setIsRefreshing(true);
     try {
-      // 1. Fetch current GPS position via the tracker
-      await tracker.refreshLocation();
-
-      // 2. Animate map to the current known position
-      if (mapRef.current && !isAuto && liveLat && liveLng) {
-        mapRef.current.animateToRegion(
-          {
-            latitude: liveLat,
-            longitude: liveLng,
-            latitudeDelta: 0.015,
-            longitudeDelta: 0.015,
-          },
-          600
-        );
+      if (unifiedLoc?.refreshLiveTrackerLocation) {
+        await unifiedLoc.refreshLiveTrackerLocation();
       }
-
-      // 3. Call parent onRefresh to fetch active staff and run other updates
+      if (unifiedLoc?.fetchActiveStaff) {
+        await unifiedLoc.fetchActiveStaff();
+      }
       if (onRefresh) {
         await onRefresh();
       }
-      if (!isAuto) appService.showToast('Live tracker refreshed', 'Success');
-    } catch (err) {
-      if (!isAuto) appService.showToast('Failed to refresh live tracker', 'Error');
+      appService.showToast('Live map refreshed', 'Success');
+    } catch {
+      appService.showToast('Failed to refresh live map', 'Error');
     } finally {
-      if (!isAuto) setIsRefreshing(false);
+      setIsRefreshing(false);
     }
-  };
+  }, [isRefreshing, unifiedLoc, onRefresh]);
 
-  // Live GPS tracking is handled in real-time via socket ('attendance:geo_update')
-  // Manual refresh remains available via handleRefresh(false)
+  // Handle worker selection & isolation
+  const handleWorkerSelect = useCallback(
+    (worker: WorkerDisplayInfo) => {
+      setSelectedWorker(worker);
+      setIsolatedWorkerId(worker.id);
+      setIsFollowing(false);
+      if (mapRef.current) {
+        mapRef.current.animateCamera({
+          center: { latitude: worker.latitude, longitude: worker.longitude },
+          zoom: 17,
+        });
+      }
+    },
+    []
+  );
 
-  const [gpsTimeout, setGpsTimeout] = useState(false);
-
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setGpsTimeout(true);
-    }, 5000); // 5 second timeout to show map anyway
-    return () => clearTimeout(timer);
+  // Clear worker isolation
+  const handleClearIsolation = useCallback(() => {
+    setIsolatedWorkerId(null);
+    setSelectedWorker(null);
+    setIsFollowing(true);
   }, []);
 
-  // Dynamic fallback coordinates (checks leads first before India Gate)
-  const firstLeadWithLoc = leads?.find((l: any) => l.location?.lat && l.location?.long);
-  const fallbackLat = firstLeadWithLoc
-    ? Number(firstLeadWithLoc.location.lat)
-    : GPS_CONSTANTS.DEFAULT_LOCATION.latitude;
-  const fallbackLng = firstLeadWithLoc
-    ? Number(firstLeadWithLoc.location.long)
-    : GPS_CONSTANTS.DEFAULT_LOCATION.longitude;
-
-  const validSelfLat =
-    liveLat || (propLocation ? toLLng(propLocation).lat : gpsTimeout ? fallbackLat : 0);
-  const validSelfLng =
-    liveLng || (propLocation ? toLLng(propLocation).lng : gpsTimeout ? fallbackLng : 0);
-
-  if (!validSelfLat || !validSelfLng) {
-    return (
-      <View
-        style={[
-          S.flex1,
-          { justifyContent: 'center', alignItems: 'center', backgroundColor: '#f8fafc' },
-        ]}
-      >
-        <ActivityIndicator size="large" color="#10b981" />
-        <Text style={{ marginTop: 12, fontSize: 14, color: '#64748b', fontWeight: '600' }}>
-          Fetching real-time location...
-        </Text>
-      </View>
-    );
-  }
+  // Initial map center
+  const initialCenter = useMemo(() => {
+    if (propLocation?.latitude && propLocation?.longitude) {
+      return { latitude: propLocation.latitude, longitude: propLocation.longitude };
+    }
+    if (displayWorkers[0]?.latitude && displayWorkers[0]?.longitude) {
+      return { latitude: displayWorkers[0].latitude, longitude: displayWorkers[0].longitude };
+    }
+    if (geofences[0]?.latitude && geofences[0]?.longitude) {
+      return { latitude: geofences[0].latitude, longitude: geofences[0].longitude };
+    }
+    return GPS_CONSTANTS.DEFAULT_LOCATION;
+  }, [propLocation, displayWorkers, geofences]);
 
   return (
-    <View style={S.flex1}>
-      {/* ── MAP ──────────────────────────────────────────────────────────── */}
+    <View style={styles.container}>
+      {/* ── MAP VIEW ── */}
       <MapView
-        ref={mapRef}
-        style={S.flex1}
-        provider="google"
+        ref={mapRef as any}
+        style={styles.map}
+        provider={Platform.OS === 'android' ? PROVIDER_GOOGLE : undefined}
         initialRegion={{
-          latitude: validSelfLat,
-          longitude: validSelfLng,
-          latitudeDelta: 0.04,
-          longitudeDelta: 0.04,
-        }}
-        scrollEnabled
-        onPanDrag={() => setIsFollowing(false)}
-        onRegionChangeComplete={(_, d) => {
-          if ((d as any)?.isGesture) setIsFollowing(false);
+          latitude: initialCenter.latitude,
+          longitude: initialCenter.longitude,
+          latitudeDelta: 0.025,
+          longitudeDelta: 0.025,
         }}
         onMapReady={() => {
-          mapReady.current = true;
-          if (liveLat && liveLng) {
-            mapRef.current?.animateToRegion(
-              { latitude: liveLat, longitude: liveLng, latitudeDelta: 0.02, longitudeDelta: 0.02 },
-              400
-            );
-          }
+          isMapReady.current = true;
         }}
+        onPanDrag={() => setIsFollowing(false)}
+        showsUserLocation={false}
+        showsMyLocationButton={false}
+        showsCompass={false}
       >
-        {/* Self — live position marker (NOT memo'd for instant coordinate updates) */}
-        {validSelfLat && validSelfLng ? (
-          <SelfMarker
-            lat={validSelfLat}
-            lng={validSelfLng}
-            employee={employee}
-            name={name || 'Me'}
-            profileImage={profileImage}
-            currentMatchedSite={currentMatchedSite}
-            reverseAddress={reverseAddress}
-            liveTag={liveTime}
-            leads={leads}
-            isMocked={tracker.location?.isMocked}
-          />
-        ) : null}
-
-        {/* Route polyline — road-snapped (falls back to raw GPS if API unavailable) */}
-        {showRoute && displayRouteCoords.length > 1 && (
-          <Polyline
-            coordinates={displayRouteCoords}
-            strokeColor="#3b82f6"
-            strokeWidth={4}
-            lineDashPattern={snappedRoute.length > 1 ? undefined : [8, 4]}
-          />
-        )}
-
-        {/* Multiple Routes (if >1 selected) */}
-        {isolatedStaffIds.length > 1 &&
-          showRoute &&
-          activeStaff
-            .filter((s) => isolatedStaffIds.includes(s._id))
-            .map((staff) => {
-              const sHist = staff.geoHistory || [];
-              const staffRoute = sHist
-                .filter(
-                  (loc: any) =>
-                    loc.type !== 'geotag' &&
-                    (!loc.timestamp || isSameDay(new Date(loc.timestamp), routeDate))
-                )
-                .map((loc: any) => {
-                  const { lat, lng } = toLLng(loc);
-                  return { latitude: lat, longitude: lng };
-                })
-                .filter((c: any) => c.latitude && c.longitude);
-              return (
-                <React.Fragment key={`route-multi-${staff._id}`}>
-                  {staffRoute.length > 1 && (
-                    <Polyline coordinates={staffRoute} strokeColor="#3b82f6" strokeWidth={4} />
-                  )}
-                  {sHist
-                    .filter(
-                      (loc: any) =>
-                        loc.type !== 'geotag' &&
-                        (!loc.timestamp || isSameDay(new Date(loc.timestamp), routeDate))
-                    )
-                    .map((loc: any, i: number) => (
-                      <TrailAnnotation
-                        key={`ann-multi-${staff._id}-${i}`}
-                        loc={loc}
-                        index={i}
-                        leads={leads}
-                      />
-                    ))}
-                </React.Fragment>
-              );
-            })}
-
-        {/* Trail annotations: client bubbles, end markers, plain dots */}
-        {displayGeoHistory
-          .filter((loc: any) => loc.type !== 'geotag')
-          .map((loc: any, i: number) => (
-            <TrailAnnotation key={`ann-${i}`} loc={loc} index={i} leads={leads} />
-          ))}
-
-        {/* Geo-tag site-visit pins */}
-        {displayGeoHistory
-          .filter((loc: any) => loc.type === 'geotag')
-          .map((loc: any, i: number) => (
-            <GeoTagMarker key={`gt-${i}`} loc={loc} index={i} />
-          ))}
-
-        {/* Other staff markers */}
-        {filteredStaff
-          .filter((s) => isolatedStaffIds.length === 0 || isolatedStaffIds.includes(s._id))
-          .map((s) => (
-            <StaffMarker
-              key={s._id}
-              staff={s}
-              selfId={employee?._id}
-              leads={leads}
-              onAction={(action) => {
-                if (action === 'open_menu') {
-                  setSelectedMarkerStaff(s);
-                  if (!isolatedStaffIds.includes(s._id))
-                    setIsolatedStaffIds((prev) => [...prev, s._id]);
-                  const { lat: sLat, lng: sLng } = resolveStaffLocation(s, leads);
-                  if (sLat && sLng && mapRef.current && mapReady.current) {
-                    mapRef.current.animateToRegion({
-                      latitude: Number(sLat),
-                      longitude: Number(sLng),
-                      latitudeDelta: 0.012,
-                      longitudeDelta: 0.012,
-                    });
-                  }
-                } else if (action === 'route') {
-                  if (s.markedByDevice === false) {
-                    appService.showToast('GPS-off. Route tracking unavailable.', 'Info');
-                    return;
-                  }
-                  setIsolatedStaffIds([s._id]);
-                  setShowRoute(true);
-                  setIsListVisible(false);
-                  setIsFollowing(true);
-                  setSelectedMarkerStaff(null);
-                } else if (action === 'date') {
-                  if (s.markedByDevice === false) {
-                    appService.showToast('GPS-off. Route tracking unavailable.', 'Info');
-                    return;
-                  }
-                  setIsolatedStaffIds([s._id]);
-                  setShowRoute(true);
-                  setIsListVisible(false);
-                  setIsFollowing(true);
-                  setDatePickerVisible(true);
-                  setSelectedMarkerStaff(null);
-                } else if (action === 'call') {
-                  const num = s.mobile || s.employeeMobile || s.userMobile;
-                  if (num) Linking.openURL(`tel:${String(num).replace(/\\D/g, '')}`);
-                  else Alert.alert('No Contact', 'No mobile number found for this worker.');
-                  setSelectedMarkerStaff(null);
-                }
-              }}
+        {/* Geofence Boundary Circles */}
+        {showGeofences &&
+          geofences.map((fence) => (
+            <Circle
+              key={fence.id}
+              center={{ latitude: fence.latitude, longitude: fence.longitude }}
+              radius={fence.radius}
+              fillColor="rgba(37, 99, 235, 0.08)"
+              strokeColor="rgba(37, 99, 235, 0.45)"
+              strokeWidth={1.5}
             />
           ))}
 
-        {/* Render Site coordinate marker for self if activeDuty has it */}
-        {activeDuty && activeDuty.siteLat && activeDuty.siteLong && (
-          <SiteCoordinateMarker staffOrSelf={activeDuty} name={name || 'You'} isSelf={true} />
+        {/* Route Polyline (Worker Movement Path) */}
+        {showRoute && activePolyline.length > 1 && (
+          <Polyline
+            coordinates={activePolyline}
+            strokeColor="#2563eb"
+            strokeWidth={4}
+            lineCap="round"
+            lineJoin="round"
+          />
         )}
 
-        {/* Render Site coordinate marker for other filtered active staff */}
-        {filteredStaff
-          .filter((s) => isolatedStaffIds.length === 0 || isolatedStaffIds.includes(s._id))
-          .map((s) => {
-            if (s.siteLat && s.siteLong) {
-              return (
-                <SiteCoordinateMarker
-                  key={`site-marker-${s._id}`}
-                  staffOrSelf={s}
-                  name={getDisplayName(s)}
-                  isSelf={false}
-                />
-              );
-            }
-            return null;
-          })}
+        {/* WORKER IMAGE MARKERS ONLY (NO TEXT CALLOUTS, NEVER BLANK) */}
+        {visibleWorkers.map((worker) => (
+          <WorkerImageMarker
+            key={`${worker.id}-${worker.photoUrl || 'no-photo'}`}
+            worker={worker}
+            isSelected={selectedWorker?.id === worker.id}
+            isIsolated={isolatedWorkerId === worker.id}
+            onPress={handleWorkerSelect}
+          />
+        ))}
       </MapView>
 
-      {tracker.dutyOn && (!liveLat || !liveLng) ? (
-        <View
-          style={{
-            position: 'absolute',
-            top: 72,
-            left: 14,
-            right: 14,
-            backgroundColor: 'rgba(254, 243, 199, 0.95)', // amber-50
-            padding: 10,
-            borderRadius: 8,
-            borderWidth: 1,
-            borderColor: '#f59e0b', // amber-500
-            flexDirection: 'row',
-            alignItems: 'center',
-            gap: 8,
-            zIndex: 999,
-            elevation: 6,
-            shadowColor: '#000',
-            shadowOpacity: 0.1,
-            shadowRadius: 3,
-          }}
-        >
-          <Ionicons name="warning" size={18} color="#d97706" />
-          <Text style={{ fontSize: 11, color: '#92400e', flex: 1, fontWeight: '600' }}>
-            GPS signal unavailable. Showing fallback site location. Enable GPS on your emulator and
-            set mock coordinates to sync.
-          </Text>
-        </View>
-      ) : null}
+      {/* ── TOP FLOATING CONTROL BAR ── */}
+      <View style={styles.topControlBar}>
+        {/* Status Pill / Worker Isolation Pill */}
+        {isolatedWorkerId ? (
+          <View style={[styles.statusPill, styles.isolationPill]}>
+            <View style={[styles.pulseDot, { backgroundColor: '#8b5cf6' }]} />
+            <Text style={styles.statusPillText} numberOfLines={1}>
+              {isolatedWorker?.name || 'Isolated'}
+            </Text>
+            <TouchableOpacity onPress={handleClearIsolation} style={styles.showAllPillButton}>
+              <Text style={styles.showAllPillText}>Show All</Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <View style={styles.statusPill}>
+            <View style={styles.pulseDot} />
+            <Text style={styles.statusPillText}>
+              {displayWorkers.length} Active {displayWorkers.length === 1 ? 'Worker' : 'Workers'}
+            </Text>
+          </View>
+        )}
 
-      {/* ── Top-left: Workers toggle ──────────────────────────────────────── */}
-      <View style={{ position: 'absolute', top: 14, left: 14 }}>
-        <TouchableOpacity
-          style={fab}
-          onPress={() => {
-            setIsListVisible(!isListVisible);
-            setMenuVisible(false);
-          }}
-        >
-          <Ionicons name={isListVisible ? 'close' : 'list'} size={22} color={COLORS.primary} />
-        </TouchableOpacity>
-      </View>
-
-      {/* ── Top-right: Locate & Refresh ───────────────────────────────── */}
-      <View
-        style={{
-          position: 'absolute',
-          top: 14,
-          right: 14,
-          flexDirection: 'row',
-          gap: 10,
-          alignItems: 'center',
-        }}
-      >
-        <TouchableOpacity
-          style={{
-            backgroundColor: '#0f172a',
-            borderRadius: 22,
-            paddingHorizontal: 12,
-            height: 44,
-            flexDirection: 'row',
-            justifyContent: 'center',
-            alignItems: 'center',
-            gap: 8,
-            elevation: 5,
-            shadowColor: '#000',
-            shadowOpacity: 0.18,
-            shadowRadius: 4,
-          }}
-          onPress={() => handleRefresh(false)}
-          disabled={isRefreshing}
-        >
-          {isRefreshing ? (
-            <ActivityIndicator size="small" color="#10b981" />
-          ) : (
-            <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: '#10b981' }} />
-          )}
-          <Text style={{ fontSize: 12, color: '#fff', fontWeight: '700' }}>
-            {liveTime ? `Live · updated ${liveTime}` : 'Refresh'}
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={fab} onPress={focusSelf}>
-          <Ionicons
-            name={isFollowing ? 'locate' : 'locate-outline'}
-            size={22}
-            color={isFollowing ? COLORS.primary : '#64748b'}
-          />
-        </TouchableOpacity>
-      </View>
-
-      {/* ── Custom Interactive Callout (Android safe) ── */}
-      {selectedMarkerStaff && (
-        <View
-          style={{
-            position: 'absolute',
-            top: '50%',
-            left: '50%',
-            transform: [{ translateX: -110 }, { translateY: -170 }],
-            width: 220,
-            zIndex: 1000,
-          }}
-        >
-          <View
-            style={{
-              backgroundColor: '#fff',
-              borderRadius: 8,
-              elevation: 6,
-              shadowColor: '#000',
-              shadowOpacity: 0.25,
-              shadowRadius: 6,
-              shadowOffset: { width: 0, height: 4 },
-              overflow: 'hidden',
-            }}
+        {/* Action Controls */}
+        <View style={styles.topActionGroup}>
+          {/* Worker List Drawer Toggle */}
+          <TouchableOpacity
+            style={styles.circleButton}
+            onPress={() => setIsWorkerListVisible(!isWorkerListVisible)}
+            activeOpacity={0.8}
           >
-            <View style={{ padding: 10, flexDirection: 'row', alignItems: 'flex-start' }}>
-              <TouchableOpacity
-                onPress={() => {
-                  const emp = selectedMarkerStaff.employeeId || {};
-                  const usr = selectedMarkerStaff.userId || {};
-                  const num =
-                    emp.mobile ||
-                    emp.contactNumber ||
-                    emp.employeeMobile ||
-                    usr.mobile ||
-                    usr.userMobile ||
-                    usr.phone_number ||
-                    selectedMarkerStaff.mobile ||
-                    selectedMarkerStaff.employeeMobile ||
-                    selectedMarkerStaff.userMobile;
+            <Ionicons name="people" size={18} color="#1e293b" />
+          </TouchableOpacity>
 
-                  if (num) Linking.openURL(`tel:${String(num).replace(/\\D/g, '')}`);
-                  else Alert.alert('No Contact', 'No mobile number found for this worker.');
-                  setSelectedMarkerStaff(null);
-                }}
-                style={{ paddingRight: 8, justifyContent: 'center' }}
-              >
-                <View style={{ backgroundColor: '#dcfce7', padding: 6, borderRadius: 16 }}>
-                  <Ionicons name="call" size={14} color="#16a34a" />
-                </View>
-              </TouchableOpacity>
-              <View style={{ flex: 1 }}>
+          {/* Geofence Toggle */}
+          <TouchableOpacity
+            style={[styles.circleButton, showGeofences && styles.circleButtonActive]}
+            onPress={() => setShowGeofences(!showGeofences)}
+            activeOpacity={0.8}
+          >
+            <Ionicons
+              name={showGeofences ? 'radio' : 'radio-outline'}
+              size={18}
+              color={showGeofences ? '#2563eb' : '#64748b'}
+            />
+          </TouchableOpacity>
+
+          {/* Route History Replay */}
+          <TouchableOpacity
+            style={[styles.circleButton, showRoute && styles.circleButtonActive]}
+            onPress={() => setIsDatePickerVisible(true)}
+            activeOpacity={0.8}
+          >
+            <Ionicons
+              name="trail-sign"
+              size={18}
+              color={showRoute ? '#2563eb' : '#64748b'}
+            />
+          </TouchableOpacity>
+
+          {/* Center / Follow Self */}
+          <TouchableOpacity
+            style={[styles.circleButton, isFollowing && styles.circleButtonActive]}
+            onPress={() => {
+              setIsFollowing(true);
+              const target = isolatedWorker || deviceCoords || displayWorkers[0];
+              if (target && mapRef.current) {
+                mapRef.current.animateCamera({
+                  center: { latitude: target.latitude, longitude: target.longitude },
+                  zoom: 17,
+                });
+              }
+            }}
+            activeOpacity={0.8}
+          >
+            <Ionicons
+              name={isFollowing ? 'locate' : 'locate-outline'}
+              size={18}
+              color={isFollowing ? '#2563eb' : '#64748b'}
+            />
+          </TouchableOpacity>
+
+          {/* Refresh GPS */}
+          <TouchableOpacity
+            style={styles.circleButton}
+            onPress={handleManualRefresh}
+            disabled={isRefreshing}
+            activeOpacity={0.8}
+          >
+            {isRefreshing ? (
+              <ActivityIndicator size="small" color="#2563eb" />
+            ) : (
+              <Ionicons name="refresh" size={18} color="#1e293b" />
+            )}
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      {/* ── ROUTE STATUS / NO ROUTE AVAILABLE BANNER ── */}
+      {showRoute && (
+        <View style={styles.routeBannerContainer}>
+          {activePolyline.length > 1 ? (
+            <View style={styles.routeBannerSuccess}>
+              <Ionicons name="trail-sign" size={14} color="#2563eb" />
+              <Text style={styles.routeBannerSuccessText}>
+                Route: {isSameDay(selectedDate, new Date()) ? 'Today' : selectedDate.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })} ({activePolyline.length} pts)
+                {isolatedWorker ? ` · ${isolatedWorker.name}` : ''}
+              </Text>
+              {!isSameDay(selectedDate, new Date()) && (
+                <TouchableOpacity onPress={() => setSelectedDate(new Date())} style={styles.resetDateBtn}>
+                  <Text style={styles.resetDateBtnText}>Today</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          ) : (
+            <View style={styles.routeBannerEmpty}>
+              <Ionicons name="alert-circle" size={15} color="#d97706" />
+              <Text style={styles.routeBannerEmptyText} numberOfLines={1}>
+                No route available for {isSameDay(selectedDate, new Date()) ? 'Today' : selectedDate.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}
+                {isolatedWorker ? ` (${isolatedWorker.name})` : ''}
+              </Text>
+              {!isSameDay(selectedDate, new Date()) && (
+                <TouchableOpacity onPress={() => setSelectedDate(new Date())} style={styles.resetDateBtn}>
+                  <Text style={styles.resetDateBtnText}>Today</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          )}
+        </View>
+      )}
+
+      {/* ── BOTTOM WORKER DETAILS CARD (OUTSIDE MAP TO KEEP MAP PURE) ── */}
+      {selectedWorker && (
+        <View style={styles.workerDetailCard}>
+          <View style={styles.workerCardContent}>
+            {/* Worker Avatar with Fallback initial */}
+            <View style={styles.cardAvatarWrapper}>
+              <View style={[styles.cardAvatar, styles.fallbackAvatar, { backgroundColor: selectedWorker.isSelf ? '#2563eb' : selectedWorker.isInsideGeofence ? '#10b981' : '#f59e0b' }]}>
+                <Text style={styles.fallbackAvatarText}>
+                  {selectedWorker.name.charAt(0).toUpperCase()}
+                </Text>
+              </View>
+              {selectedWorker.photoUrl && (
+                <Image
+                  source={{ uri: selectedWorker.photoUrl }}
+                  style={[StyleSheet.absoluteFillObject, styles.cardAvatar]}
+                  resizeMode="cover"
+                />
+              )}
+              <View
+                style={[
+                  styles.cardStatusBadge,
+                  {
+                    backgroundColor: selectedWorker.isInsideGeofence ? '#10b981' : '#f59e0b',
+                  },
+                ]}
+              />
+            </View>
+
+            {/* Worker Info */}
+            <View style={styles.cardInfo}>
+              <View style={styles.cardTitleRow}>
+                <Text style={styles.cardWorkerName} numberOfLines={1}>
+                  {selectedWorker.name}
+                </Text>
+                {selectedWorker.isSelf && (
+                  <View style={styles.selfBadge}>
+                    <Text style={styles.selfBadgeText}>YOU</Text>
+                  </View>
+                )}
+                {isolatedWorkerId === selectedWorker.id && (
+                  <View style={[styles.selfBadge, { backgroundColor: '#f3e8ff' }]}>
+                    <Text style={[styles.selfBadgeText, { color: '#8b5cf6' }]}>ISOLATED</Text>
+                  </View>
+                )}
+              </View>
+
+              {/* Geofence Status */}
+              <View style={styles.geofenceStatusRow}>
+                <Ionicons
+                  name={selectedWorker.isInsideGeofence ? 'shield-checkmark' : 'navigate'}
+                  size={14}
+                  color={selectedWorker.isInsideGeofence ? '#10b981' : '#f59e0b'}
+                />
                 <Text
-                  style={{ fontSize: 13, fontWeight: '700', color: '#0f172a' }}
+                  style={[
+                    styles.geofenceStatusText,
+                    { color: selectedWorker.isInsideGeofence ? '#065f46' : '#92400e' },
+                  ]}
                   numberOfLines={1}
                 >
-                  {getDisplayName(selectedMarkerStaff)}
+                  {selectedWorker.isInsideGeofence
+                    ? `Inside ${selectedWorker.geofenceSiteName || 'Site'}`
+                    : 'In Transit / Outside Geofence'}
                 </Text>
-                {(() => {
-                  const {
-                    lat: lLat,
-                    lng: lLng,
-                    isAssumed,
-                    isStartLoc,
-                  } = resolveStaffLocation(selectedMarkerStaff, leads || []);
-                  const mName = getMatchedSiteName(lLat, lLng, leads || []);
-
-                  return (
-                    <>
-                      <Text
-                        style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}
-                        numberOfLines={3}
-                      >
-                        {mName
-                          ? `📍 At ${mName}`
-                          : selectedMarkerStaff.geoHistory?.[
-                              selectedMarkerStaff.geoHistory.length - 1
-                            ]?.address ||
-                            selectedMarkerStaff.location?.address ||
-                            'Fetching address...'}
-                      </Text>
-                      <View style={{ marginTop: 4, flexDirection: 'row', alignItems: 'center' }}>
-                        <View
-                          style={{
-                            backgroundColor: isStartLoc
-                              ? '#ede9fe'
-                              : isAssumed
-                                ? '#fef3c7'
-                                : '#dcfce7',
-                            paddingHorizontal: 6,
-                            paddingVertical: 2,
-                            borderRadius: 4,
-                          }}
-                        >
-                          <Text
-                            style={{
-                              fontSize: 9,
-                              fontWeight: '700',
-                              color: isStartLoc ? '#8b5cf6' : isAssumed ? '#d97706' : '#16a34a',
-                            }}
-                          >
-                            {isStartLoc
-                              ? '🚀 Duty Start'
-                              : isAssumed
-                                ? '📍 Site Location'
-                                : '📡 Live GPS'}
-                          </Text>
-                        </View>
-                      </View>
-                    </>
-                  );
-                })()}
               </View>
+
+              <Text style={styles.cardShiftText}>
+                Shift: {selectedWorker.shiftName}
+                {selectedWorker.dutyStart
+                  ? ` · Started ${new Date(selectedWorker.dutyStart).toLocaleTimeString([], {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}`
+                  : ''}
+              </Text>
+            </View>
+
+            {/* Quick Actions */}
+            <View style={styles.cardActionCol}>
+              {/* Isolate / Show All Toggle */}
               <TouchableOpacity
-                onPress={() => setSelectedMarkerStaff(null)}
-                style={{ marginLeft: 4, padding: 2 }}
+                style={[styles.actionIconBtn, isolatedWorkerId === selectedWorker.id ? styles.actionIconBtnActive : null]}
+                onPress={() => {
+                  if (isolatedWorkerId === selectedWorker.id) {
+                    handleClearIsolation();
+                  } else {
+                    handleWorkerSelect(selectedWorker);
+                  }
+                }}
+                activeOpacity={0.8}
+              >
+                <Ionicons
+                  name={isolatedWorkerId === selectedWorker.id ? 'scan' : 'scan-outline'}
+                  size={16}
+                  color={isolatedWorkerId === selectedWorker.id ? '#ffffff' : '#475569'}
+                />
+              </TouchableOpacity>
+
+              {/* Phone call button */}
+              {selectedWorker.mobile && (
+                <TouchableOpacity
+                  style={[styles.actionIconBtn, { backgroundColor: '#16a34a' }]}
+                  onPress={() => {
+                    Linking.openURL(`tel:${selectedWorker.mobile?.replace(/\D/g, '')}`);
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="call" size={15} color="#ffffff" />
+                </TouchableOpacity>
+              )}
+
+              {/* Close Card */}
+              <TouchableOpacity
+                style={styles.closeCardButton}
+                onPress={() => setSelectedWorker(null)}
+                activeOpacity={0.8}
               >
                 <Ionicons name="close" size={18} color="#94a3b8" />
               </TouchableOpacity>
             </View>
           </View>
-          {/* Tail */}
-          <View
-            style={{
-              width: 0,
-              height: 0,
-              borderLeftWidth: 10,
-              borderRightWidth: 10,
-              borderTopWidth: 12,
-              borderLeftColor: 'transparent',
-              borderRightColor: 'transparent',
-              borderTopColor: '#f8fafc',
-              alignSelf: 'center',
-            }}
-          />
         </View>
       )}
 
-      {/* ── Date picker modal ─────────────────────────────────────────────── */}
+      {/* ── ACTIVE WORKERS LIST TRAY MODAL ── */}
       <Modal
-        visible={datePickerVisible}
+        visible={isWorkerListVisible}
         transparent
-        animationType="fade"
-        onRequestClose={() => setDatePickerVisible(false)}
+        animationType="slide"
+        onRequestClose={() => setIsWorkerListVisible(false)}
       >
         <Pressable
-          style={{
-            flex: 1,
-            backgroundColor: 'rgba(0,0,0,0.45)',
-            justifyContent: 'center',
-            padding: 22,
-          }}
-          onPress={() => setDatePickerVisible(false)}
+          style={styles.modalOverlay}
+          onPress={() => setIsWorkerListVisible(false)}
         >
-          <Pressable onPress={(e) => e.stopPropagation()}>
-            <View
-              style={{
-                backgroundColor: '#fff',
-                borderRadius: 18,
-                overflow: 'hidden',
-                elevation: 14,
-              }}
-            >
-              {/* Header */}
-              <View style={{ backgroundColor: '#0f172a', padding: 16 }}>
-                <Text style={{ color: '#fff', fontWeight: '800', fontSize: 16 }}>
-                  📅 Select Route Date
-                </Text>
-                <Text style={{ color: '#64748b', fontSize: 11, marginTop: 2 }}>
-                  Replay movement for any day
-                </Text>
+          <Pressable style={styles.modalSheet} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.modalHeader}>
+              <View>
+                <Text style={styles.modalTitle}>On-Duty Staff ({displayWorkers.length})</Text>
+                <Text style={styles.modalSubtitle}>Attendance Database & GPS Live</Text>
               </View>
+              <TouchableOpacity
+                onPress={() => setIsWorkerListVisible(false)}
+                style={styles.modalCloseButton}
+              >
+                <Ionicons name="close" size={20} color="#64748b" />
+              </TouchableOpacity>
+            </View>
 
-              {dateOptions.map((d, i) => {
-                const active = isSameDay(d, routeDate);
-                const ticks = displayGeoHistory.filter(
-                  (loc: any) => loc.timestamp && isSameDay(new Date(loc.timestamp), d)
-                );
-                const hasTicks = ticks.length > 0;
+            <ScrollView contentContainerStyle={styles.workerListScroll}>
+              {/* Show All Workers Option */}
+              <TouchableOpacity
+                style={[
+                  styles.workerListItem,
+                  !isolatedWorkerId && { backgroundColor: '#eff6ff' },
+                ]}
+                onPress={() => {
+                  handleClearIsolation();
+                  setIsWorkerListVisible(false);
+                }}
+              >
+                <View style={[styles.listAvatar, { backgroundColor: '#2563eb', justifyContent: 'center', alignItems: 'center' }]}>
+                  <Ionicons name="people" size={20} color="#ffffff" />
+                </View>
+                <View style={styles.listInfoCol}>
+                  <Text style={[styles.listWorkerName, !isolatedWorkerId && { color: '#2563eb' }]}>
+                    All Active Workers
+                  </Text>
+                  <Text style={styles.listSubText}>Show all on-duty workers on map</Text>
+                </View>
+                {!isolatedWorkerId && (
+                  <Ionicons name="checkmark-circle" size={20} color="#2563eb" />
+                )}
+              </TouchableOpacity>
+
+              {/* Individual Worker Items */}
+              {displayWorkers.map((worker) => {
+                const isItemIsolated = isolatedWorkerId === worker.id;
                 return (
                   <TouchableOpacity
-                    key={i}
-                    style={{
-                      flexDirection: 'row',
-                      alignItems: 'center',
-                      padding: 14,
-                      borderBottomWidth: i < dateOptions.length - 1 ? 0.5 : 0,
-                      borderBottomColor: '#f1f5f9',
-                      backgroundColor: active ? '#eff6ff' : '#fff',
-                    }}
+                    key={worker.id}
+                    style={[styles.workerListItem, isItemIsolated && { backgroundColor: '#f5f3ff' }]}
                     onPress={() => {
-                      setRouteDate(d);
-                      setShowRoute(true);
-                      setDatePickerVisible(false);
-                      // Fit map to that day's coords
-                      setTimeout(() => {
-                        const coords = displayGeoHistory
-                          .filter(
-                            (loc: any) =>
-                              loc.type !== 'geotag' &&
-                              loc.timestamp &&
-                              isSameDay(new Date(loc.timestamp), d)
-                          )
-                          .map((loc: any) => {
-                            const { lat, lng } = toLLng(loc);
-                            return { latitude: lat, longitude: lng };
-                          })
-                          .filter((c: any) => c.latitude && c.longitude);
-                        fitRoute(coords);
-                      }, 350);
+                      handleWorkerSelect(worker);
+                      setIsWorkerListVisible(false);
                     }}
                   >
-                    <View
-                      style={{
-                        width: 38,
-                        height: 38,
-                        borderRadius: 19,
-                        marginRight: 12,
-                        backgroundColor: active ? '#3b82f6' : '#f1f5f9',
-                        justifyContent: 'center',
-                        alignItems: 'center',
-                      }}
+                    <View style={styles.listAvatarWrapper}>
+                      <View style={[styles.listAvatar, styles.fallbackAvatar, { backgroundColor: worker.isSelf ? '#2563eb' : worker.isInsideGeofence ? '#10b981' : '#f59e0b' }]}>
+                        <Text style={styles.fallbackAvatarText}>
+                          {worker.name.charAt(0).toUpperCase()}
+                        </Text>
+                      </View>
+                      {worker.photoUrl && (
+                        <Image
+                          source={{ uri: worker.photoUrl }}
+                          style={[StyleSheet.absoluteFillObject, styles.listAvatar]}
+                          resizeMode="cover"
+                        />
+                      )}
+                      <View
+                        style={[
+                          styles.listStatusDot,
+                          { backgroundColor: worker.isInsideGeofence ? '#10b981' : '#f59e0b' },
+                        ]}
+                      />
+                    </View>
+
+                    <View style={styles.listInfoCol}>
+                      <Text style={[styles.listWorkerName, isItemIsolated && { color: '#8b5cf6' }]} numberOfLines={1}>
+                        {worker.name} {worker.isSelf && '(You)'}
+                      </Text>
+                      <Text style={styles.listSubText} numberOfLines={1}>
+                        {worker.isInsideGeofence
+                          ? `📍 Inside ${worker.geofenceSiteName || 'Site'}`
+                          : '🚗 In Transit'}
+                      </Text>
+                    </View>
+
+                    {isItemIsolated ? (
+                      <View style={styles.isolatedBadge}>
+                        <Text style={styles.isolatedBadgeText}>ISOLATED</Text>
+                      </View>
+                    ) : (
+                      <Ionicons name="chevron-forward" size={18} color="#cbd5e1" />
+                    )}
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* ── ROUTE DATE PICKER MODAL (REPLAY ROUTE BY DATE) ── */}
+      <Modal
+        visible={isDatePickerVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setIsDatePickerVisible(false)}
+      >
+        <Pressable
+          style={styles.modalOverlay}
+          onPress={() => setIsDatePickerVisible(false)}
+        >
+          <Pressable style={styles.datePickerCard} onPress={(e) => e.stopPropagation()}>
+            <Text style={styles.datePickerTitle}>Replay Route by Date</Text>
+            <Text style={styles.datePickerSubtitle}>
+              {isolatedWorker ? `Showing movement for ${isolatedWorker.name}` : 'Showing movement for active session'}
+            </Text>
+
+            <View style={styles.dateList}>
+              {[0, 1, 2, 3, 4, 5, 6].map((dayOffset) => {
+                const date = new Date();
+                date.setDate(date.getDate() - dayOffset);
+                const isSelected = isSameDay(date, selectedDate);
+                const label =
+                  dayOffset === 0
+                    ? 'Today'
+                    : dayOffset === 1
+                      ? 'Yesterday'
+                      : date.toLocaleDateString('en-IN', { weekday: 'short', day: '2-digit', month: 'short' });
+
+                // Check point count for preview
+                const targetHist = isolatedWorker
+                  ? (isolatedWorker.isSelf ? geoHistory : isolatedWorker.rawStaffData?.geoHistory || [])
+                  : geoHistory || [];
+
+                const pointsForDay = targetHist.filter((loc: any) => {
+                  if (!loc.timestamp) return dayOffset === 0;
+                  return isSameDay(new Date(loc.timestamp), date);
+                }).length + (dayOffset === 0 && (!isolatedWorker || isolatedWorker.isSelf) ? liveTrail.length : 0);
+
+                return (
+                  <TouchableOpacity
+                    key={dayOffset}
+                    style={[styles.dateOptionItem, isSelected && styles.dateOptionSelected]}
+                    onPress={() => {
+                      setSelectedDate(date);
+                      setShowRoute(true);
+                      setIsDatePickerVisible(false);
+                      if (pointsForDay === 0) {
+                        appService.showToast(`No route available for ${label}`, 'Info');
+                      }
+                    }}
+                  >
+                    <Ionicons
+                      name="calendar"
+                      size={18}
+                      color={isSelected ? '#2563eb' : '#64748b'}
+                    />
+                    <Text
+                      style={[
+                        styles.dateOptionText,
+                        isSelected && styles.dateOptionTextSelected,
+                      ]}
                     >
-                      <Text
-                        style={{
-                          fontWeight: '800',
-                          fontSize: 13,
-                          color: active ? '#fff' : '#334155',
-                        }}
-                      >
-                        {d.getDate()}
-                      </Text>
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text
-                        style={{
-                          fontWeight: '700',
-                          fontSize: 14,
-                          color: active ? '#1d4ed8' : '#0f172a',
-                        }}
-                      >
-                        {dayLabel(d)}
-                      </Text>
-                      <Text style={{ fontSize: 11, color: '#64748b' }}>
-                        {d.toLocaleDateString('en-IN', {
-                          weekday: 'long',
-                          day: '2-digit',
-                          month: 'short',
-                        })}
-                      </Text>
-                    </View>
-                    <View style={{ alignItems: 'flex-end', gap: 4 }}>
-                      <Text
-                        style={{
-                          fontSize: 11,
-                          fontWeight: '700',
-                          color: hasTicks ? '#10b981' : '#cbd5e1',
-                        }}
-                      >
-                        {ticks.length} pts
-                      </Text>
-                      {active && <Ionicons name="checkmark-circle" size={18} color="#3b82f6" />}
-                    </View>
+                      {label}
+                    </Text>
+
+                    <Text
+                      style={[
+                        styles.datePointsCount,
+                        pointsForDay > 0 ? styles.datePointsCountActive : null,
+                      ]}
+                    >
+                      {pointsForDay > 0 ? `${pointsForDay} pts` : 'No route'}
+                    </Text>
+
+                    {isSelected && (
+                      <Ionicons name="checkmark-circle" size={18} color="#2563eb" />
+                    )}
                   </TouchableOpacity>
                 );
               })}
@@ -1896,451 +1379,444 @@ export const LiveTracker = ({
           </Pressable>
         </Pressable>
       </Modal>
-
-      {/* ── Workers list ──────────────────────────────────────────────────── */}
-      {isListVisible && (
-        <View
-          style={{
-            position: 'absolute',
-            top: 68,
-            left: 14,
-            right: 14,
-            maxHeight: 300,
-            backgroundColor: '#fff',
-            borderRadius: 14,
-            elevation: 8,
-            overflow: 'hidden',
-          }}
-        >
-          {/* Header */}
-          <View
-            style={{
-              padding: 12,
-              borderBottomWidth: 0.5,
-              borderBottomColor: '#f1f5f9',
-              flexDirection: 'row',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-            }}
-          >
-            <View>
-              <Text style={{ fontSize: 15, fontWeight: '700', color: '#0f172a' }}>
-                Active Workers ({filteredStaff.length})
-              </Text>
-            </View>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-              <TouchableOpacity
-                onPress={() => setIsListVisible(false)}
-                style={{
-                  width: 32,
-                  height: 32,
-                  borderRadius: 16,
-                  backgroundColor: '#10b981',
-                  justifyContent: 'center',
-                  alignItems: 'center',
-                  elevation: 2,
-                }}
-              >
-                <Ionicons name="checkmark" size={20} color="#fff" />
-              </TouchableOpacity>
-              <TouchableOpacity onPress={() => setIsListVisible(false)}>
-                <Ionicons name="close" size={20} color="#64748b" />
-              </TouchableOpacity>
-            </View>
-          </View>
-          <ScrollView contentContainerStyle={{ paddingBottom: 8 }}>
-            {/* Show all */}
-            <TouchableOpacity
-              style={listRow}
-              onPress={() => {
-                const allIds = filteredStaff.map((s) => s._id);
-                if (isolatedStaffIds.length === 0 || isolatedStaffIds.length === allIds.length) {
-                  setIsolatedStaffIds(['__none__']);
-                } else {
-                  setIsolatedStaffIds(allIds);
-                }
-              }}
-            >
-              <View
-                style={{
-                  width: 34,
-                  height: 34,
-                  borderRadius: 17,
-                  backgroundColor: COLORS.primary,
-                  justifyContent: 'center',
-                  alignItems: 'center',
-                }}
-              >
-                <Ionicons name="people" size={16} color="#fff" />
-              </View>
-              <View style={{ flex: 1, marginLeft: 10 }}>
-                <Text style={{ fontSize: 14, fontWeight: '700', color: '#0f172a' }}>
-                  All Active Worker
-                </Text>
-              </View>
-              <View style={{ marginLeft: 10, justifyContent: 'center' }}>
-                <Ionicons
-                  name={
-                    isolatedStaffIds.length === 0 ||
-                    isolatedStaffIds.length === filteredStaff.length
-                      ? 'checkbox'
-                      : 'square-outline'
-                  }
-                  size={22}
-                  color={
-                    isolatedStaffIds.length === 0 ||
-                    isolatedStaffIds.length === filteredStaff.length
-                      ? '#3b82f6'
-                      : '#cbd5e1'
-                  }
-                />
-              </View>
-            </TouchableOpacity>
-
-            {filteredStaff.map((s) => {
-              const {
-                lat: sLat,
-                lng: sLng,
-                isAssumed,
-                isStartLoc,
-              } = resolveStaffLocation(s, leads || []);
-              const isSelfDevice = s.markedByDevice !== false;
-              const hasLocation = !!sLat && !!sLng;
-
-              let leadName = '';
-              if (leads && s.leadId) {
-                const leadIdStr = String(s.leadId._id || s.leadId);
-                const matchedLead = leads.find((l: any) => String(l._id) === leadIdStr);
-                if (matchedLead) {
-                  leadName =
-                    matchedLead.displayName ||
-                    matchedLead.sender_name ||
-                    matchedLead.product_name ||
-                    '';
-                }
-              } else if (typeof s.leadId === 'object' && s.leadId) {
-                leadName = s.leadId.displayName || s.leadId.sender_name || '';
-              }
-              const finalSiteName = leadName || s.site_name || s.siteName || '';
-              const addressFallback =
-                s.geoHistory?.[s.geoHistory.length - 1]?.address || s.location?.address;
-              const rawCoords = hasLocation ? `${sLat.toFixed(5)}, ${sLng.toFixed(5)}` : '';
-
-              const matchedSiteName = getMatchedSiteName(sLat, sLng, leads || []);
-              const locText = matchedSiteName
-                ? `At ${matchedSiteName}`
-                : isSelfDevice
-                  ? addressFallback || rawCoords || finalSiteName
-                  : finalSiteName || addressFallback || rawCoords;
-
-              return (
-                <View key={s._id} style={{ borderBottomWidth: 1, borderBottomColor: '#f8fafc' }}>
-                  <TouchableOpacity
-                    style={[
-                      listRow,
-                      { borderBottomWidth: 0 },
-                      isolatedStaffIds.includes(s._id) && { backgroundColor: '#eff6ff' },
-                    ]}
-                    onPress={() => {
-                      if (!isSelfDevice) {
-                        appService.showToast('GPS-off. User login with other device.', 'Info');
-                        return;
-                      }
-                      if (hasLocation) {
-                        setIsolatedStaffIds((prev) => {
-                          if (prev.length === 0) {
-                            return filteredStaff.map((fs) => fs._id).filter((id) => id !== s._id);
-                          }
-                          const current = prev.includes('__none__') ? [] : prev;
-                          const newIds = current.includes(s._id)
-                            ? current.filter((id) => id !== s._id)
-                            : [...current, s._id];
-                          return newIds.length === 0 ? ['__none__'] : newIds;
-                        });
-                        setIsFollowing(true);
-                        setActiveWorkerMenuId(null);
-                      } else {
-                        appService.showToast('No location data available for this worker.', 'Info');
-                      }
-                    }}
-                  >
-                    {getPhotoUrl(s) ? (
-                      <Image
-                        source={{ uri: resolveUrl(getPhotoUrl(s))! }}
-                        style={{ width: 36, height: 36, borderRadius: 18 }}
-                      />
-                    ) : (
-                      <View
-                        style={{
-                          width: 36,
-                          height: 36,
-                          borderRadius: 18,
-                          backgroundColor: hasLocation
-                            ? isStartLoc
-                              ? '#8b5cf6'
-                              : isAssumed
-                                ? '#f59e0b'
-                                : '#3b82f6'
-                            : '#cbd5e1',
-                          justifyContent: 'center',
-                          alignItems: 'center',
-                        }}
-                      >
-                        <Text style={{ color: '#fff', fontWeight: '700' }}>
-                          {getDisplayName(s).charAt(0).toUpperCase()}
-                        </Text>
-                      </View>
-                    )}
-                    <View style={{ flex: 1, marginLeft: 10 }}>
-                      <View
-                        style={{
-                          flexDirection: 'row',
-                          alignItems: 'center',
-                          justifyContent: 'space-between',
-                        }}
-                      >
-                        <Text style={{ fontWeight: '700', color: '#0f172a', fontSize: 13 }}>
-                          {getDisplayName(s)}
-                        </Text>
-                        <View
-                          style={{
-                            backgroundColor: hasLocation
-                              ? isAssumed
-                                ? '#fef3c7'
-                                : '#dcfce7'
-                              : '#f1f5f9',
-                            paddingHorizontal: 5,
-                            paddingVertical: 2,
-                            borderRadius: 4,
-                          }}
-                        >
-                          <Text
-                            style={{
-                              fontSize: 9,
-                              fontWeight: '700',
-                              color: hasLocation ? (isAssumed ? '#d97706' : '#16a34a') : '#8b5cf6',
-                            }}
-                          >
-                            {hasLocation ? (isAssumed ? 'File' : 'Live') : 'No Location'}
-                          </Text>
-                        </View>
-                      </View>
-                      <Text
-                        style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}
-                        numberOfLines={1}
-                      >
-                        {locText ? `at ${locText} · ` : ''}Shift{' '}
-                        {s.shiftCode || s.shiftName || 'N/A'}
-                      </Text>
-                      {(() => {
-                        if (!s.dutyStart) return null;
-                        const actualStart = new Date(s.dutyStart).toLocaleTimeString([], {
-                          hour: '2-digit',
-                          minute: '2-digit',
-                        });
-
-                        let dutyEndScheduled = s.dutyEndScheduled;
-                        let lockHrs = s.shiftLockHours || 8;
-
-                        if (!dutyEndScheduled && employees && employees.length > 0) {
-                          const empId = s.employeeId?._id || s.employeeId || s.id || s.employee_id;
-                          const emp = employees.find((e: any) => String(e._id) === String(empId));
-                          if (emp) {
-                            const shiftDetails = getEmployeeShiftDetails(emp);
-                            if (shiftDetails) {
-                              lockHrs = shiftDetails.durationHrs || 8;
-                              dutyEndScheduled = getScheduledEndTime(
-                                shiftDetails.startTime,
-                                lockHrs
-                              );
-                            }
-                          }
-                        }
-
-                        if (dutyEndScheduled) {
-                          const schedEnd = new Date(dutyEndScheduled);
-                          const schedStart = new Date(schedEnd.getTime() - lockHrs * 3600000);
-                          const schedStartStr = schedStart.toLocaleTimeString([], {
-                            hour: '2-digit',
-                            minute: '2-digit',
-                          });
-                          const schedEndStr = schedEnd.toLocaleTimeString([], {
-                            hour: '2-digit',
-                            minute: '2-digit',
-                          });
-                          return (
-                            <Text
-                              style={{
-                                fontSize: 10,
-                                color: '#16a34a',
-                                fontWeight: '700',
-                                marginTop: 2,
-                              }}
-                            >
-                              {`Schd: ${schedStartStr} <-> ${schedEndStr} | Actual: ${actualStart}`}
-                            </Text>
-                          );
-                        }
-                        return (
-                          <Text
-                            style={{
-                              fontSize: 10,
-                              color: '#16a34a',
-                              fontWeight: '700',
-                              marginTop: 2,
-                            }}
-                          >
-                            {`Actual: ${actualStart}`}
-                          </Text>
-                        );
-                      })()}
-                    </View>
-                    <View style={{ marginLeft: 10, justifyContent: 'center' }}>
-                      <Ionicons
-                        name={
-                          isolatedStaffIds.length === 0 || isolatedStaffIds.includes(s._id)
-                            ? 'checkbox'
-                            : 'square-outline'
-                        }
-                        size={22}
-                        color={
-                          isolatedStaffIds.length === 0 || isolatedStaffIds.includes(s._id)
-                            ? '#3b82f6'
-                            : '#cbd5e1'
-                        }
-                      />
-                    </View>
-                  </TouchableOpacity>
-                </View>
-              );
-            })}
-          </ScrollView>
-        </View>
-      )}
-
-      {/* ── Route date badge (bottom) ──────────────────────────────────────── */}
-      <View
-        style={{
-          position: 'absolute',
-          bottom: 18,
-          left: 14,
-          right: 14,
-          flexDirection: 'row',
-          gap: 8,
-          justifyContent: 'space-between',
-        }}
-      >
-        {showRoute && displayRouteCoords.length > 1 ? (
-          <View
-            style={{
-              backgroundColor: '#0f172a',
-              borderRadius: 20,
-              paddingHorizontal: 10,
-              paddingVertical: 5,
-              alignSelf: 'flex-start',
-              elevation: 6,
-            }}
-          >
-            <Text style={{ color: '#64748b', fontSize: 10 }}>
-              {snappedRoute.length > 1 ? '🛣️' : '📍'} {displayRouteCoords.length} pts
-            </Text>
-          </View>
-        ) : (
-          <View style={{ flex: 1 }} />
-        )}
-
-        {showRoute && !isSameDay(routeDate, new Date()) && (
-          <TouchableOpacity
-            style={{
-              backgroundColor: '#3b82f6',
-              borderRadius: 20,
-              paddingHorizontal: 12,
-              paddingVertical: 7,
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: 5,
-              elevation: 5,
-              alignSelf: 'flex-start',
-            }}
-            onPress={() => setDatePickerVisible(true)}
-          >
-            <Ionicons name="calendar" size={13} color="#fff" />
-            <Text style={{ color: '#fff', fontSize: 11, fontWeight: '700' }}>
-              {dayLabel(routeDate)}
-            </Text>
-            <TouchableOpacity
-              onPress={() => {
-                setRouteDate(new Date());
-                setShowRoute(true);
-              }}
-            >
-              <Ionicons name="close-circle" size={15} color="rgba(255,255,255,0.7)" />
-            </TouchableOpacity>
-          </TouchableOpacity>
-        )}
-      </View>
     </View>
   );
 };
 
-// ─── Static style constants ────────────────────────────────────────────────────
-const fab = {
-  width: 44,
-  height: 44,
-  borderRadius: 22,
-  backgroundColor: '#fff',
-  justifyContent: 'center' as const,
-  alignItems: 'center' as const,
-  elevation: 5,
-  shadowColor: '#000',
-  shadowOpacity: 0.18,
-  shadowRadius: 4,
-};
-
-const dropdownStyle = {
-  position: 'absolute' as const,
-  top: 68 + 44 + 4,
-  right: 14,
-  backgroundColor: '#fff',
-  borderRadius: 14,
-  elevation: 12,
-  shadowColor: '#000',
-  shadowOpacity: 0.18,
-  shadowRadius: 8,
-  minWidth: 210,
-  overflow: 'hidden' as const,
-};
-
-const row = {
-  flexDirection: 'row' as const,
-  alignItems: 'center' as const,
-  paddingHorizontal: 16,
-  paddingVertical: 13,
-};
-
-const rowTxt = { fontSize: 13, fontWeight: '600' as const, color: '#0f172a' };
-const iconGap = { marginRight: 10 };
-const divider = { height: 0.5, backgroundColor: '#f1f5f9', marginHorizontal: 0 };
-
-const listRow = {
-  padding: 12,
-  borderBottomWidth: 0.5,
-  borderBottomColor: '#f1f5f9',
-  flexDirection: 'row' as const,
-  alignItems: 'center' as const,
-};
-
-const cs = {
-  callout: {
-    width: 230,
-    padding: 11,
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-  },
-  calloutName: { fontWeight: '700' as const, fontSize: 14, color: '#0f172a' },
-  calloutSub: { fontSize: 11, color: '#64748b', marginTop: 3 },
-};
-
 export default LiveTracker;
+
+// ─── STYLES ───────────────────────────────────────────────────────────────────
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#0f172a',
+  },
+  map: {
+    flex: 1,
+  },
+
+  // Pure Marker Styles (NO text labels or bubbles, Never Blank)
+  markerWrapper: {
+    backgroundColor: '#ffffff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'visible',
+  },
+  avatarContainer: {
+    overflow: 'hidden',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avatarImage: {
+    backgroundColor: '#e2e8f0',
+  },
+  fallbackAvatar: {
+    backgroundColor: '#2563eb',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  fallbackAvatarText: {
+    color: '#ffffff',
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  liveIndicatorDot: {
+    position: 'absolute',
+    bottom: -1,
+    right: -1,
+    width: 13,
+    height: 13,
+    borderRadius: 6.5,
+    borderWidth: 2,
+    borderColor: '#ffffff',
+  },
+
+  // Floating Control Bar
+  topControlBar: {
+    position: 'absolute',
+    top: 14,
+    left: 14,
+    right: 14,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    zIndex: 10,
+  },
+  statusPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(15, 23, 42, 0.9)',
+    paddingVertical: 7,
+    paddingHorizontal: 12,
+    borderRadius: 20,
+    elevation: 5,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 3,
+  },
+  isolationPill: {
+    backgroundColor: 'rgba(49, 46, 129, 0.95)',
+    borderWidth: 1,
+    borderColor: '#818cf8',
+  },
+  pulseDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#10b981',
+    marginRight: 7,
+  },
+  statusPillText: {
+    color: '#f8fafc',
+    fontSize: 12,
+    fontWeight: '700',
+    maxWidth: 110,
+  },
+  showAllPillButton: {
+    marginLeft: 8,
+    backgroundColor: '#8b5cf6',
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 10,
+  },
+  showAllPillText: {
+    color: '#ffffff',
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  topActionGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  circleButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#ffffff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    elevation: 5,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.18,
+    shadowRadius: 3,
+  },
+  circleButtonActive: {
+    backgroundColor: '#eff6ff',
+    borderWidth: 1.5,
+    borderColor: '#2563eb',
+  },
+
+  // Route Status Banner
+  routeBannerContainer: {
+    position: 'absolute',
+    top: 66,
+    left: 14,
+    right: 14,
+    zIndex: 9,
+  },
+  routeBannerSuccess: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.95)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 14,
+    elevation: 3,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.15,
+    shadowRadius: 2,
+    gap: 8,
+  },
+  routeBannerSuccessText: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#1e293b',
+  },
+  routeBannerEmpty: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(254, 243, 199, 0.96)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#fde68a',
+    elevation: 3,
+    gap: 8,
+  },
+  routeBannerEmptyText: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#92400e',
+  },
+  resetDateBtn: {
+    backgroundColor: '#2563eb',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 10,
+  },
+  resetDateBtnText: {
+    color: '#ffffff',
+    fontSize: 10,
+    fontWeight: '700',
+  },
+
+  // Worker Detail Card
+  workerDetailCard: {
+    position: 'absolute',
+    bottom: 84, // Elevated above bottom navigation menu (FOOTER_HEIGHT 68 + spacing)
+    left: 16,
+    right: 16,
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    padding: 14,
+    elevation: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 6,
+    zIndex: 20,
+  },
+  workerCardContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  cardAvatarWrapper: {
+    position: 'relative',
+    width: 48,
+    height: 48,
+  },
+  cardAvatar: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+  },
+  cardStatusBadge: {
+    position: 'absolute',
+    bottom: 0,
+    right: 0,
+    width: 13,
+    height: 13,
+    borderRadius: 6.5,
+    borderWidth: 2,
+    borderColor: '#ffffff',
+  },
+  cardInfo: {
+    flex: 1,
+    marginLeft: 12,
+    marginRight: 8,
+  },
+  cardTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  cardWorkerName: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#0f172a',
+    maxWidth: 130,
+  },
+  selfBadge: {
+    backgroundColor: '#eff6ff',
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 4,
+  },
+  selfBadgeText: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: '#2563eb',
+  },
+  geofenceStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 2,
+  },
+  geofenceStatusText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  cardShiftText: {
+    fontSize: 11,
+    color: '#64748b',
+    marginTop: 2,
+  },
+  cardActionCol: {
+    alignItems: 'center',
+    gap: 6,
+  },
+  actionIconBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#f1f5f9',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  actionIconBtnActive: {
+    backgroundColor: '#8b5cf6',
+  },
+  closeCardButton: {
+    padding: 2,
+  },
+
+  // Bottom Sheet Modal
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.45)',
+    justifyContent: 'flex-end',
+  },
+  modalSheet: {
+    backgroundColor: '#ffffff',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    maxHeight: '65%',
+    paddingBottom: 24,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingTop: 18,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f1f5f9',
+  },
+  modalTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#0f172a',
+  },
+  modalSubtitle: {
+    fontSize: 12,
+    color: '#64748b',
+    marginTop: 1,
+  },
+  modalCloseButton: {
+    padding: 4,
+  },
+  workerListScroll: {
+    paddingHorizontal: 16,
+    paddingTop: 8,
+  },
+  workerListItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    borderRadius: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f8fafc',
+  },
+  listAvatarWrapper: {
+    position: 'relative',
+    width: 40,
+    height: 40,
+  },
+  listAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+  },
+  listStatusDot: {
+    position: 'absolute',
+    bottom: -1,
+    right: -1,
+    width: 11,
+    height: 11,
+    borderRadius: 5.5,
+    borderWidth: 1.5,
+    borderColor: '#ffffff',
+  },
+  listInfoCol: {
+    flex: 1,
+    marginLeft: 12,
+  },
+  listWorkerName: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#0f172a',
+  },
+  listSubText: {
+    fontSize: 12,
+    color: '#64748b',
+    marginTop: 2,
+  },
+  isolatedBadge: {
+    backgroundColor: '#f3e8ff',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  isolatedBadgeText: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: '#8b5cf6',
+  },
+
+  // Date Picker Modal
+  datePickerCard: {
+    backgroundColor: '#ffffff',
+    marginHorizontal: 24,
+    borderRadius: 20,
+    padding: 20,
+    elevation: 10,
+  },
+  datePickerTitle: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: '#0f172a',
+  },
+  datePickerSubtitle: {
+    fontSize: 12,
+    color: '#64748b',
+    marginTop: 3,
+    marginBottom: 14,
+  },
+  dateList: {
+    gap: 6,
+  },
+  dateOptionItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: '#f8fafc',
+    gap: 10,
+  },
+  dateOptionSelected: {
+    backgroundColor: '#eff6ff',
+    borderWidth: 1,
+    borderColor: '#2563eb',
+  },
+  dateOptionText: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#334155',
+  },
+  dateOptionTextSelected: {
+    color: '#2563eb',
+    fontWeight: '700',
+  },
+  datePointsCount: {
+    fontSize: 11,
+    color: '#94a3b8',
+    fontWeight: '600',
+  },
+  datePointsCountActive: {
+    color: '#16a34a',
+    fontWeight: '700',
+  },
+});

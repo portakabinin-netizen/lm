@@ -54,10 +54,14 @@ export function optimizeCloudinaryUrl(
   }
 
   const isCloudinary = trimmed.includes('res.cloudinary.com') && trimmed.includes('/image/upload/');
-  const isSigned = isCloudinary && /\/s--[^/]+--\//.test(trimmed);
+  if (!isCloudinary) {
+    return trimmed;
+  }
+
+  const isSigned = /\/s--[^/]+--\//.test(trimmed);
 
   // 1. Unsigned Cloudinary URL: path-based transformation (recommended for CDN caching)
-  if (isCloudinary && !isSigned) {
+  if (!isSigned) {
     // Avoid double transformations if already transformed
     if (trimmed.includes(`/image/upload/w_${width}`) || trimmed.includes(`/image/upload/c_${crop}`)) {
       return trimmed;
@@ -67,8 +71,8 @@ export function optimizeCloudinaryUrl(
     return trimmed.replace('/image/upload/', `/image/upload/${transform}/`);
   }
 
-  // 2. Signed Cloudinary URL or non-Cloudinary URL:
-  // Use query parameter appending to avoid breaking digital signatures or CDN paths
+  // 2. Signed Cloudinary URL:
+  // Use query parameter appending to avoid breaking digital signatures
   const transformParams = `w=${width}&h=${height}&c=${crop}&q=${quality}`;
   
   if (trimmed.includes('w=') && trimmed.includes('h=')) {

@@ -364,7 +364,7 @@ const inferReceiptTxnType = (ledgerName, groupName) => {
 };
 
 const mapVoucherToLegacy = (v, ledgerGroupMap, leadMap) => {
-    if (v.legacyMetadata && v.legacyMetadata.txn_type) {
+    if (v.legacyMetadata) {
         return {
             ...v.legacyMetadata,
             _id: v._id,
@@ -541,16 +541,7 @@ exports.getPaymentSummary = async (req, res) => {
             leadMap[l._id.toString()] = l;
         });
 
-        // 2. Query Vouchers with Date Filters
-        const { startDate, endDate } = req.query;
-        const voucherQuery = {};
-        if ((startDate && startDate !== "") || (endDate && endDate !== "")) {
-            voucherQuery.date = {};
-            if (startDate && startDate !== "") voucherQuery.date.$gte = new Date(startDate);
-            if (endDate && endDate !== "") voucherQuery.date.$lte = new Date(endDate);
-        }
-
-        const vouchers = await Vouchers.find(voucherQuery).lean();
+        const vouchers = await Vouchers.find({}).lean();
 
         const txns = vouchers.map(v => mapVoucherToLegacy(v, ledgerGroupMap, leadMap));
 
@@ -562,7 +553,7 @@ exports.getPaymentSummary = async (req, res) => {
         let indirectIncome = 0;
 
         vouchers.forEach(v => {
-            if (v.legacyMetadata && v.legacyMetadata.txn_type) {
+            if (v.legacyMetadata) {
                 const amt = parseFloat(v.legacyMetadata.amount) || 0;
                 const type = v.legacyMetadata.txn_type;
                 const status = v.legacyMetadata.status;
@@ -629,124 +620,10 @@ exports.getPaymentSummary = async (req, res) => {
         const paymentBreakdown = Object.entries(PAYMENT_LABELS).map(([k, l]) => ({ label: l, value: byType[k] || 0 })).filter(i => i.value > 0);
         const receiptBreakdown = Object.entries(RECEIPT_LABELS).map(([k, l]) => ({ label: l, value: byType[k] || 0 })).filter(i => i.value > 0);
 
-        let grossMargin = (sales + directIncome) - (purchases + directExpenses);
-        let netProfit = grossMargin + indirectIncome - indirectExpenses;
+        const grossMargin = (sales + directIncome) - (purchases + directExpenses);
+        const netProfit = grossMargin + indirectIncome - indirectExpenses;
 
         const recentTransactions = [...txns].sort((a, b) => new Date(b.txn_date) - new Date(a.txn_date)).slice(0, 10);
-
-        // Calculate ledger breakdown: array of group objects with nested ledger names and balances
-        const groupLedgersMap = {};
-        ledgers.forEach(l => {
-            const gId = l.ledgerGroupId?.toString();
-            if (!gId) return;
-
-            const groupObj = groupMap[gId];
-            if (!groupObj) return;
-
-            const category = getCategoryByGroupName(groupObj.groupName);
-            if (!category || category === "CashBank") return;
-
-            if (!groupLedgersMap[gId]) {
-                groupLedgersMap[gId] = {
-                    groupName: groupObj.groupName,
-                    category: category,
-                    ledgersMap: {}
-                };
-            }
-
-            // Find default balance if no date range is queried
-            let amt = 0;
-            if (!startDate && !endDate) {
-                const bal = l.currentBalance || 0;
-                if (category === "Sales" || category === "Direct Income" || category === "Indirect Income") {
-                    amt = -bal;
-                } else if (category === "Purchases" || category === "Direct Expenses" || category === "Indirect Expenses") {
-                    amt = bal;
-                }
-            }
-
-            groupLedgersMap[gId].ledgersMap[l._id.toString()] = {
-                name: l.ledgerName,
-                amount: amt
-            };
-        });
-
-        // Scan vouchers if date range filter is active
-        if (startDate || endDate) {
-            vouchers.forEach(v => {
-                if (v.legacyMetadata && v.legacyMetadata.txn_type) {
-                    // flat legacy
-                } else {
-                    v.entries.forEach(entry => {
-                        const ledId = entry.ledgerId?.toString();
-                        const ledger = ledgers.find(l => l._id.toString() === ledId);
-                        if (!ledger) return;
-
-                        const gId = ledger.ledgerGroupId?.toString();
-                        if (!gId || !groupLedgersMap[gId] || !groupLedgersMap[gId].ledgersMap[ledId]) return;
-
-                        const info = ledgerGroupMap[ledId];
-                        if (!info) return;
-
-                        const category = getCategoryByGroupName(info.groupName);
-                        let amt = 0;
-                        if (category === "Sales" || category === "Direct Income" || category === "Indirect Income") {
-                            amt = (entry.credit || 0) - (entry.debit || 0);
-                        } else if (category === "Purchases" || category === "Direct Expenses" || category === "Indirect Expenses") {
-                            amt = (entry.debit || 0) - (entry.credit || 0);
-                        }
-
-                        groupLedgersMap[gId].ledgersMap[ledId].amount += amt;
-                    });
-                }
-            });
-        }
-
-        const ledgerBreakdown = [];
-        Object.values(groupLedgersMap).forEach(groupObj => {
-            const activeLedgers = Object.values(groupObj.ledgersMap).filter(l => l.amount !== 0);
-            if (activeLedgers.length === 0) return;
-
-            const total = activeLedgers.reduce((sum, l) => sum + l.amount, 0);
-
-            ledgerBreakdown.push({
-                groupName: groupObj.groupName,
-                category: groupObj.category,
-                total: total,
-                ledgers: activeLedgers.map(l => ({ name: l.name, amount: l.amount }))
-            });
-        });
-
-        // Recalculate category totals directly from the ledger breakdown amounts to ensure 100% mathematical consistency
-        sales = ledgerBreakdown.find(g => g.category === "Sales")?.total || 0;
-        purchases = ledgerBreakdown.find(g => g.category === "Purchases")?.total || 0;
-        directIncome = ledgerBreakdown.find(g => g.category === "Direct Income")?.total || 0;
-        directExpenses = ledgerBreakdown.find(g => g.category === "Direct Expenses")?.total || 0;
-        indirectIncome = ledgerBreakdown.find(g => g.category === "Indirect Income")?.total || 0;
-        indirectExpenses = ledgerBreakdown.find(g => g.category === "Indirect Expenses")?.total || 0;
-
-        grossMargin = (sales + directIncome) - (purchases + directExpenses);
-        netProfit = grossMargin + indirectIncome - indirectExpenses;
-
-        // Dynamic group names mapping resolved from the Groups collection
-        const groupNames = {
-            sales: "Sales Accounts",
-            purchases: "Purchase Accounts",
-            directIncome: "Direct Incomes",
-            directExpenses: "Direct Expenses",
-            indirectIncome: "Indirect Incomes",
-            indirectExpenses: "Indirect Expenses"
-        };
-
-        groups.forEach(g => {
-            const cat = getCategoryByGroupName(g.groupName);
-            if (cat === "Sales") groupNames.sales = g.groupName;
-            else if (cat === "Purchases") groupNames.purchases = g.groupName;
-            else if (cat === "Direct Income") groupNames.directIncome = g.groupName;
-            else if (cat === "Direct Expenses") groupNames.directExpenses = g.groupName;
-            else if (cat === "Indirect Income") groupNames.indirectIncome = g.groupName;
-            else if (cat === "Indirect Expenses") groupNames.indirectExpenses = g.groupName;
-        });
 
         // Calculate pending salary and bills collections
         let pendingSalary = 0;
@@ -776,9 +653,7 @@ exports.getPaymentSummary = async (req, res) => {
                 leadLinkedPayments, leadLinkedReceipts,
                 purchases, sales, directExpenses, directIncome, indirectExpenses, indirectIncome, grossMargin, netProfit,
                 byType, paymentBreakdown, receiptBreakdown, recentTransactions,
-                pendingSalary, pendingBillsCollections,
-                ledgerBreakdown,
-                groupNames
+                pendingSalary, pendingBillsCollections
             },
         });
     } catch (err) {
@@ -840,7 +715,7 @@ exports.getLeadLedger = async (req, res) => {
         }).sort({ date: 1 }).lean();
         
         const ledger = vouchers.map(v => {
-            if (v.legacyMetadata && v.legacyMetadata.direction) {
+            if (v.legacyMetadata) {
                 const isPayment = v.legacyMetadata.direction === "PAYMENT";
                 return {
                     _id: v._id,
@@ -905,7 +780,7 @@ exports.getLeadLedger = async (req, res) => {
         let totalCost = 0;
         let totalRevenue = 0;
         vouchers.forEach(v => {
-            if (v.legacyMetadata && v.legacyMetadata.direction) {
+            if (v.legacyMetadata) {
                 if (v.legacyMetadata.direction === "PAYMENT") totalCost += v.legacyMetadata.amount || 0;
                 if (v.legacyMetadata.direction === "RECEIPT") totalRevenue += v.legacyMetadata.amount || 0;
             } else {
@@ -1026,49 +901,6 @@ exports.getContactLedger = async (req, res) => {
         res.json({ success: true, data: { balance, ledger } });
     } catch (err) {
         console.error("🔴 getContactLedger Error:", err.message);
-        res.status(500).json({ success: false, message: err.message });
-    }
-};
-
-exports.getEmployeeLedgerById = async (req, res) => {
-    try {
-        const { Vouchers, Ledgers, Employees } = req.tenantModels;
-        const employeeId = req.params.id;
-
-        let employeeDoc = await Employees.findOne({
-            $or: [{ _id: employeeId }, { user_id: employeeId }]
-        }).lean();
-
-        let targetRefId = employeeDoc ? employeeDoc._id : employeeId;
-
-        let ledgerDoc = await Ledgers.findOne({ refId: targetRefId }).lean();
-        let vouchers = [];
-
-        if (ledgerDoc) {
-            vouchers = await Vouchers.find({ "entries.ledgerId": ledgerDoc._id }).sort({ date: 1 }).lean();
-        }
-
-        let balance = 0;
-        const ledger = vouchers.map(v => {
-            const entry = v.entries?.find(e => String(e.ledgerId) === String(ledgerDoc?._id)) || {};
-            const amt = entry.debit || entry.credit || v.legacyMetadata?.amount || 0;
-            const type = entry.debit > 0 ? "Dr" : (entry.credit > 0 ? "Cr" : (v.legacyMetadata?.direction === "PAYMENT" ? "Dr" : "Cr"));
-            
-            if (type === "Dr") balance += amt;
-            else balance -= amt;
-
-            return {
-                _id: v._id,
-                voucherDate: v.date,
-                paymentType: type,
-                amt: amt,
-                voucherNarration: v.narration || v.legacyMetadata?.description || "Transaction"
-            };
-        });
-
-        res.json({ success: true, data: { balance, ledger } });
-    } catch (err) {
-        console.error("🔴 getEmployeeLedgerById Error:", err.message);
         res.status(500).json({ success: false, message: err.message });
     }
 };

@@ -4,6 +4,14 @@ const authController = require("../controller/authController");
 const { validateAuth } = require("../middleware/validateAuth");
 const authMiddleware = require("../middleware/authMiddleware");
 const tenantMiddleware = require("../middleware/tenantMiddleware");
+const multer = require("multer");
+const path = require("path");
+const fs = require("fs");
+
+const upload = multer({ dest: path.join(__dirname, "../uploads/") });
+if (!fs.existsSync(path.join(__dirname, "../uploads/"))) {
+    fs.mkdirSync(path.join(__dirname, "../uploads/"));
+}
 
 /**
  * ==========================================
