@@ -19,8 +19,11 @@ export default function BulkUploadScreen() {
   const [downloading, setDownloading] = useState(false);
   const [uploading, setUploading] = useState(false);
 
+  const corporateId = user?.corporateId || user?.dbName || "";
+  const corpAdminId = user?.corpAdminId || user?.userId || "";
+
   // Validate Context
-  if (!user?.corporateId || !user?.corpAdminId) {
+  if (!corporateId) {
     return (
       <SafeAreaView style={G.flex1}>
         <AppHeader title="Bulk Upload" onBackPress={() => router.back()} />
@@ -100,8 +103,8 @@ export default function BulkUploadScreen() {
       } as any);
       
       // Pass the corporate identifiers explicitly although middleware normally injects it
-      formData.append("corporateId", user.corporateId || "");
-      formData.append("corpAdminId", user.corpAdminId || "");
+      formData.append("corporateId", corporateId || "");
+      formData.append("corpAdminId", corpAdminId || "");
 
       await appService.httpClient.post("product/bulk-upload", formData, {
         headers: {

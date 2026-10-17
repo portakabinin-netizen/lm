@@ -22,6 +22,7 @@ const authMiddleware = (req, res, next) => {
       _id: decoded.userId,
       userId: decoded.userId,
       userRole: decoded.userRole,
+      corporateId: decoded.corporateId,
       dbName: decoded.dbName, // 🏢 Tenant DB Identifier
       corporateIds: decoded.corporateIds || [],
       corporateName: decoded.corporateName,

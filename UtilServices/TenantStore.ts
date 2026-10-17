@@ -198,7 +198,10 @@ class TenantStore {
 
     this._setLoading(domain, true);
     try {
-      const res = await appService.httpClient.get(config.endpoint);
+      const res = await appService.httpClient.get(config.endpoint, {
+        headers: { 'x-tenant-id': this._dbName },
+        params: { dbName: this._dbName },
+      });
       const raw = res.data;
       const data = config.dataPath ? raw?.[config.dataPath] : raw;
       if (data !== undefined) {

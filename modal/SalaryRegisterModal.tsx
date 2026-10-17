@@ -343,7 +343,13 @@ const SalaryRegisterModal: React.FC<SalaryRegisterModalProps> = ({
       });
 
       const narration = `Salary dues after recovered of advance,pentalty and articals for the month ${MONTHS[selectedMonth]} ${selectedYear}`;
-      const payload = { voucherType: 'Journal', date: voucherDate, narration, entries };
+      const payload = { 
+        clientVoucherId: currentVoucherId ? undefined : `SALARY_${selectedYear}_${selectedMonth}_${Date.now()}`,
+        voucherType: 'Journal', 
+        date: voucherDate, 
+        narration, 
+        entries 
+      };
 
       if (currentVoucherId) {
         await appService.httpClient.put(`finance/vouchers/${currentVoucherId}`, payload, {

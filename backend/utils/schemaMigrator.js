@@ -100,6 +100,58 @@ async function migrateTenantDb(connection, dbName) {
             }
         }
 
+        // 3. Migrate and Resequence Vouchers to continuous numeric series
+        const vouchersColl = connection.collection("vouchers");
+        const voucherCount = await vouchersColl.countDocuments();
+        if (voucherCount > 0) {
+            const hasAlphaNumeric = await vouchersColl.findOne({ voucherNo: { $not: /^\d+$/ } });
+            let needsResequencing = !!hasAlphaNumeric;
+
+            if (!needsResequencing) {
+                const countersColl = connection.collection("counters");
+                const counter = await countersColl.findOne({ _id: "voucher_seq" });
+                if (!counter || counter.seq !== voucherCount) {
+                    needsResequencing = true;
+                } else {
+                    const allV = await vouchersColl.find({}, { projection: { voucherNo: 1 } }).sort({ date: 1, createdAt: 1, _id: 1 }).toArray();
+                    const isSequential = allV.every((v, idx) => v.voucherNo === String(idx + 1));
+                    if (!isSequential) needsResequencing = true;
+                }
+            }
+
+            if (needsResequencing) {
+                console.log(`  [Vouchers] Resequencing ${voucherCount} vouchers in ${dbName} into clean numeric series 1..${voucherCount}...`);
+                const allVouchers = await vouchersColl.find({}).sort({ date: 1, createdAt: 1, _id: 1 }).toArray();
+
+                // Phase 1: Set temporary IDs to avoid unique index violation
+                const tempOps = allVouchers.map(v => ({
+                    updateOne: {
+                        filter: { _id: v._id },
+                        update: { $set: { voucherNo: `__TEMP_${v._id}` } }
+                    }
+                }));
+                await vouchersColl.bulkWrite(tempOps, { ordered: false });
+
+                // Phase 2: Set clean sequential numeric numbers 1, 2, 3...
+                const numericOps = allVouchers.map((v, idx) => ({
+                    updateOne: {
+                        filter: { _id: v._id },
+                        update: { $set: { voucherNo: String(idx + 1) } }
+                    }
+                }));
+                await vouchersColl.bulkWrite(numericOps, { ordered: false });
+
+                // Phase 3: Set sequence counter in counters collection
+                const countersColl = connection.collection("counters");
+                await countersColl.updateOne(
+                    { _id: "voucher_seq" },
+                    { $set: { seq: allVouchers.length } },
+                    { upsert: true }
+                );
+                console.log(`  [Vouchers] Successfully resequenced ${allVouchers.length} vouchers to numeric series 1..${allVouchers.length}`);
+            }
+        }
+
         console.log(`[Migrator] Migration successfully complete for tenant: ${dbName}`);
     } catch (err) {
         console.error(`[Migrator] Schema migration error on tenant database ${dbName}:`, err.message);

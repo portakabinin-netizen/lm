@@ -371,14 +371,39 @@ export default function LedgerMasterScreen() {
   }, [ledgers, searchQuery]);
 
   const filteredVouchers = useMemo(() => {
-    if (!searchQuery) return vouchers;
-    const q = searchQuery.toLowerCase();
-    return vouchers.filter(
-      (v) =>
-        (v.voucherNo || '').toLowerCase().includes(q) ||
-        (v.voucherType || '').toLowerCase().includes(q) ||
-        (v.narration || '').toLowerCase().includes(q)
-    );
+    const list = searchQuery
+      ? vouchers.filter((v) => {
+          const q = searchQuery.toLowerCase();
+          return (
+            (v.voucherNo || '').toLowerCase().includes(q) ||
+            (v.voucherType || '').toLowerCase().includes(q) ||
+            (v.narration || '').toLowerCase().includes(q)
+          );
+        })
+      : [...vouchers];
+
+    const getDay = (d: any) => {
+      if (!d) return 0;
+      const dt = new Date(d);
+      if (isNaN(dt.getTime())) return 0;
+      return dt.getFullYear() * 10000 + (dt.getMonth() + 1) * 100 + dt.getDate();
+    };
+
+    const getVoucherNum = (vNo: any) => {
+      if (!vNo) return 0;
+      const m = String(vNo).match(/\d+/g);
+      return m ? parseInt(m[m.length - 1], 10) : 0;
+    };
+
+    return list.sort((a, b) => {
+      const dayA = getDay(a.date);
+      const dayB = getDay(b.date);
+      if (dayA !== dayB) return dayB - dayA;
+      const numA = getVoucherNum(a.voucherNo);
+      const numB = getVoucherNum(b.voucherNo);
+      if (numA !== numB) return numB - numA;
+      return String(b.voucherNo || '').localeCompare(String(a.voucherNo || ''));
+    });
   }, [vouchers, searchQuery]);
 
   const handleSaveLedger = async () => {
@@ -436,23 +461,79 @@ export default function LedgerMasterScreen() {
     }
   };
 
+  const bankLedgerIdSet = useMemo(() => {
+    const bankGroupIds = new Set(
+      groups
+        .filter((g: any) => (g?.groupName || '').toLowerCase().includes('bank'))
+        .map((g: any) => String(g._id))
+    );
+    const set = new Set<string>();
+    set.add('main_bank');
+    ledgers.forEach((l: any) => {
+      const isBank =
+        bankGroupIds.has(String(l.ledgerGroupId)) ||
+        (l.ledgerName || '').toLowerCase().includes('bank') ||
+        l.refType === 'Bank';
+      if (isBank) {
+        set.add(String(l._id));
+      }
+    });
+    return set;
+  }, [ledgers, groups]);
+
+  const isBankEntry = useCallback(
+    (ledgerId: string, ledgerName?: string) => {
+      if (ledgerId && bankLedgerIdSet.has(String(ledgerId))) return true;
+      const nameLower = (ledgerName || '').toLowerCase();
+      return nameLower.includes('bank');
+    },
+    [bankLedgerIdSet]
+  );
+
+  const getContraType = useCallback(
+    (v: any) => {
+      if (v?.voucherType !== 'Contra') return null;
+      const entries = v.entries || [];
+      let drBank = false;
+      let crBank = false;
+      for (let i = 0; i < entries.length; i++) {
+        const e = entries[i];
+        if ((e.debit || 0) > 0 && isBankEntry(e.ledgerId, e.ledgerName)) drBank = true;
+        if ((e.credit || 0) > 0 && isBankEntry(e.ledgerId, e.ledgerName)) crBank = true;
+      }
+
+      if (drBank && !crBank) return 'bank_deposit';
+      if (!drBank && crBank) return 'bank_withdrawal';
+      if (drBank && crBank) return 'bank_transfer';
+      return 'cash_transfer';
+    },
+    [isBankEntry]
+  );
+
   const handleDeleteItem = (type: 'ledger' | 'voucher', id: string, itemData?: any) => {
     if (type === 'voucher' && itemData) {
-      const isUnval =
-        (itemData as any).validationStatus === 'Validated' || (itemData as any).isValidated === true
-          ? false
-          : (itemData as any).validationStatus === 'Unvalidated' ||
-            (itemData as any).validationStatus === 'Pending' ||
-            (itemData as any).isValidated === false ||
-            (itemData as any).isCounterValidated === false;
+      // "only contra voucher needs to validated by counter party only for cash inloved, bank deposit and withdrwal can approved by any admin only."
+      if (itemData.voucherType === 'Contra') {
+        const contraType = getContraType(itemData);
+        if (contraType === 'cash_transfer') {
+          const isUnval =
+            (itemData as any).validationStatus === 'Validated' || (itemData as any).isValidated === true
+              ? false
+              : (itemData as any).validationStatus === 'Unvalidated' ||
+                (itemData as any).validationStatus === 'Pending' ||
+                (itemData as any).isValidated === false ||
+                (itemData as any).isCounterValidated === false ||
+                (itemData as any).approvalPending === true;
 
-      const isCounterApproved = !isUnval;
-      if (isCounterApproved) {
-        Alert.alert(
-          'Cannot Delete Voucher',
-          'This voucher is counter-approved and validated. Validated financial records are protected and cannot be deleted.'
-        );
-        return;
+          const isCounterApproved = !isUnval;
+          if (isCounterApproved) {
+            Alert.alert(
+              'Cannot Delete Contra Voucher',
+              'This Contra cash transfer has been validated by the counter party. Validated financial records are protected and cannot be deleted.'
+            );
+            return;
+          }
+        }
       }
     }
 
@@ -489,21 +570,30 @@ export default function LedgerMasterScreen() {
     );
   };
 
-  const handleValidateVoucher = (id: string, voucherNo: string) => {
+  const handleValidateVoucher = (id: string, voucherNo: string, voucherData?: any) => {
+    const isContra = voucherData?.voucherType === 'Contra';
+    const contraType = isContra ? getContraType(voucherData) : null;
+    const isBankContra = isContra && contraType !== 'cash_transfer';
+
+    const title = isBankContra ? 'Admin Approve & Validate' : 'Counter-Validate Voucher';
+    const msg = isBankContra
+      ? `Are you sure you want to approve and validate bank transaction "${voucherNo}" as Admin?\n\nOnce approved, its amounts will be merged into ledger balances.`
+      : `Are you sure you want to counter-validate voucher "${voucherNo}"?\n\nOnce validated, its amounts will be merged into the ledger balance calculation and deletion will be permanently locked.`;
+
     Alert.alert(
-      'Counter-Validate Voucher',
-      `Are you sure you want to counter-validate voucher "${voucherNo}"?\n\nOnce validated, its amounts will be merged into the ledger balance calculation and deletion will be permanently locked.`,
+      title,
+      msg,
       [
         { text: 'Cancel', style: 'cancel' },
         {
-          text: 'Validate & Lock',
+          text: isBankContra ? 'Approve & Validate' : 'Validate & Lock',
           onPress: async () => {
             try {
               const res = await appService.httpClient.post(`finance/vouchers/${id}/validate`, {
                 corporateId,
               });
               if (res.data?.success) {
-                appService.showToast('Voucher validated & balances updated', 'Success');
+                appService.showToast(res.data?.message || 'Voucher validated & balances updated', 'Success');
                 fetchData();
               }
             } catch (err: any) {
@@ -748,26 +838,25 @@ export default function LedgerMasterScreen() {
             </View>
           }
           renderItem={({ item: v, index: idx }) => {
-            const totalAmount =
-              v.entries
-                ?.filter((e: any) => e.debit > 0)
-                .reduce((sum: number, e: any) => sum + (e.debit || 0), 0) || 0;
-            const drAmount =
-              v.entries
-                ?.filter((e: any) => e.debit > 0)
-                .reduce((sum: number, e: any) => sum + (e.debit || 0), 0) || totalAmount;
-            const crAmount =
-              v.entries
-                ?.filter((e: any) => e.credit > 0)
-                .reduce((sum: number, e: any) => sum + (e.credit || 0), 0) || totalAmount;
-            const drNames = v.entries
-              ?.filter((e: any) => e.debit > 0)
-              .map((e: any) => e.ledgerName)
-              .join(', ');
-            const crNames = v.entries
-              ?.filter((e: any) => e.credit > 0)
-              .map((e: any) => e.ledgerName)
-              .join(', ');
+            let drAmount = 0;
+            let crAmount = 0;
+            const drList: string[] = [];
+            const crList: string[] = [];
+            const entries = v.entries || [];
+            for (let i = 0; i < entries.length; i++) {
+              const e = entries[i];
+              if (e.debit > 0) {
+                drAmount += e.debit || 0;
+                if (e.ledgerName) drList.push(e.ledgerName);
+              }
+              if (e.credit > 0) {
+                crAmount += e.credit || 0;
+                if (e.ledgerName) crList.push(e.ledgerName);
+              }
+            }
+            const totalAmount = drAmount || crAmount || 0;
+            const drNames = drList.join(', ');
+            const crNames = crList.join(', ');
 
             const isUnvalidated =
               (v as any).validationStatus === 'Validated' || (v as any).isValidated === true
@@ -775,9 +864,17 @@ export default function LedgerMasterScreen() {
                 : (v as any).validationStatus === 'Unvalidated' ||
                   (v as any).validationStatus === 'Pending' ||
                   (v as any).isValidated === false ||
-                  (v as any).isCounterValidated === false;
+                  (v as any).isCounterValidated === false ||
+                  (v as any).approvalPending === true;
 
+            const isContra = v.voucherType === 'Contra';
+            const contraType = isContra ? getContraType(v) : null;
+            const isCashContra = isContra && contraType === 'cash_transfer';
+
+            // Only Contra cash transfers with counter-approval are locked from deletion
             const isCounterApproved = !isUnvalidated;
+            const isDeleteLocked = isCashContra && isCounterApproved;
+            const showValidateBtn = isUnvalidated;
 
             const vDateStr = v.date ? new Date(v.date).toDateString() : '';
             const eDateStr = (v as any).entryDate
@@ -791,10 +888,10 @@ export default function LedgerMasterScreen() {
             return (
               <Swipeable
                 renderRightActions={() => (
-                  <View style={[localStyles.actionsContainer, { width: !isCounterApproved ? 210 : 140, marginBottom: 6 }]}>
-                    {!isCounterApproved && (
+                  <View style={[localStyles.actionsContainer, { width: showValidateBtn ? 210 : 140, marginBottom: 6 }]}>
+                    {showValidateBtn && (
                       <TouchableOpacity
-                        onPress={() => handleValidateVoucher(v._id, v.voucherNo)}
+                        onPress={() => handleValidateVoucher(v._id, v.voucherNo, v)}
                         style={[localStyles.actionButton, { backgroundColor: '#10B981' }]}
                       >
                         <Ionicons name="checkmark-done" size={22} color="#fff" />
@@ -806,7 +903,7 @@ export default function LedgerMasterScreen() {
                     >
                       <Ionicons name="create" size={22} color="#fff" />
                     </TouchableOpacity>
-                    {!isCounterApproved ? (
+                    {!isDeleteLocked ? (
                       <TouchableOpacity
                         onPress={() => handleDeleteItem('voucher', v._id, v)}
                         style={[localStyles.actionButton, { backgroundColor: 'red' }]}
@@ -817,8 +914,8 @@ export default function LedgerMasterScreen() {
                       <TouchableOpacity
                         onPress={() =>
                           Alert.alert(
-                            'Cannot Delete Voucher',
-                            'This voucher has been counter-approved and validated. Validated financial records are protected and cannot be deleted.'
+                            'Cannot Delete Contra Voucher',
+                            'This Contra cash transfer has been validated by the counter party. Validated financial records are protected and cannot be deleted.'
                           )
                         }
                         style={[localStyles.actionButton, { backgroundColor: '#64748B' }]}

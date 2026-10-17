@@ -158,7 +158,7 @@ export const usePIPOTI = (token: string) => {
             const r = await appService.httpClient.get("service/parties/suppliers", {
                  headers: { Authorization: `Bearer ${token}` },
             });
-            const vendors = r.data || [];
+            const vendors = Array.isArray(r.data) ? r.data : (r.data?.data || r.data?.vendors || []);
             const matched = vendors.find((v: any) => v._id === vendorId);
             setVendor(matched || null);
             return matched;

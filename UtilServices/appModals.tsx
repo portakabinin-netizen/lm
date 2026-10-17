@@ -373,7 +373,7 @@ class AppModals {
     try {
       if (editId) await appService.httpClient.put(`service/parties/suppliers/${editId}`, body);
       else        await appService.httpClient.post(`service/parties/suppliers`, body);
-      appService.showToast("Vendor Updated", "Success");
+      appService.showToast(editId ? "Vendor Updated Successfully" : "Vendor Created Successfully", "Success");
       this.close("vendor");
       onDone();
       return true;

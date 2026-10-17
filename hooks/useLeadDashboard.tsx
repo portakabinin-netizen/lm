@@ -8,10 +8,13 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { TextInput } from "react-native";
 import ShowLeads from "@/dashboards/showLeads";
 
+import { DeviceEventEmitter } from "react-native";
+
 export interface LeadDashboardConfig {
   token: string;
   userId: string;
   name: string;
+  dbName?: string;
   isDark: boolean;
   statusMap: Record<string, string>;
   allStatusTabs: readonly string[];
@@ -19,7 +22,7 @@ export interface LeadDashboardConfig {
 }
 
 export function useLeadDashboard({
-  token, userId, name,
+  token, userId, name, dbName,
   isDark, statusMap, allStatusTabs, initialTab,
 }: LeadDashboardConfig) {
 
@@ -48,15 +51,19 @@ export function useLeadDashboard({
   const isDarkRef = useRef(isDark);
   const nameRef = useRef(name);
   const userRef = useRef(user); // 🚀 Reference to user to check dbName
+  const dbNameRef = useRef(dbName || user?.dbName);
 
   useEffect(() => { tokenRef.current = token; }, [token]);
   useEffect(() => { isDarkRef.current = isDark; }, [isDark]);
   useEffect(() => { nameRef.current = name; }, [name]);
-  useEffect(() => { userRef.current = user; }, [user]);
+  useEffect(() => { 
+    userRef.current = user; 
+    dbNameRef.current = dbName || user?.dbName;
+  }, [user, dbName]);
 
   const fetchLeads = useCallback(async (isRefreshing = false) => {
-    // 🚀 FIX: Do not fetch if dbName is missing (tenant resolution not complete)
-    if (!tokenRef.current || !userRef.current?.dbName) return;
+    const activeTenant = dbName || userRef.current?.dbName;
+    if (!tokenRef.current || !activeTenant) return;
     if (isRefreshing) setRefreshing(true);
     else {
       setLeads(current => {
@@ -68,7 +75,13 @@ export function useLeadDashboard({
     try {
       const res = await appService.httpClient.get(
         `service/leads/status/${statusMap[activeTab] ?? activeTab}`,
-        { headers: { Authorization: `Bearer ${tokenRef.current}` } },
+        { 
+          headers: { 
+            Authorization: `Bearer ${tokenRef.current}`,
+            'x-tenant-id': activeTenant
+          },
+          params: { dbName: activeTenant }
+        },
       );
       setLeads(res.data?.success ? res.data.data : []);
     } catch (error: any) {
@@ -80,20 +93,27 @@ export function useLeadDashboard({
       setRefreshing(false);
       setInitialLoading(false);
     }
-  }, [activeTab, statusMap]);
+  }, [activeTab, statusMap, dbName]);
 
   const fetchAllLeads = useCallback(async (force = false) => {
-    if (!tokenRef.current || !userRef.current?.dbName) return;
+    const activeTenant = dbName || userRef.current?.dbName;
+    if (!tokenRef.current || !activeTenant) return;
     if (!force && allLeads.length > 0) return;
 
     try {
       const res = await appService.httpClient.get(
         `service/leads/list`,
-        { headers: { Authorization: `Bearer ${tokenRef.current}` } },
+        { 
+          headers: { 
+            Authorization: `Bearer ${tokenRef.current}`,
+            'x-tenant-id': activeTenant
+          },
+          params: { dbName: activeTenant }
+        },
       );
       setAllLeads(res.data?.success ? res.data.data : []);
     } catch { }
-  }, [allLeads.length]);
+  }, [allLeads.length, dbName]);
 
   const fetchRef = useRef(fetchLeads);
   const fetchAllRef = useRef(fetchAllLeads);
@@ -102,7 +122,7 @@ export function useLeadDashboard({
   useEffect(() => { fetchAllRef.current = fetchAllLeads; }, [fetchAllLeads]);
 
   // Reset old tenant leads when corporate tenant switches
-  const currentDbName = user?.dbName;
+  const currentDbName = dbName || user?.dbName;
   const prevDbNameRef = useRef(currentDbName);
   useEffect(() => {
     if (prevDbNameRef.current && currentDbName && prevDbNameRef.current !== currentDbName) {
@@ -114,6 +134,18 @@ export function useLeadDashboard({
     }
     prevDbNameRef.current = currentDbName;
   }, [currentDbName, fetchLeads, fetchAllLeads]);
+
+  // Listen for global corporate switch event
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener('CORPORATE_SWITCHED', (event: any) => {
+      setLeads([]);
+      setAllLeads([]);
+      setSyncProgress({ text: "", visible: false, overallPercent: 0, stats: { totalFetched: 0, uniqueCount: 0, duplicateCount: 0 } });
+      fetchLeads(false);
+      fetchAllLeads(true);
+    });
+    return () => sub.remove();
+  }, [fetchLeads, fetchAllLeads]);
 
   useEffect(() => {
     const unsub = appModules.subscribe((type, state) => {

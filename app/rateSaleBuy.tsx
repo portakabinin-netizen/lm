@@ -40,7 +40,8 @@ export default function VendorRatesScreen() {
     setLoading(true);
     try {
       const res = await appService.httpClient.get(`service/parties/suppliers`);
-      setVendors(Array.isArray(res.data) ? res.data : []);
+      const list = Array.isArray(res.data) ? res.data : (res.data?.data || res.data?.vendors || []);
+      setVendors(Array.isArray(list) ? list : []);
     } catch (e) {
       console.warn(e);
       Toast.show({ type: "error", text1: "Error loading vendors" });

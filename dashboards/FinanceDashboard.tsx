@@ -2958,7 +2958,28 @@ export default function FinanceDashboard({ token, userId, name, dbName, graphOnl
             ]);
 
             if (vouchersRes.status === "fulfilled" && vouchersRes.value.data?.success) {
-                setVouchersList(vouchersRes.value.data.data || []);
+                const list = vouchersRes.value.data.data || [];
+                const getDay = (d: any) => {
+                    if (!d) return 0;
+                    const dt = new Date(d);
+                    if (isNaN(dt.getTime())) return 0;
+                    return dt.getFullYear() * 10000 + (dt.getMonth() + 1) * 100 + dt.getDate();
+                };
+                const getVoucherNum = (vNo: any) => {
+                    if (!vNo) return 0;
+                    const m = String(vNo).match(/\d+/g);
+                    return m ? parseInt(m[m.length - 1], 10) : 0;
+                };
+                list.sort((a: any, b: any) => {
+                    const dayA = getDay(a.date);
+                    const dayB = getDay(b.date);
+                    if (dayA !== dayB) return dayB - dayA;
+                    const numA = getVoucherNum(a.voucherNo);
+                    const numB = getVoucherNum(b.voucherNo);
+                    if (numA !== numB) return numB - numA;
+                    return String(b.voucherNo || '').localeCompare(String(a.voucherNo || ''));
+                });
+                setVouchersList(list);
             }
             if (attendanceRes.status === "fulfilled" && attendanceRes.value.data?.success) {
                 setAttendanceList(attendanceRes.value.data.data || []);

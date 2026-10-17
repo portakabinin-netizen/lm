@@ -1,6 +1,7 @@
 import { appService } from "@/UtilServices/appHelper";
 import { STATUS_COLOR } from "@/UtilServices/appModals";
 import { useEffect, useState } from "react";
+import { DeviceEventEmitter } from "react-native";
 
 export interface AnalyticsFilters {
     fromDate?: string;
@@ -23,7 +24,18 @@ export const useLeadAnalytics = (
     });
 
     const fetchData = async () => {
-        if (!token || !dbName) return; // 🚀 Strict: Don't fetch without token AND tenant
+        let activeToken = token;
+        let activeDb = dbName;
+        if (!activeToken || !activeDb) {
+            const session = await appService.getSession();
+            if (!activeToken) activeToken = session?.token;
+            if (!activeDb) activeDb = session?.dbName;
+        }
+
+        if (!activeToken || !activeDb) {
+            setLoading(false);
+            return;
+        }
       
         try {
             setLoading(true);
@@ -33,12 +45,16 @@ export const useLeadAnalytics = (
             if (filters.fromDate) params.fromDate = filters.fromDate;
             if (filters.toDate)   params.toDate   = filters.toDate;
             if (filters.source)   params.source   = filters.source;
+            if (activeDb)         params.dbName   = activeDb;
            
             const res = await appService.httpClient.get("service/leads/analytics", {
-                headers: { Authorization: `Bearer ${token}` },
+                headers: { 
+                    Authorization: `Bearer ${activeToken}`,
+                    ...(activeDb ? { 'x-tenant-id': activeDb } : {})
+                },
                 params,
+                timeout: 10000,
             });
-
 
             if (!res.data?.success)
                 throw new Error(res.data?.message || "API returned success:false");
@@ -78,15 +94,18 @@ export const useLeadAnalytics = (
     };
 
     useEffect(() => {
-        setAnalytics({
-            sourceData: [],
-            statusData: [],
-            totalCount: 0,
-            financeTrend: [],
-        });
         fetchData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [token, dbName, filters.fromDate, filters.toDate, filters.source]);
+
+    useEffect(() => {
+        const sub = DeviceEventEmitter.addListener('CORPORATE_SWITCHED', (data) => {
+            if (data?.newDbName) {
+                fetchData();
+            }
+        });
+        return () => sub.remove();
+    }, []);
 
     return { ...analytics, loading, error, refresh: fetchData };
 };

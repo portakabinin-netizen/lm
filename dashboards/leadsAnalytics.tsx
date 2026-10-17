@@ -603,7 +603,7 @@ const LeadAnalytics = React.memo(({ isDark, token, dbName }: LeadAnalyticsProps)
             )}
 
             {/* ── NO DATA ── */}
-            {!loading && !error && totalCount === 0 && (
+            {!loading && !error && (totalCount === 0 || sourceData.length === 0) && (
               <SectionCard>
                 <View style={{ height: 140, justifyContent: 'center', alignItems: 'center' }}>
                   <Text style={{ color: txtSec, fontSize: 13 }}>No data for selected filters</Text>

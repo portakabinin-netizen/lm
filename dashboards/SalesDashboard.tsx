@@ -58,6 +58,7 @@ export default function SalesDashboard({ token, userId, name, dbName }: Props) {
 
   const d = useLeadDashboard({
     token, userId, name,
+    dbName: dbName,
     isDark, statusMap: STATUS_MAP,
     allStatusTabs: ALL_STATUS_TABS, initialTab: "Recent",
   });

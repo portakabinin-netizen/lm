@@ -143,7 +143,7 @@ interface FinanceAnalyticsProps {
 
 const FinanceAnalytics = ({ isDark, token, dbName }: FinanceAnalyticsProps) => {
 
-    const { data: dynamicData, loading, error, refresh } = useFinanceAnalytics(token);
+    const { data: dynamicData, loading, error, refresh } = useFinanceAnalytics(token, dbName);
     const [activeTab, setActiveTab] = useState<string>("Overview");
 
     const {

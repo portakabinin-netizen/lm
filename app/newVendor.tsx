@@ -25,22 +25,24 @@ export default function VendorScreen() {
   const router = useRouter();
   const { user } = useUserContext();
   const corporateId = user?.corporateId ?? "";
-  const corpAdminId = user?.corpAdminId ?? "";
+  const corpAdminId = user?.corpAdminId || user?.userId || "";
   const [vendors, setVendors] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
 
   // ── Load vendors ────────────────────────────────────────────────────────────
   const loadVendors = useCallback(async () => {
-    if (!corporateId || !corpAdminId) {
-      setLoading(false);
-      return;
-    }
     try {
       setLoading(true);
       const r = await appService.httpClient.get(`service/parties/suppliers`, {
-        params: { corporateId, corpAdminId },
+        params: {
+          corporateId: corporateId || undefined,
+          corpAdminId: corpAdminId || undefined,
+        },
       });
-      setVendors(r.data.vendors || []);
+      const list = Array.isArray(r.data)
+        ? r.data
+        : (r.data?.vendors || r.data?.data || []);
+      setVendors(Array.isArray(list) ? list : []);
     } catch {
       appService.showToast("Failed Loading vendors", "Error");
     } finally {
@@ -49,17 +51,17 @@ export default function VendorScreen() {
   }, [corporateId, corpAdminId]);
 
   useEffect(() => {
-    if (corporateId && corpAdminId) {
-      loadVendors();
-    }
-  }, [corporateId, corpAdminId, loadVendors]);
+    loadVendors();
+  }, [loadVendors]);
 
   // ── Add new vendor ──────────────────────────────────────────────────────────
   const addVendor = useCallback(() => {
     appModules.openVendor({
-      onDone: loadVendors,
+      onDone: () => {
+        loadVendors();
+      },
     });
-  }, [corporateId, corpAdminId, loadVendors]);
+  }, [loadVendors]);
 
   // ── Edit vendor ─────────────────────────────────────────────────────────────
   const openEdit = useCallback((v: any) => {
@@ -76,9 +78,11 @@ export default function VendorScreen() {
         vendorDistrict: v.billingAddress?.district || v.vendorDistrict || "",
         vendorState: v.billingAddress?.state || v.vendorState || "",
       },
-      onDone: loadVendors,
+      onDone: () => {
+        loadVendors();
+      },
     });
-  }, [corporateId, corpAdminId, loadVendors]);
+  }, [loadVendors]);
 
   // ── Delete ──────────────────────────────────────────────────────────────────
   const deleteVendor = useCallback((id: string) => {
@@ -90,7 +94,10 @@ export default function VendorScreen() {
           try {
             setLoading(true);
             await appService.httpClient.delete(`service/parties/suppliers/${id}`, {
-              params: { corporateId, corpAdminId }
+              params: {
+                corporateId: corporateId || undefined,
+                corpAdminId: corpAdminId || undefined,
+              }
             });
             loadVendors();
           } catch (err: any) {
@@ -192,7 +199,7 @@ export default function VendorScreen() {
                 </View>
 
                 <TouchableOpacity
-                  onPress={() => router.push({ pathname: "./purchaseRate", params: { id: item._id } })}
+                  onPress={() => router.push({ pathname: "/purchaseRate", params: { id: item._id, name: item.name || item.vendorName } })}
                   style={{
                     backgroundColor: "#f0f7ff", width: 40, height: 40,
                     borderRadius: 20, alignItems: "center", justifyContent: "center",

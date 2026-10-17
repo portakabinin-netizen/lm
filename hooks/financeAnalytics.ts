@@ -1,7 +1,8 @@
 import { appService } from "@/UtilServices/appHelper";
 import { useEffect, useState } from "react";
+import { DeviceEventEmitter } from "react-native";
 
-export const useFinanceAnalytics = (token: string) => {
+export const useFinanceAnalytics = (token: string, dbName?: string) => {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [data, setData] = useState({
@@ -17,11 +18,35 @@ export const useFinanceAnalytics = (token: string) => {
     });
 
     const refresh = async () => {
+        let activeToken = token;
+        let activeDb = dbName;
+        if (!activeToken || !activeDb) {
+            const session = await appService.getSession();
+            if (!activeToken) activeToken = session?.token;
+            if (!activeDb) activeDb = session?.dbName;
+        }
+
+        if (!activeToken) {
+            setLoading(false);
+            return;
+        }
+
         try {
             setLoading(true);
             setError(null);
+            const headers: Record<string, string> = {
+                Authorization: `Bearer ${activeToken}`,
+            };
+            const params: Record<string, string> = {};
+            if (activeDb) {
+                headers['x-tenant-id'] = activeDb;
+                params.dbName = activeDb;
+            }
+
             const res = await appService.httpClient.get("finance/analytics", {
-                headers: { Authorization: `Bearer ${token}` },
+                headers,
+                params,
+                timeout: 10000,
             });
             if (res.data?.success) {
                 setData(res.data.data);
@@ -37,7 +62,16 @@ export const useFinanceAnalytics = (token: string) => {
 
     useEffect(() => {
         refresh();
-    }, [token]);
+    }, [token, dbName]);
+
+    useEffect(() => {
+        const sub = DeviceEventEmitter.addListener('CORPORATE_SWITCHED', (eventData) => {
+            if (eventData?.newDbName) {
+                refresh();
+            }
+        });
+        return () => sub.remove();
+    }, []);
 
     return { data, loading, error, refresh };
 };

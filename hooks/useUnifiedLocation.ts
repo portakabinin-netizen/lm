@@ -118,16 +118,31 @@ export function useUnifiedLocation(initialMode?: UnifiedLocationMode, options: a
   const fetchActiveStaff = useCallback(async () => {
     try {
       const session = await appService.getSession();
-      const token = session?.token;
-      if (!token || !session?.dbName) return;
-      const res = await appService.getActiveStaff(token);
+      const token = session?.token || user?.token;
+      const targetDb = user?.dbName || session?.dbName;
+      const targetCorp = user?.corporateId || session?.corporateId;
+      if (!token || !targetDb) return;
+      const res = await appService.getActiveStaff(token, targetCorp, targetDb);
       if (res?.success) {
         setActiveStaff(res.data);
       }
     } catch {
       // Fail silently
     }
-  }, []);
+  }, [user?.token, user?.dbName, user?.corporateId]);
+
+  useEffect(() => {
+    if (user?.dbName) {
+      fetchActiveStaff();
+    }
+  }, [user?.dbName, fetchActiveStaff]);
+
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener('CORPORATE_SWITCHED', () => {
+      fetchActiveStaff();
+    });
+    return () => sub.remove();
+  }, [fetchActiveStaff]);
 
   // LiveTracker map location refresher
   const refreshLiveTrackerLocation = useCallback(async () => {

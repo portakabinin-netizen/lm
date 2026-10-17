@@ -47,11 +47,13 @@ router.get("/vouchers/bulk-template", ctrl.generateVoucherTemplate);
 router.post("/vouchers/bulk-upload", upload.single("file"), ctrl.bulkImportVouchers);
 router.get("/vouchers/salary-enrollment-template", ctrl.generateSalaryDuesByEnrollmentTemplate);
 router.post("/vouchers/salary-enrollment-upload", upload.single("file"), ctrl.bulkImportSalaryByEnrollment);
+router.get("/vouchers/next-no", ctrl.manageVouchers.getNextNo);
 router.get("/vouchers",          ctrl.manageVouchers.list);
 router.get("/vouchers/ledger/:ledgerId", ctrl.manageVouchers.getByLedger);
 router.post("/vouchers",         ctrl.manageVouchers.create);
 router.put("/vouchers/:id",      ctrl.manageVouchers.update);
 router.delete("/vouchers/:id",   ctrl.manageVouchers.delete);
+router.post("/vouchers/:id/validate", ctrl.validateVoucher);
 
 // --- 💸 SALARY & PAYROLL ---
 router.get("/salary/voucher",      ctrl.getSalaryVoucher);
@@ -78,5 +80,4 @@ router.get("/invoices/:id",      ctrl.manageTaxInvoices.get);
 router.post("/invoices",         ctrl.manageTaxInvoices.create);
 router.put("/invoices/:id",      ctrl.manageTaxInvoices.update);
 router.delete("/invoices/:id",   ctrl.manageTaxInvoices.delete);
-
 module.exports = router;

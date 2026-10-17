@@ -124,6 +124,7 @@ export default function AdminDashboard({ token, userId, name, dbName }: Props) {
     token,
     userId,
     name,
+    dbName: dbName || user?.dbName,
     isDark,
     statusMap: STATUS_MAP,
     allStatusTabs: ALL_STATUS_TABS,
@@ -404,7 +405,7 @@ export default function AdminDashboard({ token, userId, name, dbName }: Props) {
               <ActivityTicker activities={aggregatedActivities} />
             </View>
           </View>
-          <LeadAnalytics key={dbName} isDark={isDark} token={token} dbName={dbName || user?.dbName} />
+          <LeadAnalytics key={dbName || user?.dbName || 'lead-analytics'} isDark={isDark} token={token || user?.token || ''} dbName={dbName || user?.dbName} />
           {/* 📢 Broadcast Composer (CorpAdmin/Admin only — auto-hides for other roles) */}
           <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
             <BroadcastAlertModal showSender={true} />

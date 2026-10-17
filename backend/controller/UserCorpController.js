@@ -3909,7 +3909,23 @@ exports.manageClients = {
 };
 
 exports.manageSuppliers = {
-  list: (req, res) => manageSpoke.list(req, res, 'Parties', { type: 'Supplier' }),
+  list: async (req, res) => {
+    try {
+      const Model = req.tenantModels['Parties'];
+      if (!Model) {
+        return res.status(500).json({ success: false, message: 'Parties model not found in tenant' });
+      }
+      const q = { type: 'Supplier' };
+      const accessibleIds = req.user?.accessibleLocationIds;
+      if (req.user?.userRole !== 'CorpAdmin' && accessibleIds?.length > 0) {
+        q.locationId = { $in: accessibleIds };
+      }
+      const data = await Model.find(q).sort({ createdAt: -1 }).lean();
+      res.json({ success: true, data, vendors: data });
+    } catch (err) {
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
   create: async (req, res) => {
     try {
       const { Parties } = req.tenantModels;

@@ -9,7 +9,7 @@ import React, { useState, useEffect, useMemo, useCallback } from "react";
 import {
     View, Text, TouchableOpacity, ActivityIndicator, StyleSheet,
     useColorScheme, TextInput, FlatList, TouchableWithoutFeedback, Keyboard, Modal,
-    KeyboardAvoidingView, Platform, ScrollView
+    KeyboardAvoidingView, Platform, ScrollView, Alert
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter, useLocalSearchParams } from "expo-router";
@@ -245,7 +245,28 @@ export default function PartyLedgersScreen() {
                 `finance/vouchers/ledger/${ledgerId}`,
                 { headers: { Authorization: `Bearer ${token}` } }
             );
-            setTransactions(Array.isArray(res.data?.data) ? res.data.data : []);
+            const list = Array.isArray(res.data?.data) ? res.data.data : [];
+            const getDay = (d: any) => {
+                if (!d) return 0;
+                const dt = new Date(d);
+                if (isNaN(dt.getTime())) return 0;
+                return dt.getFullYear() * 10000 + (dt.getMonth() + 1) * 100 + dt.getDate();
+            };
+            const getVoucherNum = (vNo: any) => {
+                if (!vNo) return 0;
+                const m = String(vNo).match(/\d+/g);
+                return m ? parseInt(m[m.length - 1], 10) : 0;
+            };
+            list.sort((a: any, b: any) => {
+                const dayA = getDay(a.date);
+                const dayB = getDay(b.date);
+                if (dayA !== dayB) return dayB - dayA;
+                const numA = getVoucherNum(a.voucherNo);
+                const numB = getVoucherNum(b.voucherNo);
+                if (numA !== numB) return numB - numA;
+                return String(b.voucherNo || '').localeCompare(String(a.voucherNo || ''));
+            });
+            setTransactions(list);
         } catch (e: any) {
             appService.showToast(e?.response?.data?.message || "Failed to load transactions", "Error");
         } finally {
@@ -588,7 +609,7 @@ export default function PartyLedgersScreen() {
                         text: "Validate & Lock",
                         onPress: async () => {
                             try {
-                                const res = await appService.httpClient.post(`finance/vouchers/${item._id}/validate`, { corporateId });
+                                const res = await appService.httpClient.post(`finance/vouchers/${item._id}/validate`);
                                 if (res.data?.success) {
                                     appService.showToast("Voucher counter-validated & balance updated", "Success");
                                     fetchMaster();

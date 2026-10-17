@@ -80,7 +80,7 @@ export const isLocalMachine = Boolean(
 );
 
 const configuredApiHost = process.env.EXPO_PUBLIC_API_HOST;
-const configuredApiPort = process.env.EXPO_PUBLIC_API_PORT || '5002';
+const configuredApiPort = process.env.EXPO_PUBLIC_API_PORT || '5001';
 const webHost = Platform.OS === 'web' && typeof window !== 'undefined' ? window.location.hostname : '';
 const fallbackHost = Platform.OS === 'android' ? '10.0.2.2' : 'localhost';
 const resolvedHost = configuredApiHost || webHost || expoHost || fallbackHost;

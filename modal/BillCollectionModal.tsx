@@ -12,6 +12,7 @@ import {
   KeyboardAvoidingView,
   Modal,
   Platform,
+  ScrollView,
   Text,
   TextInput,
   TouchableOpacity,
@@ -212,7 +213,12 @@ export const BillCollectionModal: React.FC<BillCollectionModalProps> = ({
           </View>
 
           {selectedClient ? (
-            <View style={{ flex: 1, padding: 20 }}>
+            <ScrollView
+              style={{ flex: 1 }}
+              contentContainerStyle={{ padding: 20, paddingBottom: 80 }}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
               <View style={{ backgroundColor: '#fff', borderRadius: 12, padding: 20, elevation: 2, shadowColor: '#000', shadowOpacity: 0.1, shadowRadius: 4, shadowOffset: { width: 0, height: 2 } }}>
                 <Text style={{ fontSize: 18, fontWeight: '800', color: COLORS.textDark }}>{selectedClient.name}</Text>
                 {selectedClient.leadName && <Text style={{ fontSize: 13, color: COLORS.textMuted, marginTop: 4 }}>{selectedClient.leadName}</Text>}
@@ -248,13 +254,20 @@ export const BillCollectionModal: React.FC<BillCollectionModalProps> = ({
 
                 <View style={{ marginTop: 20 }}>
                   <Text style={{ fontSize: 14, fontWeight: '700', color: COLORS.textDark, marginBottom: 8 }}>Narration (Optional)</Text>
-                  <TextInput
-                    style={{ backgroundColor: '#f1f5f9', borderRadius: 8, paddingHorizontal: 16, paddingVertical: 12, fontSize: 14, color: COLORS.textDark }}
-                    placeholder="E.g. Cash collected by field staff..."
-                    placeholderTextColor="#94a3b8"
-                    value={narration}
-                    onChangeText={setNarration}
-                  />
+                  <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#f1f5f9', borderRadius: 8, paddingRight: 8 }}>
+                    <TextInput
+                      style={{ flex: 1, paddingHorizontal: 16, paddingVertical: 12, fontSize: 14, color: COLORS.textDark }}
+                      placeholder="E.g. Cash collected by field staff..."
+                      placeholderTextColor="#94a3b8"
+                      value={narration}
+                      onChangeText={setNarration}
+                    />
+                    {!!narration && (
+                      <TouchableOpacity onPress={() => setNarration('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                        <Ionicons name="close-circle" size={18} color="#94a3b8" />
+                      </TouchableOpacity>
+                    )}
+                  </View>
                 </View>
 
                 <View style={{ flexDirection: 'row', marginTop: 30, gap: 12 }}>
@@ -279,7 +292,7 @@ export const BillCollectionModal: React.FC<BillCollectionModalProps> = ({
                   </TouchableOpacity>
                 </View>
               </View>
-            </View>
+            </ScrollView>
           ) : (
             <View style={{ flex: 1 }}>
               <View style={{ padding: 16, backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: '#f1f5f9' }}>

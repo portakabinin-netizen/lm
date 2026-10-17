@@ -312,6 +312,7 @@ export default function BillCollectionScreen() {
             const fullNarration = [narration, extraNotes].filter(Boolean).join(" | ");
 
             const payload = {
+                clientVoucherId: `VCH_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
                 voucherType: "Receipt",
                 date: new Date().toISOString(),
                 narration: fullNarration,

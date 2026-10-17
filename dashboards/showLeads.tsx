@@ -267,56 +267,97 @@ const ShowLeads = React.memo(
       }
     }, [mPlain, saveUserAction, onStatusChange]);
 
-    // ── doWA — open WhatsApp → silent save ────────────────────────────────────
+    // ── doWA — WhatsApp Button with 3 tiered states based on activity count ─────
+    // 1) 0 activity: send welcome message to sender_mobile of lead
+    // 2) 1 activity: send digital visiting card to sender_mobile of lead
+    // 3) > 1 activity: open sender_mobile for user's own message using WhatsApp
     const doWA = useCallback(async () => {
       const cleanPhone = (item.sender_mobile || mPlain || '').replace(/\D/g, '').slice(-10);
       const targetPhone = cleanPhone ? `91${cleanPhone}` : (mobile?.with91 ?? mPlain);
-      const hasOneOrNoActivity = acts.length <= 1;
 
-      const vCardMessage = hasOneOrNoActivity
-        ? `📇 *DIGITAL VISITING CARD*\n\n` +
-          `🏢 *${corporateName || 'portakabin.in'}*\n` +
-          (corpProfileImage ? `🖼️ Profile: ${corpProfileImage}\n` : '') +
-          `👤 *${userDisplayName || currentUser}*\n` +
-          `📱 Mobile: ${userMobile || 'N/A'}\n` +
-          `✉️ Email: ${corporateEmail || 'info@portakabin.in'}\n` +
-          (corporateAddress ? `📍 Address: ${corporateAddress}\n` : '') +
-          (item.product_name ? `\n📦 *Requirement:* ${item.product_name}` : '')
-        : '';
-
-      if (targetPhone) {
-        const waUrl = vCardMessage
-          ? `whatsapp://send?phone=${targetPhone}&text=${encodeURIComponent(vCardMessage)}`
-          : `https://wa.me/${targetPhone}`;
-        const fallbackUrl = `https://wa.me/${targetPhone}${vCardMessage ? `?text=${encodeURIComponent(vCardMessage)}` : ''}`;
-
-        try {
-          const supported = await Linking.canOpenURL(waUrl);
-          if (supported) {
-            await Linking.openURL(waUrl);
-          } else {
-            await Linking.openURL(fallbackUrl);
-          }
-        } catch {
-          Linking.openURL(fallbackUrl).catch(() => null);
-        }
+      if (!targetPhone) {
+        appService.showToast('No valid mobile number for WhatsApp', 'Error');
+        return;
       }
 
-      await saveUserAction(hasOneOrNoActivity ? `Visiting card sent via WhatsApp to ${cleanPhone || targetPhone}` : `WhatsApp message initiated`);
+      const clientName = (item.sender_name || '').trim();
+      const company = corporateName || 'portakabin.in';
+      const repName = userDisplayName || currentUser || 'Sales Team';
+      const count = acts.length;
+
+      let waMessage = '';
+      let actionLogNote = '';
+
+      if (count === 0) {
+        // ── 1) 0 Activity: Welcome Message to sender_mobile ──
+        waMessage =
+          `👋 *WELCOME TO ${company.toUpperCase()}*\n\n` +
+          `Dear *${clientName || 'Customer'}*,\n\n` +
+          `Thank you for your valuable inquiry regarding ${item.product_name ? `*${item.product_name}*` : 'our products/services'}.\n\n` +
+          `We have received your requirement and our team is ready to assist you with complete specifications, technical details, and the best quote.\n\n` +
+          `Please let us know if you have any questions or additional requirements.\n\n` +
+          `Warm Regards,\n` +
+          `👤 *${repName}*\n` +
+          `🏢 *${company}*\n` +
+          (userMobile ? `📱 Mobile: ${userMobile}\n` : '') +
+          (corporateEmail ? `✉️ Email: ${corporateEmail}\n` : '') +
+          (corporateAddress ? `📍 Address: ${corporateAddress}\n` : '');
+
+        actionLogNote = `Welcome message sent via WhatsApp to ${cleanPhone || targetPhone}`;
+      } else if (count === 1) {
+        // ── 2) 1 Activity: Digital Visiting Card to sender_mobile ──
+        waMessage =
+          `📇 *DIGITAL VISITING CARD*\n\n` +
+          `🏢 *${company}*\n` +
+          (corpProfileImage ? `🖼️ Profile: ${corpProfileImage}\n` : '') +
+          `👤 *${repName}*\n` +
+          (userMobile ? `📱 Mobile: ${userMobile}\n` : '') +
+          (corporateEmail ? `✉️ Email: ${corporateEmail}\n` : '') +
+          (corporateAddress ? `📍 Address: ${corporateAddress}\n` : '') +
+          (item.product_name ? `\n📦 *Requirement:* ${item.product_name}\n` : '') +
+          `\nFeel free to connect with us anytime!`;
+
+        actionLogNote = `Digital visiting card sent via WhatsApp to ${cleanPhone || targetPhone}`;
+      } else {
+        // ── 3) > 1 Activity: Open sender_mobile for user's own message ──
+        waMessage = '';
+        actionLogNote = `WhatsApp chat opened for ${cleanPhone || targetPhone}`;
+      }
+
+      const waUrl = waMessage
+        ? `whatsapp://send?phone=${targetPhone}&text=${encodeURIComponent(waMessage)}`
+        : `whatsapp://send?phone=${targetPhone}`;
+      const fallbackUrl = `https://wa.me/${targetPhone}${waMessage ? `?text=${encodeURIComponent(waMessage)}` : ''}`;
+
+      try {
+        const supported = await Linking.canOpenURL(waUrl);
+        if (supported) {
+          await Linking.openURL(waUrl);
+        } else {
+          await Linking.openURL(fallbackUrl);
+        }
+      } catch {
+        Linking.openURL(fallbackUrl).catch(() => {
+          appService.showToast('Could not open WhatsApp', 'Error');
+        });
+      }
+
+      await saveUserAction(actionLogNote);
       onStatusChange();
     }, [
-      mobile,
-      mPlain,
-      acts,
       item.sender_mobile,
+      item.sender_name,
       item.product_name,
+      mPlain,
+      mobile,
+      acts.length,
       corporateName,
-      corpProfileImage,
       userDisplayName,
       currentUser,
       userMobile,
       corporateEmail,
       corporateAddress,
+      corpProfileImage,
       saveUserAction,
       onStatusChange,
     ]);
@@ -328,80 +369,82 @@ const ShowLeads = React.memo(
       onStatusChange();
     }, [item.sender_email, saveUserAction, onStatusChange]);
 
-    // ── shareLead — share via WhatsApp/SMS/native share ───────────────────────
+    // ── shareLead — Share Lead Details to a selected number using WhatsApp ──────
     const shareLead = useCallback(async () => {
-      const message =
-        `📇 *DIGITAL VISITING CARD*\n\n` +
-        `🏢 *${corporateName || 'portakabin.in'}*\n` +
-        (corpProfileImage ? `🖼️ Profile: ${corpProfileImage}\n` : '') +
-        `👤 *${userDisplayName || currentUser}*\n` +
-        `📱 Mobile: ${userMobile || 'N/A'}\n` +
-        `✉️ Email: ${corporateEmail || 'info@portakabin.in'}\n` +
-        (corporateAddress ? `📍 Address: ${corporateAddress}\n` : '') +
-        (item.product_name ? `\n📦 *Requirement:* ${item.product_name}` : '');
+      const clientName = item.sender_name || 'N/A';
+      const clientPhone = item.sender_mobile || mPlain || 'N/A';
+      const location = [item.sender_city, item.sender_state].filter(Boolean).join(', ') || 'N/A';
+      const leadDate = appService.formatDateTime(item.generated_date || item.createdAt || item.call_time);
+      const repName = userDisplayName || currentUser || corporateName || 'Sales Team';
 
-      const cleanPhone = (item.sender_mobile || mPlain || '').replace(/\D/g, '').slice(-10);
-      const targetPhone = cleanPhone ? `91${cleanPhone}` : (mobile?.with91 ?? mPlain);
+      const leadDetailsMessage =
+        `📋 *LEAD INQUIRY DETAILS*\n` +
+        `━━━━━━━━━━━━━━━━━━━━━━\n` +
+        (item.lead_no ? `🆔 *Inquiry #:* ${item.lead_no}\n` : '') +
+        `👤 *Client Name:* ${clientName}\n` +
+        `📱 *Mobile:* ${clientPhone}\n` +
+        (item.sender_email ? `✉️ *Email:* ${item.sender_email}\n` : '') +
+        `📦 *Requirement:* ${item.product_name || 'N/A'}\n` +
+        `📍 *Location:* ${location}\n` +
+        (item.source ? `🏷️ *Source:* ${item.source}\n` : '') +
+        `📅 *Date:* ${leadDate}\n` +
+        (item.query_message ? `💬 *Query:* ${item.query_message}\n` : '') +
+        `━━━━━━━━━━━━━━━━━━━━━━\n` +
+        `Forwarded by: ${repName}`;
 
-      // ── If activity has 1 record (or no activity) → send visiting card directly to sender_mobile no instead of selecting contact in WhatsApp app ──
-      if (acts.length <= 1 && targetPhone) {
-        const waDirectUrl = `whatsapp://send?phone=${targetPhone}&text=${encodeURIComponent(message)}`;
-        const waWebUrl = `https://wa.me/${targetPhone}?text=${encodeURIComponent(message)}`;
+      // Open WhatsApp without phone parameter so WhatsApp lets user select any contact / number to share to
+      const waShareUrl = `whatsapp://send?text=${encodeURIComponent(leadDetailsMessage)}`;
+      const waWebShareUrl = `https://api.whatsapp.com/send?text=${encodeURIComponent(leadDetailsMessage)}`;
 
-        try {
-          const supported = await Linking.canOpenURL(waDirectUrl);
-          if (supported) {
-            await Linking.openURL(waDirectUrl);
-          } else {
-            await Linking.openURL(waWebUrl);
-          }
-          await saveUserAction(`Visiting card sent via WhatsApp to ${cleanPhone || targetPhone}`);
-          onStatusChange();
-          return;
-        } catch {
-          // Fallback to SMS if WhatsApp fails
-          const smsUrl = `sms:${mobile?.withPlus91 ?? targetPhone}?body=${encodeURIComponent(message)}`;
-          Linking.openURL(smsUrl).catch(() =>
-            appService.showToast('Could not open WhatsApp or SMS', 'Error')
-          );
-          await saveUserAction(`Visiting card sent via SMS to ${cleanPhone || targetPhone}`);
-          onStatusChange();
-          return;
-        }
-      }
-
-      // ── Has more than 1 activity record → use native share sheet ────────────────
-      if (visitingCardUri) {
-        try {
-          await Sharing.shareAsync(visitingCardUri, {
-            dialogTitle: 'Share Digital Visiting Card',
-            mimeType: 'image/png',
-          });
-          return;
-        } catch {
-          appService.showToast('Could not share visiting card', 'Error');
-        }
-      }
-
+      let sharedViaWhatsApp = false;
       try {
-        await Share.share({ message });
-      } catch {
-        appService.showToast('Could not open share menu', 'Error');
+        const supported = await Linking.canOpenURL(waShareUrl);
+        if (supported) {
+          await Linking.openURL(waShareUrl);
+          sharedViaWhatsApp = true;
+        } else {
+          const webSupported = await Linking.canOpenURL(waWebShareUrl);
+          if (webSupported) {
+            await Linking.openURL(waWebShareUrl);
+            sharedViaWhatsApp = true;
+          }
+        }
+      } catch (err) {
+        console.warn('WhatsApp share error:', err);
       }
+
+      if (!sharedViaWhatsApp) {
+        // Fallback to system share menu
+        try {
+          await Share.share({
+            message: leadDetailsMessage,
+            title: `Lead #${item.lead_no || ''} - ${clientName}`,
+          });
+        } catch {
+          appService.showToast('Could not open share menu', 'Error');
+          return;
+        }
+      }
+
+      await saveUserAction(`Lead details shared via WhatsApp`);
+      onStatusChange();
     }, [
-      mPlain,
-      mobile,
-      acts,
+      item.lead_no,
+      item.sender_name,
       item.sender_mobile,
+      item.sender_email,
       item.product_name,
+      item.sender_city,
+      item.sender_state,
+      item.source,
+      item.generated_date,
+      item.createdAt,
+      item.call_time,
+      item.query_message,
+      mPlain,
+      userDisplayName,
       currentUser,
       corporateName,
-      corporateEmail,
-      corporateAddress,
-      userMobile,
-      userDisplayName,
-      corpProfileImage,
-      visitingCardUri,
       saveUserAction,
       onStatusChange,
     ]);

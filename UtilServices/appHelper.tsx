@@ -198,15 +198,28 @@ class AppService {
           urls.push(n);
         }
       }
-      const local5001 = normalize('http://localhost:5001/api');
-      if (!seen.has(local5001)) {
-        seen.add(local5001);
-        urls.push(local5001);
-      }
-      const emu5001 = normalize('http://10.0.2.2:5001/api');
-      if (!seen.has(emu5001)) {
-        seen.add(emu5001);
-        urls.push(emu5001);
+      if (Platform.OS === 'android') {
+        const emu5001 = normalize('http://10.0.2.2:5001/api');
+        if (!seen.has(emu5001)) {
+          seen.add(emu5001);
+          urls.push(emu5001);
+        }
+        const local5001 = normalize('http://localhost:5001/api');
+        if (!seen.has(local5001)) {
+          seen.add(local5001);
+          urls.push(local5001);
+        }
+      } else {
+        const local5001 = normalize('http://localhost:5001/api');
+        if (!seen.has(local5001)) {
+          seen.add(local5001);
+          urls.push(local5001);
+        }
+        const emu5001 = normalize('http://10.0.2.2:5001/api');
+        if (!seen.has(emu5001)) {
+          seen.add(emu5001);
+          urls.push(emu5001);
+        }
       }
     }
 
@@ -406,7 +419,10 @@ class AppService {
   }
 
   private setupInterceptors() {
-    this.httpClient.interceptors.request.use((config) => {
+    this.httpClient.interceptors.request.use((config: any) => {
+      if (!config._originalUrl) {
+        config._originalUrl = config.url;
+      }
       if (config.url?.startsWith('/')) {
         config.url = config.url.substring(1);
       }
@@ -431,6 +447,7 @@ class AppService {
 
         if (isNetworkError && req._failoverCount < this.baseURLs.length) {
           req._failoverCount++;
+          req._retryCount = 0;
           this.currentUrlIndex = (this.currentUrlIndex + 1) % this.baseURLs.length;
           const nextUrl = this.baseURLs[this.currentUrlIndex];
           console.warn(
@@ -438,6 +455,21 @@ class AppService {
           );
           this.httpClient.defaults.baseURL = nextUrl;
           req.baseURL = nextUrl;
+
+          if (req._originalUrl) {
+            req.url = req._originalUrl;
+          } else if (req.url) {
+            for (const b of this.baseURLs) {
+              if (req.url.startsWith(b)) {
+                req.url = req.url.slice(b.length);
+                break;
+              }
+            }
+          }
+          if (req.url?.startsWith('/')) {
+            req.url = req.url.substring(1);
+          }
+
           DeviceEventEmitter.emit('SERVER_HOST_CHANGED', nextUrl);
           DeviceEventEmitter.emit('api_host_changed', nextUrl);
           return this.httpClient(req);
@@ -855,17 +887,26 @@ class AppService {
     }
   }
 
-  public async getActiveStaff(token: string, corporateId?: string) {
+  public async getActiveStaff(token: string, corporateId?: string, dbName?: string) {
     try {
       let cid = corporateId;
-      if (!cid) {
+      let targetDb = dbName;
+      if (!cid || !targetDb) {
         const session = await this.getSession();
-        cid = session?.corporateId || session?.corpAdminId;
+        if (!cid) cid = session?.corporateId || session?.corpAdminId;
+        if (!targetDb) targetDb = session?.dbName;
       }
 
+      const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
+      if (targetDb) headers['x-tenant-id'] = targetDb;
+
+      const params: Record<string, string> = {};
+      if (cid) params.corporateId = cid;
+      if (targetDb) params.dbName = targetDb;
+
       const res = await this.httpClient.get('/service/hr/attendance/active-staff', {
-        headers: { Authorization: `Bearer ${token}` },
-        params: { corporateId: cid },
+        headers,
+        params,
       });
       return res.data;
     } catch (e: any) {

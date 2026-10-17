@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useState, useRef } from "react";
 import { appService } from "@/UtilServices/appHelper";
 import { TxnType, Direction, PaymentMode } from "./usePayments";
 
@@ -62,6 +62,8 @@ export const useVouchers = (token: string, dbName?: string) => {
   });
 
   const [loading, setLoading] = useState(false);
+  const isSavingRef = useRef(false);
+  const clientVoucherIdRef = useRef<string>(`VCH_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`);
 
   // ── Entry Management ───────────────────────────────────────────────────────
   const addEntry = useCallback(() => {
@@ -120,6 +122,11 @@ export const useVouchers = (token: string, dbName?: string) => {
       throw new Error("Please complete all entry rows (Account & Amount).");
     }
 
+    if (isSavingRef.current) {
+      console.log("saveVoucher call ignored - save already in flight");
+      throw new Error("Voucher submission already in progress. Please wait.");
+    }
+    isSavingRef.current = true;
     setLoading(true);
     try {
       const authH: Record<string, string> = { Authorization: `Bearer ${token}` };
@@ -131,6 +138,7 @@ export const useVouchers = (token: string, dbName?: string) => {
       try {
         // ── Strategy A: Try atomic double-entry voucher endpoint ───────────
         const payload = {
+          clientVoucherId: clientVoucherIdRef.current,
           voucherType,
           locationId: locationId || null,
           date: v.date,
@@ -154,7 +162,11 @@ export const useVouchers = (token: string, dbName?: string) => {
         };
 
         const res = await appService.httpClient.post("finance/vouchers", payload, { headers: authH });
-        if (res.data?.success) return res.data.data;
+        if (res.data?.success) {
+          // Generate fresh idempotency key for the next voucher
+          clientVoucherIdRef.current = `VCH_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+          return res.data.data;
+        }
       } catch (innerErr: any) {
         // If it's a 404 (Not Found), we let it fallback to individual payments
         if (innerErr?.response?.status !== 404) throw innerErr;
@@ -189,6 +201,7 @@ export const useVouchers = (token: string, dbName?: string) => {
     } catch (e: any) {
       throw e;
     } finally {
+      isSavingRef.current = false;
       setLoading(false);
     }
   };
@@ -219,6 +232,7 @@ export const useVouchers = (token: string, dbName?: string) => {
         entries[1] = { id: "2", accountId: "", accountType: "Category", accountName: "", type: "Cr", amount: 0 };
     }
 
+    clientVoucherIdRef.current = `VCH_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
     setVoucher({
       date: initialDate || new Date(),
       narration: initialNarration || "",

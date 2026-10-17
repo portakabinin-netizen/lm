@@ -187,7 +187,7 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
   };
 
   const [mode, setMode] = useState<typeof propMode>(propMode);
-  const [voucherNo, setVoucherNo] = useState<string>(() => Date.now().toString().slice(-4));
+  const [voucherNo, setVoucherNo] = useState<string>('...');
 
   useEffect(() => {
     setMode(propMode);
@@ -214,22 +214,9 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
   const [sundryDebtorLedgers, setSundryDebtorLedgers] = useState<any[]>([]);
   const [sundryCreditorLedgers, setSundryCreditorLedgers] = useState<any[]>([]);
   const [ledgersLoading, setLedgersLoading] = useState(false);
-  const [keyboardVisible, setKeyboardVisible] = useState(false);
-
-  useEffect(() => {
-    const showSub = Keyboard.addListener(
-      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
-      () => setKeyboardVisible(true)
-    );
-    const hideSub = Keyboard.addListener(
-      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
-      () => setKeyboardVisible(false)
-    );
-    return () => {
-      showSub.remove();
-      hideSub.remove();
-    };
-  }, []);
+  const scrollViewRef = useRef<ScrollView>(null);
+  const isSubmittingRef = useRef(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Clear stale corporate data when corporate is switched inside the modal
   useEffect(() => {
@@ -476,22 +463,41 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
       updateEntry('2', { accountId: '', accountName: '', accountType: 'Category', type: 'Cr' });
       return;
     }
+    if (currentMode === 'purchase') {
+      resetVoucher('Purchase', 'Purchase bill / Vendor invoice', effectiveDate);
+      updateEntry('1', { accountId: '', accountName: '', accountType: 'Category', type: 'Dr' });
+      updateEntry('2', { accountId: '', accountName: '', accountType: 'Category', type: 'Cr' });
+      return;
+    }
     resetVoucher(initialType || 'Journal', 'Accounting adjustment entry', effectiveDate);
   }, [resetVoucher, initialType, dateText, getOwnPettyCashAccount, updateEntry]);
 
   const wasVisibleRef = useRef(false);
 
+  const refreshNextVoucherNo = useCallback(async () => {
+    try {
+      const res = await appService.httpClient.get('finance/vouchers/next-no', {
+        headers: activeTenantDb ? { 'x-tenant-id': activeTenantDb } : undefined,
+      });
+      if (res.data?.success && res.data.nextVoucherNo) {
+        setVoucherNo(res.data.nextVoucherNo);
+      }
+    } catch (e) {
+      console.log('Failed to fetch next voucher number:', e);
+    }
+  }, [activeTenantDb]);
+
   useEffect(() => {
     if (visible && !wasVisibleRef.current) {
       wasVisibleRef.current = true;
-      setVoucherNo(Date.now().toString().slice(-4));
       const current = propMode || 'payment';
       setMode(current);
       applyModeTemplate(current, dateText);
+      refreshNextVoucherNo();
     } else if (!visible) {
       wasVisibleRef.current = false;
     }
-  }, [visible]);
+  }, [visible, propMode, applyModeTemplate, dateText, refreshNextVoucherNo]);
 
   useEffect(() => {
     if (visible) {
@@ -596,10 +602,15 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
       });
     });
 
+    const staffLedgerMap = new Map<string, any>();
+    (accountingMaster?.ledgers || []).forEach((l: any) => {
+      if (l.refType === 'Staff' && l.refId) {
+        staffLedgerMap.set(String(l.refId), l);
+      }
+    });
+
     const employeeAccs = Array.from(mergedEmployeesMap.values()).map((e) => {
-      const ledger = (accountingMaster?.ledgers || []).find(
-        (l: any) => l.refType === 'Staff' && String(l.refId) === String(e._id)
-      );
+      const ledger = staffLedgerMap.get(String(e._id));
       const isLedgerAccount = !!ledger;
       const ledgerId = ledger ? ledger._id : undefined;
       const balance = ledger ? (ledger.currentBalance ?? ledger.openingBalance ?? 0) : undefined;
@@ -620,6 +631,46 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
     });
 
     const groupMap = new Map((accountingMaster?.groups || []).map((g: any) => [String(g._id), g]));
+
+    // Pre-index collections for O(1) matching inside dynamicLedgerAccs
+    const regUsersById = new Map<string, any>();
+    const regUsersByName = new Map<string, any>();
+    registeredUsers.forEach((u: any) => {
+      if (u._id) regUsersById.set(String(u._id), u);
+      if (u.userId) regUsersById.set(String(u.userId), u);
+      const n = normalizeName(u.userDisplayName || u.name);
+      if (n) regUsersByName.set(n, u);
+    });
+
+    const workersById = new Map<string, any>();
+    const workersByName = new Map<string, any>();
+    allWorkers.forEach((w: any) => {
+      if (w._id) workersById.set(String(w._id), w);
+      if (w.userId) workersById.set(String(w.userId), w);
+      const n = normalizeName(w.name);
+      if (n) workersByName.set(n, w);
+    });
+
+    const staffById = new Map<string, any>();
+    const staffByName = new Map<string, any>();
+    staff.employees.forEach((e: any) => {
+      if (e._id) staffById.set(String(e._id), e);
+      if (e.userId) staffById.set(String(e.userId), e);
+      const n = normalizeName(e.name);
+      if (n) staffByName.set(n, e);
+    });
+
+    const pettyByRefId = new Map<string, any>();
+    const pettyByName = new Map<string, any>();
+    pettyCashBooks.forEach((b: any) => {
+      if (b.refId) pettyByRefId.set(String(b.refId), b);
+      if (b._id) pettyByRefId.set(String(b._id), b);
+      const n = normalizeName(b.name);
+      if (n) pettyByName.set(n, b);
+    });
+
+    const currentUserId = user?.userId ? String(user.userId) : (user?._id ? String(user._id) : '');
+    const currentUserNameNorm = normalizeName(user?.userDisplayName || user?.name || '');
 
     const dynamicLedgerAccs = (accountingMaster?.ledgers || []).map((l: any) => {
       const parentGroup = groupMap.get(String(l.ledgerGroupId));
@@ -653,29 +704,11 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
         const cleanName = normalizeName(l.ledgerName);
         const targetId = l.refId ? String(l.refId) : '';
 
-        const matchedRegUser = registeredUsers.find((u: any) =>
-          (targetId && (String(u._id) === targetId || String(u.userId) === targetId)) ||
-          normalizeName(u.userDisplayName || u.name) === cleanName
-        );
-
-        const matchedWorker = allWorkers.find((w: any) =>
-          (targetId && (String(w._id) === targetId || String(w.userId) === targetId)) ||
-          normalizeName(w.name) === cleanName
-        );
-
-        const matchedStaff = staff.employees.find((e: any) =>
-          (targetId && (String(e._id) === targetId || String(e.userId) === targetId)) ||
-          normalizeName(e.name) === cleanName
-        );
-
-        const isCurrent = (targetId && (String(user?.userId) === targetId || String(user?._id) === targetId)) ||
-          normalizeName(user?.userDisplayName || user?.name || '') === cleanName;
-
-        const matchedPetty = pettyCashBooks.find((b: any) =>
-          (targetId && String(b.refId) === targetId) ||
-          normalizeName(b.name).includes(cleanName) ||
-          cleanName.includes(normalizeName(b.name))
-        );
+        const matchedRegUser = (targetId && regUsersById.get(targetId)) || regUsersByName.get(cleanName);
+        const matchedWorker = (targetId && workersById.get(targetId)) || workersByName.get(cleanName);
+        const matchedStaff = (targetId && staffById.get(targetId)) || staffByName.get(cleanName);
+        const isCurrent = (targetId && targetId === currentUserId) || (currentUserNameNorm && cleanName === currentUserNameNorm);
+        const matchedPetty = (targetId && pettyByRefId.get(targetId)) || pettyByName.get(cleanName);
 
         resolvedPhoto =
           matchedRegUser?.userProfileImage ||
@@ -719,6 +752,7 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
         balance: bal,
         photo: resolvedPhoto,
         mobile: resolvedMobile,
+        groupName: effectiveGroupName,
       };
     });
 
@@ -776,6 +810,14 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
 
     return [...dynamicLedgerAccs, ...extraPettyAccs, ...bankFallbacks, ...leadAccs, ...employeeAccs];
   }, [leads, staff, pettyCashBooks, allWorkers, registeredUsers, accountingMaster, user]);
+
+  const allAccountsMap = useMemo(() => {
+    const map = new Map<string, any>();
+    allAccounts.forEach((acc) => {
+      if (acc.id) map.set(String(acc.id), acc);
+    });
+    return map;
+  }, [allAccounts]);
 
   const filteredLeads = useMemo(() => {
     const eligible = leads.filter((l) => {
@@ -859,6 +901,23 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
     if (fallback.length > 0) return fallback;
     return allAccounts.filter((acc: any) => !acc.isBank && !acc.isPettyCash && acc.type !== 'Staff');
   }, [sundryCreditorLedgers, allAccounts]);
+
+  const purchaseAndDirectExpenseAccounts = useMemo(() => {
+    const list = allAccounts.filter((acc: any) => {
+      const gLower = (acc.groupName || acc.sub || '').toLowerCase();
+      const nameLower = (acc.name || '').toLowerCase();
+      const isPurchaseOrDirectExp =
+        gLower.includes('purchase') ||
+        gLower.includes('direct expense') ||
+        gLower.includes('direct expenses') ||
+        gLower.includes('expenses (direct)') ||
+        nameLower.includes('purchase') ||
+        nameLower.includes('direct exp');
+      return isPurchaseOrDirectExp && !acc.isBank && !acc.isPettyCash && acc.type !== 'Staff';
+    });
+    if (list.length > 0) return list;
+    return allAccounts.filter((acc: any) => !acc.isBank && !acc.isPettyCash && acc.type !== 'Staff');
+  }, [allAccounts]);
 
   const filteredAccounts = useMemo(() => {
     if (!activeEntryId) return allAccounts;
@@ -963,6 +1022,14 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
       }
     }
 
+    if (mode === 'purchase') {
+      if (rowType === 'Dr') {
+        return purchaseAndDirectExpenseAccounts;
+      } else {
+        return sundryCreditorAccounts;
+      }
+    }
+
     // ── CLIENT RECEIPT (BILL COLLECTION) ──────────────────────────────────────
     // Dr Own Petty Cash / Bank • Cr Client (Sundry Debtors)
     if (mode === 'bill_collection') {
@@ -1003,7 +1070,7 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
     }
 
     return allAccounts;
-  }, [activeEntryId, voucher.entries, allAccounts, mode, user, bankAndCashLedgers, revenueAndSalesLedgers, billCollectionClientAccounts, sundryCreditorAccounts, restrictToOwnPettyCash, isAdminOrFinance, getOwnPettyCashAccount]);
+  }, [activeEntryId, voucher.entries, allAccounts, mode, user, bankAndCashLedgers, revenueAndSalesLedgers, billCollectionClientAccounts, sundryCreditorAccounts, purchaseAndDirectExpenseAccounts, restrictToOwnPettyCash, isAdminOrFinance, getOwnPettyCashAccount]);
 
   const searchFilteredAccounts = useMemo(() => {
     if (!accountSearchText.trim()) return filteredAccounts;
@@ -1051,6 +1118,8 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
 
       if (mode === 'sales') {
         updateVoucher({ narration: `Sales billing to ${acc.name}` });
+      } else if (mode === 'purchase') {
+        updateVoucher({ narration: `Purchase bill from ${acc.name}` });
       } else if (mode === 'bill_collection') {
         updateVoucher({ narration: `Received bill collection from ${acc.name}` });
       } else if (mode === 'salary') {
@@ -1115,6 +1184,12 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
   };
 
   const handleSave = async (printAfterSave: boolean = false) => {
+    if (isSubmittingRef.current || saveLoading) {
+      console.log('handleSave ignored: submission already in flight');
+      return;
+    }
+    isSubmittingRef.current = true;
+    setIsSubmitting(true);
     try {
       const parsedDate = parseDDMMYYYYToDate(dateText);
       if (!parsedDate) {
@@ -1151,6 +1226,9 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
         type = 'Purchase';
       }
 
+      let requiresCounterValidation = isBackdated;
+      let isBankContra = false;
+
       // ── Contra Counter-Validation (Debit / Credit) ─────────────────────────
       if (type === 'Contra') {
         const drEntry = voucher.entries.find((e) => e.type === 'Dr');
@@ -1179,21 +1257,42 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
           return subL.includes('bank') || subL.includes('cash') || nameL.includes('bank') || nameL.includes('cash');
         };
 
-        if (!isCashOrBankAcc(drEntry.accountId) || !isCashOrBankAcc(crEntry.accountId)) {
-          Alert.alert('Invalid Contra Entry', 'Contra vouchers strictly mobilize funds between Cash or Bank accounts.');
-          return;
+        const isBankAcc = (accId?: string) => {
+          if (!accId) return false;
+          if (accId === 'main_bank') return true;
+          const acc = allAccounts.find((a: any) => String(a.id) === String(accId)) as any;
+          if (!acc) return false;
+          if (acc.isBank) return true;
+          const subL = (acc.sub || '').toLowerCase();
+          const nameL = (acc.name || '').toLowerCase();
+          return (subL.includes('bank') || nameL.includes('bank')) && !subL.includes('petty') && !nameL.includes('petty');
+        };
+
+        const drBank = isBankAcc(drEntry?.accountId);
+        const crBank = isBankAcc(crEntry?.accountId);
+        isBankContra = drBank || crBank;
+
+        // "only contra voucher needs to validated by counter party only for cash inloved, bank deposit and withdrwal can approved by any admin only."
+        if (!isBankContra) {
+          // Cash involved between counter parties
+          requiresCounterValidation = true;
+        } else {
+          // Bank deposit and withdrawal can be approved by any admin only
+          requiresCounterValidation = false;
         }
       }
 
-      const requiresCounterValidation = type === 'Contra' || isBackdated;
+      const isAdmin = ['CorpAdmin', 'userAdmin', 'Finance'].includes(user?.userRole || (user as any)?.role || '');
+      const isPending = isBankContra ? !isAdmin : (requiresCounterValidation || isBackdated);
+
       updateVoucher({
         date: parsedDate,
-        isValidated: !requiresCounterValidation,
+        isValidated: !isPending,
         isCounterValidated: !requiresCounterValidation,
         isBackdated,
         entryDate: now,
-        validationStatus: requiresCounterValidation ? 'Unvalidated' : 'Validated',
-        approvalPending: requiresCounterValidation,
+        validationStatus: isPending ? 'Unvalidated' : 'Validated',
+        approvalPending: isPending,
       });
 
       const isSalesOrPurchase = type === 'Sales' || type === 'Purchase';
@@ -1254,15 +1353,28 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
         }
       }
 
-      const successTitle = requiresCounterValidation ? 'Voucher Recorded (Pending Validation)' : 'Success';
+      const successTitle = requiresCounterValidation
+        ? 'Voucher Recorded (Pending Validation)'
+        : isPending
+        ? 'Bank Transaction Recorded (Pending Admin Approval)'
+        : 'Success';
       const successMsg = requiresCounterValidation
-        ? `Voucher posted as UNVALIDATED entry pending counter-validation (${type === 'Contra' ? 'Contra Transfer' : 'Backdated Entry: recording date ' + formatDateToDDMMYYYY(now) + ' ≠ voucher date ' + dateText}). It will show in ledger statements in a distinct color and will be excluded from balance calculation until validated.`
+        ? `Voucher posted as UNVALIDATED entry pending counter-validation (${type === 'Contra' ? 'Contra Cash Transfer' : 'Backdated Entry: recording date ' + formatDateToDDMMYYYY(now) + ' ≠ voucher date ' + dateText}). It will show in ledger statements in a distinct color and will be excluded from balance calculation until validated.`
+        : isPending
+        ? 'Bank deposit/withdrawal posted and is pending Admin approval.'
         : 'Voucher posted successfully.';
-      Alert.alert(successTitle, successMsg);
       applyModeTemplate(mode, dateText);
+      refreshNextVoucherNo();
+      Alert.alert(successTitle, successMsg, [
+        { text: 'Done', onPress: onClose },
+        { text: 'Add Another Voucher', style: 'default' }
+      ]);
     } catch (err: any) {
       const detailedMsg = err.response?.data?.message || err.response?.data?.error || err.message;
-      Alert.alert('Voucher Error', detailedMsg);
+      Alert.alert('Voucher Notice', detailedMsg);
+    } finally {
+      isSubmittingRef.current = false;
+      setIsSubmitting(false);
     }
   };
 
@@ -1284,6 +1396,8 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
         };
       case 'sales':
         return { title: 'Sales Voucher', subtitle: 'Dr Client (Sundry Debtors) • Cr Sales / Revenue Account' };
+      case 'purchase':
+        return { title: 'Purchase Bill Voucher', subtitle: 'Dr Purchase / Direct Expenses • Cr Vendor Account (Sundry Creditor)' };
       case 'bill_collection':
         return {
           title: 'Client Receipt (Bill Collection)',
@@ -1330,6 +1444,7 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
     { key: 'payment', label: 'Payment' },
     { key: 'receipt', label: 'Receipt' },
     { key: 'sales', label: 'Sales' },
+    { key: 'purchase', label: 'Purchase Bill' },
     { key: 'bill_collection', label: 'Client Receipt' },
     { key: 'vendor_payment', label: 'Vendor Payment' },
     { key: 'salary', label: 'Staff Payment' },
@@ -1467,14 +1582,17 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
 
             {/* Scrollable Container with Entries + Narration + Totals */}
             <ScrollView
+              ref={scrollViewRef}
               style={{ flex: 1 }}
-              contentContainerStyle={{ flexGrow: 1, justifyContent: 'space-between', paddingBottom: 16 }}
+              contentContainerStyle={{
+                paddingBottom: 220,
+              }}
               keyboardShouldPersistTaps="handled"
               showsVerticalScrollIndicator={false}
             >
               <View>
                 {voucher.entries.map((entry) => {
-                  const matchedAcc = allAccounts.find((a: any) => a.id === entry.accountId);
+                  const matchedAcc = entry.accountId ? allAccountsMap.get(String(entry.accountId)) : undefined;
                   const displayBal = (matchedAcc as any)?.balance !== undefined ? `₹${Number((matchedAcc as any).balance).toLocaleString('en-IN')}` : '---';
 
                   return (
@@ -1529,25 +1647,40 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
                 )}
               </View>
 
-              {/* Bottom Narration & Totals (inside ScrollView, so keyboard will never cover it) */}
+              {/* Bottom Narration & Totals (inside ScrollView container) */}
               <View style={{ borderTopWidth: 1, borderTopColor: '#ccc', paddingTop: 10, marginTop: 12 }}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
                   <Text style={{ fontSize: 13, color: '#000', fontWeight: 'bold' }}>Narration : </Text>
-                  <TextInput
-                    style={{
-                      flex: 1,
-                      borderBottomWidth: 1,
-                      borderBottomColor: '#000',
-                      fontSize: 13,
-                      color: '#000',
-                      padding: 0,
-                      marginLeft: 4,
-                      fontStyle: 'italic',
-                    }}
-                    value={voucher.narration}
-                    placeholder=""
-                    onChangeText={(t) => updateVoucher({ narration: t })}
-                  />
+                  <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', borderBottomWidth: 1, borderBottomColor: '#000', marginLeft: 4 }}>
+                    <TextInput
+                      style={{
+                        flex: 1,
+                        fontSize: 13,
+                        color: '#000',
+                        paddingVertical: 2,
+                        paddingHorizontal: 0,
+                        fontStyle: 'italic',
+                      }}
+                      value={voucher.narration}
+                      placeholder="Add narration..."
+                      placeholderTextColor="#94a3b8"
+                      onFocus={() => {
+                        setTimeout(() => {
+                          scrollViewRef.current?.scrollToEnd({ animated: true });
+                        }, 150);
+                      }}
+                      onChangeText={(t) => updateVoucher({ narration: t })}
+                    />
+                    {!!voucher.narration && (
+                      <TouchableOpacity
+                        onPress={() => updateVoucher({ narration: '' })}
+                        style={{ paddingHorizontal: 4 }}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      >
+                        <Ionicons name="close-circle" size={16} color="#64748b" />
+                      </TouchableOpacity>
+                    )}
+                  </View>
                 </View>
 
                 {/* Totals */}
@@ -1576,26 +1709,86 @@ export const VoucherEntryModal: React.FC<VoucherEntryModalProps> = ({
               <TouchableOpacity
                 style={{ flex: 1, height: '100%', justifyContent: 'center', alignItems: 'center', borderRightWidth: 1, borderRightColor: '#ccc' }}
                 onPress={onClose}
+                disabled={saveLoading || isSubmitting}
               >
-                <Text style={{ fontSize: 13, fontWeight: 'bold', color: '#1E4472' }}>Q: Quit</Text>
+                <Text style={{ fontSize: 13, fontWeight: 'bold', color: (saveLoading || isSubmitting) ? '#94A3B8' : '#1E4472' }}>Q: Quit</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={{ flex: 1, height: '100%', justifyContent: 'center', alignItems: 'center', borderRightWidth: 1, borderRightColor: '#ccc' }}
-                onPress={() => handleSave(false)}
-                disabled={saveLoading || !isBalanced}
+                style={{
+                  flex: 1,
+                  height: '100%',
+                  justifyContent: 'center',
+                  alignItems: 'center',
+                  borderRightWidth: 1,
+                  borderRightColor: '#ccc',
+                  backgroundColor: (saveLoading || isSubmitting) ? '#E2E8F0' : undefined
+                }}
+                onPress={() => {
+                  if (isSubmittingRef.current || isSubmitting || saveLoading) return;
+                  handleSave(false);
+                }}
+                disabled={saveLoading || isSubmitting || !isBalanced}
               >
-                <Text style={{ fontSize: 13, fontWeight: 'bold', color: (!isBalanced || saveLoading) ? '#94A3B8' : '#1E4472' }}>
-                  {saveLoading ? 'Saving...' : 'A: Accept'}
-                </Text>
+                {saveLoading || isSubmitting ? (
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <ActivityIndicator size="small" color="#1E4472" />
+                    <Text style={{ fontSize: 13, fontWeight: 'bold', color: '#1E4472' }}>Saving...</Text>
+                  </View>
+                ) : (
+                  <Text style={{ fontSize: 13, fontWeight: 'bold', color: (!isBalanced || saveLoading || isSubmitting) ? '#94A3B8' : '#1E4472' }}>
+                    A: Accept
+                  </Text>
+                )}
               </TouchableOpacity>
               <TouchableOpacity
                 style={{ flex: 1, height: '100%', justifyContent: 'center', alignItems: 'center' }}
                 onPress={onClose}
+                disabled={saveLoading || isSubmitting}
               >
-                <Text style={{ fontSize: 13, fontWeight: 'bold', color: '#1E4472' }}>X: Cancel Vch</Text>
+                <Text style={{ fontSize: 13, fontWeight: 'bold', color: (saveLoading || isSubmitting) ? '#94A3B8' : '#1E4472' }}>X: Cancel Vch</Text>
               </TouchableOpacity>
             </View>
           </View>
+
+          {/* Full Screen Blocking Overlay during save to completely block any multi-clicks */}
+          {(saveLoading || isSubmitting) && (
+            <View
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 0,
+                backgroundColor: 'rgba(0, 0, 0, 0.4)',
+                justifyContent: 'center',
+                alignItems: 'center',
+                zIndex: 99999,
+              }}
+              pointerEvents="auto"
+            >
+              <View
+                style={{
+                  backgroundColor: '#ffffff',
+                  paddingVertical: 18,
+                  paddingHorizontal: 24,
+                  borderRadius: 12,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 14,
+                  elevation: 10,
+                  shadowColor: '#000',
+                  shadowOpacity: 0.25,
+                  shadowRadius: 10,
+                }}
+              >
+                <ActivityIndicator size="large" color="#1E4472" />
+                <View>
+                  <Text style={{ fontSize: 15, fontWeight: 'bold', color: '#1E293B' }}>Saving Voucher...</Text>
+                  <Text style={{ fontSize: 12, color: '#64748B', marginTop: 2 }}>Preventing duplicate entries</Text>
+                </View>
+              </View>
+            </View>
+          )}
         </View>
 
         {/* --- Account Picker Modal --- */}

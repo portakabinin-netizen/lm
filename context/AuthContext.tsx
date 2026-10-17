@@ -231,7 +231,7 @@ const PUBLIC_URLS = ['leads/public-inquiry', 'publicform/webInquiry'];
           });
         }
 
-        if (currentUser.dbName) {
+        if (currentUser.dbName && !config.headers?.['x-tenant-id']) {
           config.headers['x-tenant-id'] = currentUser.dbName;
         }
       } else {
