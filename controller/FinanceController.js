@@ -1182,10 +1182,86 @@ const resolveAndValidateVoucher = async (req, voucherType, entries, leadId, lega
     return { resolvedEntries };
 };
 
+const checkIsBankLedger = async (tenantModels, ledgerId) => {
+    if (!ledgerId) return false;
+    if (ledgerId === "main_bank") return true;
+    if (!mongoose.Types.ObjectId.isValid(ledgerId)) return false;
+    const ledger = await tenantModels.Ledgers.findById(ledgerId).populate("ledgerGroupId", "groupName").lean();
+    if (!ledger) return false;
+    const gName = (ledger.ledgerGroupId?.groupName || ledger.groupName || "").toLowerCase();
+    const lName = (ledger.ledgerName || "").toLowerCase();
+    return gName.includes("bank") || lName.includes("bank") || ledger.refType === "Bank";
+};
+
+/**
+ * 🔢 Sequential numeric voucher number generator
+ * Guarantees globally unique, sequential numeric voucher numbers (1, 2, 3...) per tenant.
+ */
+const generateNextVoucherNo = async (tenantModels) => {
+    const { Counters, Vouchers } = tenantModels;
+    let counter = await Counters.findByIdAndUpdate(
+        "voucher_seq",
+        { $inc: { seq: 1 } },
+        { upsert: true, new: true }
+    );
+    let seq = counter.seq;
+    while (await Vouchers.exists({ voucherNo: String(seq) })) {
+        counter = await Counters.findByIdAndUpdate(
+            "voucher_seq",
+            { $inc: { seq: 1 } },
+            { new: true }
+        );
+        seq = counter.seq;
+    }
+    return String(seq);
+};
+
+exports.generateNextVoucherNo = generateNextVoucherNo;
+
+// In-memory mutex for in-flight voucher submissions to prevent race conditions on double clicks
+const activeVoucherLocks = new Map();
+
+/**
+ * Helper to sort vouchers: 1st by Date (Descending), 2nd by Voucher No (Descending numeric)
+ */
+const sortVouchersByDateAndNo = (vouchers) => {
+    const getDay = (d) => {
+        if (!d) return 0;
+        const dt = new Date(d);
+        if (isNaN(dt.getTime())) return 0;
+        return dt.getFullYear() * 10000 + (dt.getMonth() + 1) * 100 + dt.getDate();
+    };
+    const getVoucherNum = (vNo) => {
+        if (!vNo) return 0;
+        const m = String(vNo).match(/\d+/g);
+        return m ? parseInt(m[m.length - 1], 10) : 0;
+    };
+    return vouchers.sort((a, b) => {
+        const dayA = getDay(a.date);
+        const dayB = getDay(b.date);
+        if (dayA !== dayB) return dayB - dayA;
+        const numA = getVoucherNum(a.voucherNo);
+        const numB = getVoucherNum(b.voucherNo);
+        if (numA !== numB) return numB - numA;
+        return String(b.voucherNo || '').localeCompare(String(a.voucherNo || ''));
+    });
+};
+
 /**
  * 🎫 VOUCHERS MANAGEMENT
  */
 exports.manageVouchers = {
+    getNextNo: async (req, res) => {
+        try {
+            const { Counters, Vouchers } = req.tenantModels;
+            const counter = await Counters.findById("voucher_seq").lean();
+            let nextSeq = (counter?.seq || 0) + 1;
+            while (await Vouchers.exists({ voucherNo: String(nextSeq) })) {
+                nextSeq++;
+            }
+            res.json({ success: true, nextVoucherNo: String(nextSeq) });
+        } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+    },
     list: async (req, res) => {
         try {
             const { Vouchers } = req.tenantModels;
@@ -1202,14 +1278,16 @@ exports.manageVouchers = {
                 q.locationId = locationId;
             }
 
-            const vouchers = await Vouchers.find(q).sort({ date: -1 }).lean();
+            const vouchers = await Vouchers.find(q).lean();
+            sortVouchersByDateAndNo(vouchers);
             res.json({ success: true, data: vouchers });
         } catch (err) { res.status(500).json({ success: false, message: err.message }); }
     },
     create: async (req, res) => {
+        let acquiredLockKey = null;
         try {
             const { Vouchers, Counters } = req.tenantModels;
-            const { voucherType, locationId, entries, leadId, legacyMetadata } = req.body;
+            const { voucherType, locationId, entries, leadId, legacyMetadata, clientVoucherId } = req.body;
 
             // 1. Resolve Branch Location ID
             let resolvedLocId = locationId;
@@ -1232,6 +1310,75 @@ exports.manageVouchers = {
             }
 
             const resolvedEntries = validation.resolvedEntries;
+            const calculatedTotalDr = resolvedEntries.reduce((sum, e) => sum + (e.debit || 0), 0);
+
+            // 2.2 In-Flight Concurrency Mutex (Prevent double-click race conditions)
+            const userKey = String(req.user?._id || req.user?.userId || "anon");
+            const narrationKey = (req.body.narration || "").trim().toLowerCase();
+            const lockKey = clientVoucherId
+                ? `${req.tenantDbName || "db"}:${clientVoucherId}`
+                : `${req.tenantDbName || "db"}:${userKey}_${voucherType}_${calculatedTotalDr.toFixed(2)}_${narrationKey}`;
+
+            const existingLockTime = activeVoucherLocks.get(lockKey);
+            if (existingLockTime && Date.now() - existingLockTime < 8000) {
+                console.log(`[Vouchers] Blocked duplicate in-flight submission for key: ${lockKey}`);
+                return res.status(200).json({
+                    success: true,
+                    message: "Voucher submission already in progress or completed. Duplicate request prevented.",
+                    duplicate: true
+                });
+            }
+            activeVoucherLocks.set(lockKey, Date.now());
+            acquiredLockKey = lockKey;
+
+            // Auto-clean old locks if map grows large
+            if (activeVoucherLocks.size > 200) {
+                const now = Date.now();
+                for (const [k, time] of activeVoucherLocks.entries()) {
+                    if (now - time > 15000) activeVoucherLocks.delete(k);
+                }
+            }
+
+            // 2.5 Duplicate Submission Guard
+            // A) Check by clientVoucherId (idempotency key) if provided
+            if (clientVoucherId) {
+                const existingByClientId = await Vouchers.findOne({
+                    $or: [
+                        { clientVoucherId },
+                        { "metadata.clientVoucherId": clientVoucherId }
+                    ]
+                }).lean();
+                if (existingByClientId) {
+                    return res.status(200).json({
+                        success: true,
+                        data: existingByClientId,
+                        message: "Voucher already created (idempotency token matched)"
+                    });
+                }
+            }
+
+            // B) Content-based Duplicate Check within 10-second sliding window
+            const duplicateWindow = new Date(Date.now() - 10000);
+            const recentCandidates = await Vouchers.find({
+                voucherType,
+                createdAt: { $gte: duplicateWindow }
+            }).lean();
+
+            const matchedDuplicate = recentCandidates.find(cand => {
+                const candTotalDr = (cand.entries || []).reduce((sum, e) => sum + (e.debit || 0), 0);
+                const amountMatches = Math.abs(candTotalDr - calculatedTotalDr) < 0.01;
+                const narrationMatches = (cand.narration || "").trim() === (req.body.narration || "").trim();
+                const userMatches = !req.user?._id || String(cand.metadata?.createdBy) === String(req.user?._id);
+                return amountMatches && (narrationMatches || userMatches);
+            });
+
+            if (matchedDuplicate) {
+                return res.status(200).json({
+                    success: true,
+                    data: matchedDuplicate,
+                    message: "Voucher already created (duplicate request prevented)"
+                });
+            }
 
             // 3. Resolve Contra approvals and metadata if applicable
             let approvalPending = false;
@@ -1239,6 +1386,14 @@ exports.manageVouchers = {
 
             if (voucherType === "Contra") {
                 const drEntry = resolvedEntries.find(e => e.debit > 0);
+                const crEntry = resolvedEntries.find(e => e.credit > 0);
+
+                const [drIsBank, crIsBank] = await Promise.all([
+                    checkIsBankLedger(req.tenantModels, drEntry?.ledgerId),
+                    checkIsBankLedger(req.tenantModels, crEntry?.ledgerId)
+                ]);
+                const isBankTransaction = drIsBank || crIsBank;
+
                 let destUserId = null;
                 if (drEntry) {
                     const drLedger = await req.tenantModels.Ledgers.findById(drEntry.ledgerId).lean();
@@ -1248,41 +1403,75 @@ exports.manageVouchers = {
                 }
 
                 const userRole = req.user?.userRole;
-                const isAdmin = userRole === "CorpAdmin" || userRole === "userAdmin" || userRole === "Finance";
+                const isAdmin = ["CorpAdmin", "userAdmin", "Finance"].includes(userRole);
 
-                if (isAdmin) {
-                    approvalPending = false;
-                    contraMetadata = {
-                        payerUserId: req.user?._id,
-                        receiverUserId: destUserId,
-                        payerApproved: true,
-                        receiverApproved: true,
-                        payerDeclarationDate: new Date(),
-                        receiverDeclarationDate: new Date()
-                    };
+                if (isBankTransaction) {
+                    // Bank deposit and withdrawal can be approved by any admin only
+                    if (isAdmin) {
+                        approvalPending = false;
+                        contraMetadata = {
+                            payerUserId: req.user?._id,
+                            receiverUserId: null,
+                            payerApproved: true,
+                            receiverApproved: true,
+                            approvedByAdmin: true,
+                            adminUserId: req.user?._id,
+                            payerDeclarationDate: new Date(),
+                            receiverDeclarationDate: new Date()
+                        };
+                    } else {
+                        approvalPending = true;
+                        contraMetadata = {
+                            payerUserId: req.user?._id,
+                            receiverUserId: null,
+                            payerApproved: true,
+                            receiverApproved: false,
+                            requiresAdminApproval: true,
+                            payerDeclarationDate: new Date()
+                        };
+                    }
                 } else {
-                    approvalPending = true;
-                    contraMetadata = {
-                        payerUserId: req.user?._id,
-                        receiverUserId: destUserId,
-                        payerApproved: true, // Payer declares paid immediately
-                        receiverApproved: false,
-                        payerDeclarationDate: new Date()
-                    };
+                    // Cash involved between counter parties: requires counter-party validation
+                    if (isAdmin && (!destUserId || String(destUserId) === String(req.user?._id))) {
+                        approvalPending = false;
+                        contraMetadata = {
+                            payerUserId: req.user?._id,
+                            receiverUserId: destUserId,
+                            payerApproved: true,
+                            receiverApproved: true,
+                            payerDeclarationDate: new Date(),
+                            receiverDeclarationDate: new Date()
+                        };
+                    } else {
+                        approvalPending = true;
+                        contraMetadata = {
+                            payerUserId: req.user?._id,
+                            receiverUserId: destUserId,
+                            payerApproved: true, // Payer declares paid immediately
+                            receiverApproved: false,
+                            payerDeclarationDate: new Date()
+                        };
+                    }
                 }
             }
 
-            // 4. Location-specific counter & Voucher generation
-            const counterId = `voucher_${voucherType}_${resolvedLocId}`;
-            const counter = await Counters.findByIdAndUpdate(counterId, { $inc: { seq: 1 } }, { upsert: true, new: true });
+            // 4. Sequential numeric voucher number generation
+            const voucherNo = await generateNextVoucherNo(req.tenantModels);
 
             const voucher = new Vouchers({
                 ...req.body,
+                clientVoucherId: clientVoucherId || undefined,
                 locationId: resolvedLocId,
                 entries: resolvedEntries,
                 approvalPending,
                 contraMetadata,
-                voucherNo: `${voucherType.substring(0, 3).toUpperCase()}-${resolvedLocId.toString().slice(-4)}-${counter.seq}`
+                voucherNo,
+                metadata: {
+                    ...(req.body.metadata || {}),
+                    createdBy: String(req.user?._id || req.user?.userId || ""),
+                    systemTimestamp: new Date(),
+                    clientVoucherId: clientVoucherId || undefined
+                }
             });
             await voucher.save();
 
@@ -1318,7 +1507,16 @@ exports.manageVouchers = {
             }
 
             res.status(201).json({ success: true, data: voucher });
-        } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+        } catch (err) { 
+            res.status(500).json({ success: false, message: err.message }); 
+        } finally {
+            if (acquiredLockKey) {
+                // Keep the lock for 3 seconds post-completion to absorb trailing duplicate packets
+                setTimeout(() => {
+                    activeVoucherLocks.delete(acquiredLockKey);
+                }, 3000);
+            }
+        }
     },
     getByLedger: async (req, res) => {
         try {
@@ -1331,7 +1529,8 @@ exports.manageVouchers = {
                 q.locationId = { $in: accessibleIds };
             }
 
-            const vouchers = await Vouchers.find(q).sort({ date: -1 }).lean();
+            const vouchers = await Vouchers.find(q).lean();
+            sortVouchersByDateAndNo(vouchers);
             const ledgerEnrollmentMap = await getLedgerEnrollmentMap(req.tenantModels);
             const enrichedVouchers = vouchers.map(v => {
                 const enrichedEntries = (v.entries || []).map(e => ({
@@ -1378,8 +1577,56 @@ exports.manageVouchers = {
     },
     delete: async (req, res) => {
         try {
-            const { Vouchers } = req.tenantModels;
+            const { Vouchers, Ledgers, Groups } = req.tenantModels;
             const oldVoucher = await Vouchers.findById(req.params.id).lean();
+            if (!oldVoucher) return res.status(404).json({ success: false, message: "Voucher not found" });
+
+            const userRole = req.user?.userRole;
+            const isAdmin = ["CorpAdmin", "userAdmin", "Finance"].includes(userRole);
+
+            // Deletion rules
+            if (oldVoucher.voucherType === "Contra") {
+                const drEntry = (oldVoucher.entries || []).find(e => e.debit > 0);
+                const crEntry = (oldVoucher.entries || []).find(e => e.credit > 0);
+
+                const [drIsBank, crIsBank] = await Promise.all([
+                    checkIsBankLedger(req.tenantModels, drEntry?.ledgerId),
+                    checkIsBankLedger(req.tenantModels, crEntry?.ledgerId)
+                ]);
+                const isBankTransaction = drIsBank || crIsBank;
+
+                if (!isBankTransaction) {
+                    // Only Contra cash transfers need validation by counter party; once approved, cannot be deleted
+                    const isCounterApproved =
+                        oldVoucher.contraMetadata?.receiverApproved ||
+                        oldVoucher.validationStatus === "Validated" ||
+                        oldVoucher.isValidated === true;
+
+                    if (isCounterApproved) {
+                        return res.status(400).json({
+                            success: false,
+                            message: "Cannot delete a counter-approved Contra cash transfer voucher. Validated financial records are protected."
+                        });
+                    }
+                } else {
+                    // Bank deposit and withdrawal can be approved/deleted by any admin only
+                    if (!isAdmin) {
+                        return res.status(403).json({
+                            success: false,
+                            message: "Only an Admin can delete bank deposit and withdrawal vouchers."
+                        });
+                    }
+                }
+            } else {
+                // Non-Contra vouchers (Payment, Receipt, Journal, Sales, Purchase)
+                if (!isAdmin) {
+                    return res.status(403).json({
+                        success: false,
+                        message: "Only an Admin can delete vouchers."
+                    });
+                }
+            }
+
             const oldLedgerIds = oldVoucher ? oldVoucher.entries.map(e => e.ledgerId) : [];
 
             await Vouchers.findByIdAndDelete(req.params.id);
@@ -1547,14 +1794,13 @@ exports.postSalaryJournal = async (req, res) => {
             await voucher.save();
             await recalculateLedgerBalances(req.tenantModels, voucher.entries.map(e => e.ledgerId));
         } else {
-            // Create New Journal Voucher
-            const counterId = `voucher_Journal_${locationId || 'global'}`;
-            const counter = await Counters.findByIdAndUpdate(counterId, { $inc: { seq: 1 } }, { upsert: true, new: true });
+            // Create New Journal Voucher with sequential numeric voucherNo
+            const voucherNo = await generateNextVoucherNo(req.tenantModels);
 
             voucher = new Vouchers({
                 locationId,
                 voucherType: "Journal",
-                voucherNo: `JRN-${(locationId || '0000').toString().slice(-4)}-${counter.seq}`,
+                voucherNo,
                 date: new Date(),
                 narration: `Salary Dues for ${month || 'Current Month'} - ${employeeName}`,
                 leadId,
@@ -1595,14 +1841,13 @@ exports.postSalaryPayment = async (req, res) => {
         const bankLedger = await Ledgers.findById(bankLedgerId);
         if (!bankLedger) return res.status(404).json({ success: false, message: "Bank/Cash ledger not found" });
 
-        // Create Payment Voucher
-        const counterId = `voucher_Payment_${locationId || 'global'}`;
-        const counter = await Counters.findByIdAndUpdate(counterId, { $inc: { seq: 1 } }, { upsert: true, new: true });
+        // Create Payment Voucher with sequential numeric voucherNo
+        const voucherNo = await generateNextVoucherNo(req.tenantModels);
 
         const voucher = new Vouchers({
             locationId,
             voucherType: "Payment",
-            voucherNo: `PMT-${(locationId || '0000').toString().slice(-4)}-${counter.seq}`,
+            voucherNo,
             date: new Date(),
             narration: `Salary Payment for ${month || 'Current Month'} - ${employeeName || ''}`,
             leadId,
@@ -1842,22 +2087,114 @@ exports.approveContraVoucher = async (req, res) => {
                 payerApproved: true,
                 payerDeclarationDate: new Date()
             };
-        } else if (action === "receive") {
+        } else if (action === "receive" || action === "approve") {
+            const drEntry = (voucher.entries || []).find(e => e.debit > 0);
+            const crEntry = (voucher.entries || []).find(e => e.credit > 0);
+            const [drIsBank, crIsBank] = await Promise.all([
+                checkIsBankLedger(req.tenantModels, drEntry?.ledgerId),
+                checkIsBankLedger(req.tenantModels, crEntry?.ledgerId)
+            ]);
+            const isBankTransaction = drIsBank || crIsBank;
+
+            const userRole = req.user?.userRole;
+            const isAdmin = ["CorpAdmin", "userAdmin", "Finance"].includes(userRole);
+
+            if (isBankTransaction && !isAdmin) {
+                return res.status(403).json({ success: false, message: "Bank deposit and withdrawal vouchers can only be approved by an Admin." });
+            }
+
             voucher.contraMetadata = {
                 ...voucher.contraMetadata,
                 receiverApproved: true,
+                approvedByAdmin: isBankTransaction ? true : (voucher.contraMetadata?.approvedByAdmin || false),
+                adminUserId: isBankTransaction ? req.user?._id : voucher.contraMetadata?.adminUserId,
                 receiverDeclarationDate: new Date()
             };
-            // Receiver approved -> clears pending flag!
             voucher.approvalPending = false;
+            voucher.validationStatus = "Validated";
+            voucher.isValidated = true;
+            voucher.isCounterValidated = true;
         } else {
-            return res.status(400).json({ success: false, message: "Invalid action. Must be 'pay' or 'receive'" });
+            return res.status(400).json({ success: false, message: "Invalid action. Must be 'pay', 'receive', or 'approve'" });
         }
 
         await voucher.save();
         const ledgerIds = voucher.entries.map(e => e.ledgerId);
         await recalculateLedgerBalances(req.tenantModels, ledgerIds);
         res.json({ success: true, message: `Voucher successfully declared as ${action}ed.`, data: voucher });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+};
+
+/**
+ * 🔒 Counter-Validate / Admin Approve Voucher
+ */
+exports.validateVoucher = async (req, res) => {
+    try {
+        const { Vouchers } = req.tenantModels;
+        const voucher = await Vouchers.findById(req.params.id);
+        if (!voucher) {
+            return res.status(404).json({ success: false, message: "Voucher not found" });
+        }
+
+        const userRole = req.user?.userRole;
+        const isAdmin = ["CorpAdmin", "userAdmin", "Finance"].includes(userRole);
+        const currentUserId = String(req.user?._id || "");
+
+        if (voucher.voucherType === "Contra") {
+            const drEntry = (voucher.entries || []).find(e => e.debit > 0);
+            const crEntry = (voucher.entries || []).find(e => e.credit > 0);
+
+            const [drIsBank, crIsBank] = await Promise.all([
+                checkIsBankLedger(req.tenantModels, drEntry?.ledgerId),
+                checkIsBankLedger(req.tenantModels, crEntry?.ledgerId)
+            ]);
+            const isBankTransaction = drIsBank || crIsBank;
+
+            if (isBankTransaction) {
+                // Bank deposit and withdrawal can be approved by ANY ADMIN only
+                if (!isAdmin) {
+                    return res.status(403).json({
+                        success: false,
+                        message: "Bank deposit and withdrawal vouchers can only be approved by an Admin."
+                    });
+                }
+                voucher.contraMetadata = {
+                    ...voucher.contraMetadata,
+                    receiverApproved: true,
+                    approvedByAdmin: true,
+                    adminUserId: req.user?._id,
+                    receiverDeclarationDate: new Date()
+                };
+            } else {
+                // Cash transfer between counter-parties: only counter party can validate
+                const receiverUserId = String(voucher.contraMetadata?.receiverUserId || "");
+                if (receiverUserId && receiverUserId !== currentUserId && !isAdmin) {
+                    return res.status(403).json({
+                        success: false,
+                        message: "Cash transfer contra vouchers must be validated by the recipient (counter party)."
+                    });
+                }
+                voucher.contraMetadata = {
+                    ...voucher.contraMetadata,
+                    receiverApproved: true,
+                    receiverDeclarationDate: new Date()
+                };
+            }
+        }
+
+        voucher.approvalPending = false;
+        voucher.validationStatus = "Validated";
+        voucher.isValidated = true;
+        voucher.isCounterValidated = true;
+
+        await voucher.save();
+        const ledgerIds = voucher.entries.map(e => e.ledgerId);
+        await recalculateLedgerBalances(req.tenantModels, ledgerIds);
+
+        req.io.to(req.tenantDbName).emit("voucher:updated", { data: voucher });
+        res.json({ success: true, message: "Voucher validated successfully", data: voucher });
     } catch (err) {
         res.status(500).json({ success: false, message: err.message });
     }
@@ -2137,7 +2474,7 @@ exports.generateVoucherTemplate = async (req, res) => {
                 .reduce((acc, id) => {
                     acc[id] = acc[id] ? acc[id] + 1 : 1;
                     return acc;
-                }, {} as Record<string, number>);
+                }, {});
 
             const sortedLeadIds = Object.keys(leadLookup).sort((a, b) => leadLookup[b] - leadLookup[a]).slice(0, 4);
             if (sortedLeadIds.length > 0) {
@@ -2179,7 +2516,7 @@ exports.generateVoucherTemplate = async (req, res) => {
                 .reduce((acc, id) => {
                     acc[id] = acc[id] ? acc[id] + 1 : 1;
                     return acc;
-                }, {} as Record<string, number>);
+                }, {});
 
             const sortedEmpIds = Object.keys(empLookup).sort((a, b) => empLookup[b] - empLookup[a]).slice(0, 4);
             if (sortedEmpIds.length > 0) {
@@ -2862,10 +3199,7 @@ exports.bulkImportVouchers = async (req, res) => {
             }
 
             const voucherType = plan.voucherType;
-            const counterId = `voucher_${voucherType}_${resolvedLocId}`;
-            const counter = await Counters.findByIdAndUpdate(counterId, { $inc: { seq: 1 } }, { upsert: true, new: true });
-            const prefix = voucherType.substring(0, 3).toUpperCase();
-            const voucherNo = `${prefix}-${resolvedLocId.toString().slice(-4)}-${counter.seq}`;
+            const voucherNo = await generateNextVoucherNo(req.tenantModels);
 
             const fullNarration = plan.narration + (plan.originalRef ? ` (Ref: ${plan.originalRef})` : "");
 
@@ -3131,10 +3465,7 @@ exports.bulkImportSalaryByEnrollment = async (req, res) => {
                 }
 
                 const voucherType = plan.voucherType;
-                const counterId = `voucher_${voucherType}_${resolvedLocId}`;
-                const counter = await Counters.findByIdAndUpdate(counterId, { $inc: { seq: 1 } }, { upsert: true, new: true });
-                const prefix = voucherType.substring(0, 3).toUpperCase();
-                const voucherNo = `${prefix}-${resolvedLocId.toString().slice(-4)}-${counter.seq}`;
+                const voucherNo = await generateNextVoucherNo(req.tenantModels);
 
                 const newVoucher = new Vouchers({
                     locationId: resolvedLocId,

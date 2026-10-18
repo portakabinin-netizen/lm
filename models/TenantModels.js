@@ -19,10 +19,48 @@ profileMasterSchema.set('timestamps', true);
 profileMasterSchema.set('collection', 'profileMaster');
 
 // 2. Product & Category
-const categorySchema = new mongoose.Schema({
-  name: { type: String, required: true, trim: true },
-  description: { type: String, trim: true },
-});
+const productSubSchema = new mongoose.Schema(
+  {
+    productName: { type: String, required: true, trim: true },
+    description: { type: String, trim: true },
+    hsn_sac: { type: String, trim: true },
+    UoM: { type: String, default: 'PCS' },
+    margin: { type: Number, default: 15 },
+    price: { type: Number, default: 0 },
+    buyPrice: { type: Number, default: 0 },
+    salePrice: { type: Number, default: 0 },
+    tax_rate: { type: Number, default: 18 },
+    active: { type: Boolean, default: true },
+  },
+  { timestamps: true }
+);
+
+const categorySchema = new mongoose.Schema(
+  {
+    categoryName: { type: String, required: true, trim: true },
+    name: { type: String, trim: true },
+    hsn_sac: { type: String, trim: true },
+    description: { type: String, trim: true },
+    products: { type: [productSubSchema], default: [] },
+  },
+  { timestamps: true }
+);
+
+const vendorRateSchema = new mongoose.Schema(
+  {
+    vendorId: { type: mongoose.Schema.Types.ObjectId, ref: 'Parties', required: true },
+    categoryId: { type: mongoose.Schema.Types.ObjectId, ref: 'Categories', required: true },
+    categoryName: { type: String, trim: true },
+    productId: { type: mongoose.Schema.Types.ObjectId, required: true },
+    productName: { type: String, trim: true },
+    description: { type: String, trim: true },
+    price: { type: Number, default: 0 },
+    buyPrice: { type: Number, default: 0 },
+    salePrice: { type: Number, default: 0 },
+    UoM: { type: String, default: 'PCS' },
+  },
+  { timestamps: true }
+);
 
 const productSchema = new mongoose.Schema(
   {
@@ -391,9 +429,12 @@ const voucherSchema = new mongoose.Schema(
       receiverDeclarationDate: { type: Date },
     },
 
+    clientVoucherId: { type: String, index: true, sparse: true },
+
     metadata: {
       createdBy: { type: String },
       systemTimestamp: { type: Date, default: Date.now },
+      clientVoucherId: { type: String },
     },
   },
   { timestamps: true }
@@ -503,6 +544,7 @@ const getTenantModels = (connection) => {
       connection.models.ProfileMaster || connection.model('ProfileMaster', profileMasterSchema),
     Categories: connection.models.Categories || connection.model('Categories', categorySchema),
     Products: connection.models.Products || connection.model('Products', productSchema),
+    VendorRates: connection.models.VendorRates || connection.model('VendorRates', vendorRateSchema),
     Parties: connection.models.Parties || connection.model('Parties', partySchema),
     Employees: connection.models.Employees || connection.model('Employees', employeeSchema),
     Leads: connection.models.Leads || connection.model('Leads', leadSchema),

@@ -9,11 +9,11 @@ const userMaster = require("../models/userMaster");
  */
 const tenantMiddleware = async (req, res, next) => {
     try {
-        // 1. Identification (Priority: Token > Header > Body > Query)
-        let dbName = req.user?.dbName 
-                  || req.headers['x-tenant-id']       // ← Frontend sends this explicitly
-                  || req.body?.dbName 
-                  || req.query?.dbName;
+        // 1. Identification (Priority: Header > Query > Token > Body)
+        let dbName = req.headers['x-tenant-id']       // ← Frontend sends this explicitly for active corporate
+                  || req.query?.dbName
+                  || req.user?.dbName 
+                  || req.body?.dbName;
         
         if (!dbName) {
             console.error("❌ [Middleware] No dbName found in request");

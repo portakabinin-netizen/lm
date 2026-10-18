@@ -7,8 +7,7 @@
  * to the NEW multi-tenant `Vouchers`, `Ledgers`, `Leads`, and `Employees` models.
  */
 
-const mongoose = require("mongoose");
-const { ensureLedgerFolioInternal, recalculateLedgerBalances } = require("./FinanceController");
+const { ensureLedgerFolioInternal, recalculateLedgerBalances, generateNextVoucherNo } = require("./FinanceController");
 
 const PAYMENT_TYPES = [
     "vendor_payment", "labour_charge", "freight_cartage", "misc_expense", 
@@ -274,13 +273,12 @@ exports.createTransaction = async (req, res) => {
             entries.push({ ledgerId: partyLedger._id, ledgerName: partyLedger.ledgerName, debit: 0, credit: amount });
         }
 
-        const counterId = `voucher_${direction}_${locationId}`;
-        const counter = await Counters.findByIdAndUpdate(counterId, { $inc: { seq: 1 } }, { upsert: true, new: true });
+        const voucherNo = await generateNextVoucherNo(req.tenantModels);
         
         const voucher = new Vouchers({
             locationId,
             voucherType: direction === "PAYMENT" ? "Payment" : "Receipt",
-            voucherNo: `${direction.substring(0,3)}-${locationId.toString().slice(-4)}-${counter.seq}`,
+            voucherNo,
             date: txnData.txn_date || new Date(),
             narration: txnData.description || `${direction} via Dashboard`,
             entries: entries,

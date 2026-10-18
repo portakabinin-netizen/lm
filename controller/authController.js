@@ -357,9 +357,11 @@ exports.login = async (req, res) => {
             activeLink = list.find(l => String(l._id) === String(targetCorpId) || l.dbName === targetCorpId) || list[0];
         }
 
+        const corpId = String(activeLink._id || activeLink.corporateId || activeLink.dbName);
         const token = jwt.sign({
             userId: String(user._id),
             userRole: user.userRole,
+            corporateId: corpId,
             dbName: activeLink.dbName,
             locationId: activeLink.locationId || null,
             corporateName: activeLink.corporateName || "",
@@ -373,6 +375,7 @@ exports.login = async (req, res) => {
                 token,
                 userId: String(user._id),
                 userRole: user.userRole,
+                corporateId: corpId,
                 dbName: activeLink.dbName,
                 corporateName: activeLink.corporateName || "",
                 corporatePAN: activeLink.corporatePAN || "",
@@ -597,9 +600,11 @@ exports.switchCorporate = async (req, res) => {
         }
 
 
+        const corpId = String(activeLink._id || activeLink.corporateId || activeLink.dbName);
         const token = jwt.sign({
             userId: String(user._id),
             userRole: user.userRole,
+            corporateId: corpId,
             dbName: activeLink.dbName,
             locationId: activeLink.locationId || null,
             corporateName: activeLink.corporateName || "",
@@ -613,6 +618,7 @@ exports.switchCorporate = async (req, res) => {
                 token,
                 userId: String(user._id),
                 userRole: user.userRole,
+                corporateId: corpId,
                 dbName: activeLink.dbName,
                 corporateName: activeLink.corporateName || "",
                 corporatePAN: activeLink.corporatePAN || "",

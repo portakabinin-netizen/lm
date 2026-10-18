@@ -89,10 +89,13 @@ app.use("/api/staff", require("./routes/staffRouter"));
 // 🛡️ GUARD ALERTNESS MONITORING
 app.use("/api/monitoring", require("./routes/monitoringRouter"));
 
-// Secure Uploads (Tenant Aware)
+// Secure Uploads & Services (Tenant Aware)
 const authMiddleware = require("./middleware/authMiddleware");
 const tenantMiddleware = require("./middleware/tenantMiddleware");
 const UserCorpController = require("./controller/UserCorpController");
+
+// 📦 PRODUCT, CATEGORY, VENDOR RATES & BULK UPLOAD
+app.use("/api/product", authMiddleware, tenantMiddleware, require("./routes/productsRouter"));
 
 app.use("/api/upload", authMiddleware, tenantMiddleware, uploadRouter);
 
