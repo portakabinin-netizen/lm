@@ -94,3 +94,8 @@ vite.config.ts.timestamp-*
 .yarn/releases
 .yarn/sdks
 .yarn/versions
+
+# ===============================================
+# Ignoring unneccessary file
+# ==============================================
+scratch_test.js

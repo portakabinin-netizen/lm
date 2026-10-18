@@ -1688,16 +1688,30 @@ exports.manageEmployees = {
         }
 
         if (Object.keys(dateFilter).length > 0) {
-          // Include either the date range OR anything that is still "On Duty"
-          if (q.employeeId) {
-            q = {
-              employeeId: q.employeeId,
-              $or: [{ date: dateFilter }, { dutyEnd: { $exists: false } }, { dutyEnd: null }],
-            };
+          // If query specifies a historical period (to_date is in past), query date: dateFilter directly.
+          // This avoids scanning open shifts from current dates and lets MongoDB use the date index directly.
+          const isHistorical = dateFilter.$lte && (new Date(dateFilter.$lte).getTime() < (Date.now() - 24 * 60 * 60 * 1000));
+          if (isHistorical) {
+            if (q.employeeId) {
+              q = {
+                employeeId: q.employeeId,
+                date: dateFilter,
+              };
+            } else {
+              q = { date: dateFilter };
+            }
           } else {
-            q = {
-              $or: [{ date: dateFilter }, { dutyEnd: { $exists: false } }, { dutyEnd: null }],
-            };
+            // Current or ongoing period: Include either the date range OR anything that is still "On Duty"
+            if (q.employeeId) {
+              q = {
+                employeeId: q.employeeId,
+                $or: [{ date: dateFilter }, { dutyEnd: { $exists: false } }, { dutyEnd: null }],
+              };
+            } else {
+              q = {
+                $or: [{ date: dateFilter }, { dutyEnd: { $exists: false } }, { dutyEnd: null }],
+              };
+            }
           }
         }
       } else if (!q.employeeId) {
@@ -1709,10 +1723,11 @@ exports.manageEmployees = {
           $or: [{ date: { $gte: defaultStart } }, { dutyEnd: { $exists: false } }, { dutyEnd: null }],
         };
       }
+      const limitVal = req.query.limit ? parseInt(req.query.limit, 10) : 5000;
       const data = await Attendance.find(q)
-        .select('-geoHistory')
+        .select('_id employeeId employeeType leadId clientId siteId site_name shiftCode shiftPeriod shiftGroupName date status dutyLevel rate dutyStart dutyEnd markedByUserName')
         .sort({ date: -1 })
-        .limit(1000)
+        .limit(limitVal)
         .lean();
 
       const userMaster = require('../models/userMaster');
@@ -1740,13 +1755,13 @@ exports.manageEmployees = {
 
       const [usersList, empsList, leadsList] = await Promise.all([
         uniqueUserMasterIds.length > 0
-          ? userMaster.find({ _id: { $in: uniqueUserMasterIds } }).lean()
+          ? userMaster.find({ _id: { $in: uniqueUserMasterIds } }).select('_id name userDisplayName userProfileImage email mobile role').lean()
           : Promise.resolve([]),
         uniqueEmployeeIds.length > 0
-          ? Employees.find({ _id: { $in: uniqueEmployeeIds } }).lean()
+          ? Employees.find({ _id: { $in: uniqueEmployeeIds } }).select('_id name enrollment_no role mobile photo photo_url daily_rate rate employmentHistory').lean()
           : Promise.resolve([]),
         uniqueLeadIds.length > 0
-          ? Leads.find({ _id: { $in: uniqueLeadIds } }).lean()
+          ? Leads.find({ _id: { $in: uniqueLeadIds } }).select('_id sender_name displayName client_name siteShifts status').lean()
           : Promise.resolve([]),
       ]);
 
@@ -2166,6 +2181,108 @@ exports.manageEmployees = {
       });
     } catch (err) {
       res.status(500).json({ success: false, message: err.message });
+    }
+  },
+  cleanReconcileAttendance: async (req, res) => {
+    try {
+      const { Attendance } = req.tenantModels;
+      const { month, year } = req.body;
+      const targetYear = parseInt(year, 10);
+      const targetMonth = parseInt(month, 10);
+
+      if (isNaN(targetYear) || isNaN(targetMonth)) {
+        return res.status(400).json({ success: false, message: 'Invalid month or year' });
+      }
+
+      const dStart = new Date(Date.UTC(targetYear, targetMonth, 1, 0, 0, 0, 0));
+      const dEnd = new Date(Date.UTC(targetYear, targetMonth + 1, 0, 23, 59, 59, 999));
+
+      const logs = await Attendance.find({
+        date: { $gte: dStart, $lte: dEnd }
+      }).lean();
+
+      let mergedCount = 0;
+      let deletedFragmentsCount = 0;
+      let halfDutyAdjustedCount = 0;
+      let normalizedStatusCount = 0;
+
+      // 1. Merge fragmented crash logs for same employee, date, site, and shift
+      const groupMap = new Map();
+      logs.forEach(log => {
+        const rawDate = log.date || log.dutyStart;
+        const dt = new Date(rawDate);
+        const dayStr = `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}-${String(dt.getUTCDate()).padStart(2, '0')}`;
+        const empId = String(log.employeeId || log.markedByUserId || '');
+        const leadId = String(log.leadId || log.clientId || log.siteId || 'none');
+        const shift = String(log.shiftCode || 'G').trim().toUpperCase();
+
+        const key = `${dayStr}_${empId}_${leadId}_${shift}`;
+        if (!groupMap.has(key)) groupMap.set(key, []);
+        groupMap.get(key).push(log);
+      });
+
+      for (const [key, groupLogs] of groupMap.entries()) {
+        if (groupLogs.length > 1) {
+          mergedCount++;
+          groupLogs.sort((a, b) => {
+            const tA = a.dutyStart ? new Date(a.dutyStart).getTime() : 0;
+            const tB = b.dutyStart ? new Date(b.dutyStart).getTime() : 0;
+            return tA - tB;
+          });
+          const primary = groupLogs[0];
+          const duplicates = groupLogs.slice(1);
+
+          let maxEnd = primary.dutyEnd;
+          for (const d of duplicates) {
+            if (d.dutyEnd && (!maxEnd || new Date(d.dutyEnd).getTime() > new Date(maxEnd).getTime())) {
+              maxEnd = d.dutyEnd;
+            }
+          }
+
+          if (maxEnd && maxEnd !== primary.dutyEnd) {
+            await Attendance.findByIdAndUpdate(primary._id, { dutyEnd: maxEnd });
+          }
+
+          const dupIds = duplicates.map(d => d._id);
+          await Attendance.deleteMany({ _id: { $in: dupIds } });
+          deletedFragmentsCount += dupIds.length;
+        }
+      }
+
+      // 2. Normalize statuses
+      const remainingLogs = await Attendance.find({
+        date: { $gte: dStart, $lte: dEnd }
+      }).lean();
+
+      for (const log of remainingLogs) {
+        const raw = String(log.status || '').trim().toLowerCase();
+        let normalized = 'Present';
+        if (raw === 'p' || raw === 'present') normalized = 'Present';
+        else if (raw === 'w' || raw === 'weekly off' || raw === 'wo') normalized = 'Weekly Off';
+        else if (raw === 'l' || raw === 'leave' || raw === 'paid leave') normalized = 'Paid Leave';
+        else if (raw === 'a' || raw === 'absent') normalized = 'Absent';
+        else if (raw === 'nr' || raw === 'no reliever') normalized = 'NR';
+        else if (raw === 'half day' || raw === 'p1/2' || raw === 'p½') normalized = 'Half Day';
+
+        if (normalized !== log.status) {
+          await Attendance.findByIdAndUpdate(log._id, { status: normalized });
+          normalizedStatusCount++;
+        }
+      }
+
+      return res.json({
+        success: true,
+        message: 'Reconciliation completed',
+        data: {
+          mergedCount,
+          deletedFragmentsCount,
+          halfDutyAdjustedCount,
+          normalizedStatusCount
+        }
+      });
+    } catch (err) {
+      console.error('cleanReconcileAttendance error:', err);
+      return res.status(500).json({ success: false, message: err.message });
     }
   },
   deleteAttendance: async (req, res) => {
