@@ -1068,6 +1068,9 @@ exports.manageEmployees = {
           employmentHistory: [],
           selectedShift: 'G',
           shiftGroupName: 'MANG',
+          location: u.location || null,
+          lat: u.location?.lat ?? null,
+          long: u.location?.long ?? null,
         };
         userMapById.set(String(u._id), mappedUser);
         if (mappedUser.mobile) {
@@ -1119,6 +1122,11 @@ exports.manageEmployees = {
           matchedUser.monthly_rate = emp.monthly_rate || matchedUser.monthly_rate;
           matchedUser.ledgerId = emp.ledgerId || matchedUser.ledgerId;
           if (emp.active !== undefined) matchedUser.active = emp.active;
+          if (!matchedUser.location && emp.location) {
+            matchedUser.location = emp.location;
+            matchedUser.lat = emp.location?.lat ?? null;
+            matchedUser.long = emp.location?.long ?? null;
+          }
           processedUserIds.add(String(matchedUser._id));
         } else {
           mergedList.push(emp);
@@ -3664,22 +3672,24 @@ exports.manageEmployees = {
       const foundEmpIds = emps.map((e) => String(e._id));
       const missingIds = employeeIds.filter((id) => !foundEmpIds.includes(String(id)));
 
+      // Query userMaster for both linked user_id and direct employeeId references
       let users = [];
       try {
         const userIds = emps
           .map((e) => e.user_id)
           .filter((id) => id && mongoose.Types.ObjectId.isValid(String(id)));
 
-        // Add missing IDs to the query if they are valid ObjectIds
-        const queryIds = [
-          ...userIds,
-          ...missingIds.filter((id) => mongoose.Types.ObjectId.isValid(String(id))),
-        ];
+        const queryIds = Array.from(
+          new Set([
+            ...userIds,
+            ...employeeIds.filter((id) => mongoose.Types.ObjectId.isValid(String(id))),
+          ])
+        );
 
         if (queryIds.length > 0) {
           users = await userMaster
             .find({ _id: { $in: queryIds } })
-            .select('userDisplayName userProfileImage userRole userMobile')
+            .select('userDisplayName userProfileImage userRole userMobile location')
             .lean()
             .maxTimeMS(5000);
         }
@@ -3687,8 +3697,8 @@ exports.manageEmployees = {
         // Non-fatal
       }
 
-      // ─── Employee-only role whitelist ───────────────────────────────────────
-      // Only users saved in Employees or userMaster with a real staff role
+      // ─── Employee & Registered Users Role Whitelist ─────────────────────────
+      // Only users saved in Employees or userMaster with a staff/registered user role
       // should appear in live tracking. Clients, Guests, and Vendors are excluded.
       const EMPLOYEE_ROLES = new Set([
         'corpadmin', 'useradmin', 'admin',
@@ -3714,16 +3724,23 @@ exports.manageEmployees = {
         const user = users.find(
           (u) => String(u._id) === String(emp?.user_id) || String(u._id) === targetId
         );
-        const displayName = emp?.name || user?.userDisplayName || 'User';
-        const resolvedRole = emp?.role || user?.userRole || 'Staff';
 
-        // An attendance record is for a real employee if:
+        if (!currentLat || !currentLong) {
+          currentLat = a.startLat ?? a.siteLat ?? user?.location?.lat ?? emp?.location?.lat ?? null;
+          currentLong = a.startLong ?? a.siteLong ?? user?.location?.long ?? emp?.location?.long ?? null;
+        }
+        const displayName = user?.userDisplayName || emp?.name || a.markedByUserName || 'Staff';
+        const resolvedRole = a.role || user?.userRole || emp?.userRole || emp?.role || 'Staff';
+
+        // An attendance record is for a real employee/staff if:
         //  (a) The employeeId was found in the Employees collection, OR
-        //  (b) The user was found in userMaster AND has a staff/admin role
+        //  (b) The user was found in userMaster and not an excluded role, OR
+        //  (c) The attendance record itself has a valid non-excluded role
         const isFromEmployees = !!emp;
         const roleLower = resolvedRole.toLowerCase();
-        const isFromUserMaster = !!user && !EXCLUDED_ROLES.has(roleLower) && EMPLOYEE_ROLES.has(roleLower);
-        const isEmployee = isFromEmployees || isFromUserMaster;
+        const isFromUserMaster = !!user && !EXCLUDED_ROLES.has(roleLower);
+        const isAttendanceStaff = !EXCLUDED_ROLES.has(roleLower) && (EMPLOYEE_ROLES.has(roleLower) || !!a.role);
+        const isEmployee = isFromEmployees || isFromUserMaster || isAttendanceStaff;
 
         return {
           ...a,
@@ -3737,14 +3754,14 @@ exports.manageEmployees = {
       });
 
 
-      // ─── Filter: only show actual employees in live tracking ───────────────
+      // ─── Filter: only show actual employees & registered staff in live tracking ──
       // Always exclude Clients, Guests, Vendors regardless of requester role.
       let employeeData = data.filter((item) => item.isEmployee);
 
       // ─── Admin role filter ─────────────────────────────────────────────────
       // CorpAdmin/userAdmin/Admin should see all active workers & registered users
       // but NOT other admin/corpadmin users — admins don't track other admins.
-      const requesterRole = (req.user?.userRole || '').toLowerCase();
+      const requesterRole = (req.user?.userRole || req.user?.role || '').toLowerCase();
       const ADMIN_ROLES_FILTER = new Set(['corpadmin', 'useradmin', 'admin']);
       if (ADMIN_ROLES_FILTER.has(requesterRole)) {
         employeeData = employeeData.filter((item) => {
