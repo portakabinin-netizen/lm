@@ -1725,7 +1725,7 @@ exports.manageEmployees = {
       }
       const limitVal = req.query.limit ? parseInt(req.query.limit, 10) : 5000;
       const data = await Attendance.find(q)
-        .select('_id employeeId employeeType leadId clientId siteId site_name shiftCode shiftPeriod shiftGroupName date status dutyLevel rate dutyStart dutyEnd markedByUserName')
+        .select('_id employeeId employeeType leadId clientId siteId site_name shiftCode shiftPeriod shiftGroupName date status dutyLevel rate dutyStart dutyEnd markedByUserName geoHistory')
         .sort({ date: -1 })
         .limit(limitVal)
         .lean();
@@ -2098,10 +2098,9 @@ exports.manageEmployees = {
         else if (ds.shiftName) defaultShiftCode = ds.shiftName.substring(0, 1);
       }
 
-      // Exemption check for geoHistory: admins and workers are exempt.
+      // Exemption check for geoHistory: only admins are exempt (admins don't get tracked).
       const isAdminRole = ['corpadmin', 'useradmin', 'admin'].includes(role.toLowerCase());
-      const isEmployeeCollection = !!employeeDoc;
-      const isExemptUser = isAdminRole || isEmployeeCollection;
+      const isExemptUser = isAdminRole;
       const finalGeoHistory = isExemptUser ? [] : geoHistory || [];
 
       // Merge site-shift override on top of defaults (site always wins when available)
@@ -2321,11 +2320,10 @@ exports.manageEmployees = {
         return res.status(404).json({ success: false, message: 'Attendance record not found' });
       }
 
-      // Exemption check: Admins and workers are exempt.
+      // Exemption check: only admins are exempt from geo tracking.
       const recordRole = (record.role || '').toLowerCase();
       const isAdminRole = ['corpadmin', 'useradmin', 'admin'].includes(recordRole);
-      const isWorker = record.employeeType === 'Employees';
-      const isExemptUser = isAdminRole || isWorker;
+      const isExemptUser = isAdminRole;
 
       const allowed = [
         'forcedOff',
@@ -2596,7 +2594,7 @@ exports.manageEmployees = {
         ''
       ).toLowerCase();
       const isAdminRole = ['corpadmin', 'useradmin', 'admin'].includes(checkRole);
-      const isExemptUser = isAdminRole || isWorker;
+      const isExemptUser = isAdminRole;
 
       if (type === 'ON' && emp && isWorker && !emp.shiftGroupName) {
         // Find employee document to update
@@ -3413,7 +3411,7 @@ exports.manageEmployees = {
         ''
       ).toLowerCase();
       const isAdminRole = ['corpadmin', 'useradmin', 'admin'].includes(checkRole);
-      const isExemptUser = isAdminRole || isWorker;
+      const isExemptUser = isAdminRole;
 
       // 2. Close current shift
       current.dutyEnd = now;
@@ -3632,7 +3630,6 @@ exports.manageEmployees = {
         active = await Attendance.find({
           $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }, { dutyEnd: '' }],
         })
-          .select({ geoHistory: { $slice: -1 } })
           .lean();
       } catch (dbErr) {
         console.error('❌ [STEP 1] FAILED — Attendance.find() threw:', dbErr.message);
@@ -3742,10 +3739,20 @@ exports.manageEmployees = {
 
       // ─── Filter: only show actual employees in live tracking ───────────────
       // Always exclude Clients, Guests, Vendors regardless of requester role.
-      const employeeData = data.filter((item) => item.isEmployee);
+      let employeeData = data.filter((item) => item.isEmployee);
 
-      // Project managers only see non-admin staff (already handled in marquee),
-      // but the base exclusion of non-employees applies to everyone.
+      // ─── Admin role filter ─────────────────────────────────────────────────
+      // CorpAdmin/userAdmin/Admin should see all active workers & registered users
+      // but NOT other admin/corpadmin users — admins don't track other admins.
+      const requesterRole = (req.user?.userRole || '').toLowerCase();
+      const ADMIN_ROLES_FILTER = new Set(['corpadmin', 'useradmin', 'admin']);
+      if (ADMIN_ROLES_FILTER.has(requesterRole)) {
+        employeeData = employeeData.filter((item) => {
+          const staffRole = (item.role || '').toLowerCase();
+          return !ADMIN_ROLES_FILTER.has(staffRole);
+        });
+      }
+
       res.json({ success: true, data: employeeData });
 
     } catch (err) {
