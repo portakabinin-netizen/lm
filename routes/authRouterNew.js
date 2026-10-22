@@ -46,6 +46,7 @@ router.post("/reset-password", authController.resetPassword);
 // Apply authMiddleware to all routes defined below this point
 
 router.use(authMiddleware);
+router.get("/me", authController.getMe);
 router.post("/resolve-guest", authController.resolveGuestRole);
 router.post("/switch-corporate", authController.switchCorporate);
 router.post("/update-profile-image", tenantMiddleware, authController.updateProfileImage);

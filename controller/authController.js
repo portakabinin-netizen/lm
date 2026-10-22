@@ -581,24 +581,70 @@ exports.resolveGuestRole = async (req, res) => {
     }
 };
 
+exports.getMe = async (req, res) => {
+    try {
+        const user = await userMaster.findById(req.user.userId).lean();
+        if (!user) {
+            return res.status(404).json({ success: false, message: "User not found" });
+        }
+        const list = user.accessCorporate || [];
+        const currentDb = req.user.dbName || (list[0]?.dbName);
+        const activeLink = list.find(l => 
+            String(l.dbName || "").toLowerCase() === String(currentDb || "").toLowerCase()
+        ) || list[0] || {};
+
+        const corpId = String(activeLink._id || activeLink.corporateId || activeLink.dbName || "");
+        return res.json({
+            success: true,
+            userSession: {
+                userId: String(user._id),
+                userRole: user.userRole,
+                corporateId: corpId,
+                corpAdminId: activeLink.corporateId || corpId,
+                dbName: activeLink.dbName || "",
+                corporateName: activeLink.corporateName || "",
+                corporatePAN: activeLink.corporatePAN || "",
+                corporateTagName: activeLink.corporateTagName || "",
+                CorpProfileImage: activeLink.CorpProfileImage || "",
+                locationId: activeLink.locationId || null,
+                userDisplayName: user.userDisplayName,
+                name: user.userDisplayName,
+                userProfileImage: user.userProfileImage || "",
+                mobile: user.userMobile,
+                accessCorporate: list,
+                accessAllow: true
+            }
+        });
+    } catch (err) {
+        console.error("getMe Error:", err.message);
+        return res.status(500).json({ success: false, message: err.message });
+    }
+};
+
 exports.switchCorporate = async (req, res) => {
     try {
-        const { corporateId } = req.body;
+        const target = String(req.body.corporateId || req.body.targetCorpId || req.body.dbName || "").trim();
+        if (!target) {
+            return res.status(400).json({ success: false, message: "Corporate ID or dbName required" });
+        }
 
         const user = await userMaster.findById(req.user.userId);
         if (!user) {
-
             return res.status(404).json({ success: false, message: "User not found" });
         }
 
         const list = user.accessCorporate || [];
-        const activeLink = list.find(l => String(l._id) === String(corporateId) || l.dbName === corporateId);
+        const activeLink = list.find(l => 
+            String(l._id) === target || 
+            String(l.dbName || "").toLowerCase() === target.toLowerCase() ||
+            String(l.corporatePAN || "").toUpperCase() === target.toUpperCase() ||
+            String(l.corporateName || "").toLowerCase() === target.toLowerCase()
+        );
 
         if (!activeLink) {
-            console.log(`❌ [Switch] Target ${corporateId} not found in user's access list. Available:`, list.map(l => l.dbName));
+            console.log(`[Switch] Target ${target} not found in user access list. Available:`, list.map(l => l.dbName));
             return res.status(403).json({ success: false, message: "Target corporate not found or unauthorized" });
         }
-
 
         const corpId = String(activeLink._id || activeLink.corporateId || activeLink.dbName);
         const token = jwt.sign({
@@ -614,17 +660,22 @@ exports.switchCorporate = async (req, res) => {
         }, process.env.JWT_SECRET, { expiresIn: "90d" });
 
         return res.json({
-            success: true, token, userSession: {
+            success: true, 
+            token, 
+            userSession: {
                 token,
                 userId: String(user._id),
                 userRole: user.userRole,
                 corporateId: corpId,
+                corpAdminId: activeLink.corporateId || corpId,
                 dbName: activeLink.dbName,
                 corporateName: activeLink.corporateName || "",
                 corporatePAN: activeLink.corporatePAN || "",
+                corporateTagName: activeLink.corporateTagName || "",
                 CorpProfileImage: activeLink.CorpProfileImage || "",
                 locationId: activeLink.locationId || null,
                 userDisplayName: user.userDisplayName,
+                name: user.userDisplayName,
                 userProfileImage: user.userProfileImage || "",
                 mobile: user.userMobile,
                 accessCorporate: list,
@@ -632,7 +683,7 @@ exports.switchCorporate = async (req, res) => {
             }
         });
     } catch (err) {
-        console.error("🔴 Switch Corporate Error:", err);
+        console.error("Switch Corporate Error:", err);
         return res.status(500).json({ success: false, message: "Internal Error" });
     }
 };

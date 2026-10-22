@@ -1036,9 +1036,12 @@ exports.manageEmployees = {
 
       const userMaster = require('../models/userMaster');
       const tenantDbName = req.tenantDbName || req.user?.dbName;
-      const uQuery = { userActive: true };
+      const uQuery = { userActive: { $ne: false } };
       if (tenantDbName) {
-        uQuery.accessCorporate = { $elemMatch: { dbName: tenantDbName, isActive: { $ne: false } } };
+        uQuery.$or = [
+          { accessCorporate: { $elemMatch: { dbName: { $regex: new RegExp(`^${tenantDbName}$`, 'i') }, isActive: { $ne: false } } } },
+          { 'accessCorporate.0': { $exists: false } }
+        ];
       }
       const userMasterList = await userMaster.find(uQuery).lean();
 
@@ -2503,17 +2506,46 @@ exports.manageEmployees = {
       if (employeeDoc) emp = { ...employeeDoc };
       if (userDoc) emp = { ...emp, ...userDoc };
 
-      const linkedIds = [queryId];
-      if (emp?.user_id) linkedIds.push(new mongoose.Types.ObjectId(emp.user_id));
-      if (emp?._id && String(emp._id) !== String(queryId)) linkedIds.push(emp._id);
+      const allLinkedIds = [];
+      const addLinkedId = (val) => {
+        if (!val) return;
+        const s = String(val._id || val);
+        if (s && !allLinkedIds.some(x => String(x) === s)) {
+          allLinkedIds.push(s);
+          if (mongoose.isValidObjectId(s)) {
+            try { allLinkedIds.push(new mongoose.Types.ObjectId(s)); } catch(e){}
+          }
+        }
+      };
+      addLinkedId(employeeId);
+      addLinkedId(queryId);
+      if (emp?.user_id) addLinkedId(emp.user_id);
+      if (emp?._id) addLinkedId(emp._id);
+      if (userDoc?._id) addLinkedId(userDoc._id);
+      if (employeeDoc?._id) addLinkedId(employeeDoc._id);
 
-      // Find an open session (dutyEnd not exists or null) using any linked IDs
-      const active = await Attendance.findOne({
-        employeeId: { $in: linkedIds },
-        $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }],
+      // Find an open session (dutyEnd not exists, null, or empty string) using all linked IDs (both ObjectId and String)
+      let active = await Attendance.findOne({
+        employeeId: { $in: allLinkedIds },
+        $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }, { dutyEnd: '' }],
       })
         .sort({ dutyStart: -1 })
         .lean();
+
+      // Fallback: also check if session marked with markedByUserName or matching mobile/user_id
+      if (!active && (userDoc?._id || employeeDoc?._id)) {
+        const fallbacks = [];
+        if (userDoc?.userDisplayName) fallbacks.push({ markedByUserName: userDoc.userDisplayName });
+        if (userDoc?._id) fallbacks.push({ employeeId: userDoc._id });
+        if (fallbacks.length > 0) {
+          active = await Attendance.findOne({
+            $or: fallbacks,
+            $and: [{ $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }, { dutyEnd: '' }] }],
+          })
+            .sort({ dutyStart: -1 })
+            .lean();
+        }
+      }
 
       res.json({ success: true, data: active || null });
     } catch (err) {
@@ -2672,14 +2704,28 @@ exports.manageEmployees = {
         }
       }
 
-      const linkedIds = [queryId];
-      if (emp?.user_id) linkedIds.push(new mongoose.Types.ObjectId(emp.user_id));
-      if (emp?._id && String(emp._id) !== String(queryId)) linkedIds.push(emp._id);
+      const allLinkedIds = [];
+      const addLinkedId = (val) => {
+        if (!val) return;
+        const s = String(val._id || val);
+        if (s && !allLinkedIds.some(x => String(x) === s)) {
+          allLinkedIds.push(s);
+          if (mongoose.isValidObjectId(s)) {
+            try { allLinkedIds.push(new mongoose.Types.ObjectId(s)); } catch(e){}
+          }
+        }
+      };
+      addLinkedId(employeeId);
+      addLinkedId(queryId);
+      if (emp?.user_id) addLinkedId(emp.user_id);
+      if (emp?._id) addLinkedId(emp._id);
+      if (userDoc?._id) addLinkedId(userDoc._id);
+      if (employeeDoc?._id) addLinkedId(employeeDoc._id);
 
-      // 2. Find open session using any linked IDs
+      // 2. Find open session using all linked IDs (both ObjectId and String)
       let record = await Attendance.findOne({
-        employeeId: { $in: linkedIds },
-        $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }],
+        employeeId: { $in: allLinkedIds },
+        $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }, { dutyEnd: '' }],
       }).sort({ dutyStart: -1 });
 
       if (type === 'ON') {
@@ -2854,7 +2900,7 @@ exports.manageEmployees = {
             });
           }
 
-          if (diffMins > 60) {
+          if (diffMins > 60 && !req.body.adminOverride && !req.body.force && !req.body.permissionGranted && !req.body.adminApprovedLate) {
             if (req.body.requestPermission) {
               const { Messages } = req.tenantModels;
               if (Messages) {
@@ -3744,6 +3790,10 @@ exports.manageEmployees = {
 
         return {
           ...a,
+          lat: currentLat,
+          long: currentLong,
+          startLat: a.startLat ?? currentLat,
+          startLong: a.startLong ?? currentLong,
           location: { lat: currentLat, long: currentLong },
           displayName,
           photo: emp?.photo_url || user?.userProfileImage || null,
@@ -3821,6 +3871,246 @@ exports.manageEmployees = {
       res.json({ success: true, suggestedRelieverId: suggestedId, nextShiftCode: nextCode, source: 'live' });
     } catch (err) {
       res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  /**
+   * Request attendance permission (late start or early end)
+   * POST /service/hr/attendance/permission-request
+   */
+  requestAttendancePermission: async (req, res) => {
+    try {
+      const { employeeId, attendanceId, reason, message, shiftCode, shiftStartTime, minutesLate, requestedAt } = req.body;
+      const targetEmpId = employeeId || req.user?.userId || req.user?._id;
+      const { Attendance, Employees, Messages } = req.tenantModels || {};
+      const userMaster = require('../models/userMaster');
+
+      let displayName = req.user?.userDisplayName || req.user?.name || 'Staff';
+      let userRole = req.user?.userRole || req.user?.role || 'Project';
+
+      if (targetEmpId) {
+        if (Employees && mongoose.isValidObjectId(targetEmpId)) {
+          const emp = await Employees.findById(targetEmpId).lean();
+          if (emp) {
+            displayName = emp.name || displayName;
+            userRole = emp.role || userRole;
+          }
+        }
+        if (mongoose.isValidObjectId(targetEmpId)) {
+          const u = await userMaster.findById(targetEmpId).lean();
+          if (u) {
+            displayName = u.userDisplayName || displayName;
+            userRole = u.userRole || userRole;
+          }
+        }
+      }
+
+      const reqId = new mongoose.Types.ObjectId().toString();
+      const payload = {
+        _id: reqId,
+        requestId: reqId,
+        employeeId: String(targetEmpId),
+        employeeName: displayName,
+        userRole,
+        attendanceId: attendanceId ? String(attendanceId) : null,
+        reason: reason || 'late_start',
+        message: message || '',
+        shiftCode: shiftCode || 'G',
+        shiftStartTime: shiftStartTime || '',
+        minutesLate: minutesLate || 0,
+        requestedAt: requestedAt || new Date().toISOString(),
+      };
+
+      if (req.io) {
+        if (req.tenantDbName) {
+          req.io.to(req.tenantDbName).emit('attendance:permission_request', payload);
+          req.io.to(req.tenantDbName).emit('admin:broadcast', {
+            id: reqId,
+            title: reason === 'late_start' ? 'Late Start Request' : 'Early End Duty Request',
+            message: message || `${displayName} requested ${reason === 'late_start' ? 'late duty start' : 'early end duty'}.`,
+            priority: 'high',
+            targetRoles: ['CorpAdmin', 'Admin', 'userAdmin'],
+            sentBy: displayName,
+            sentByRole: userRole,
+            at: new Date().toISOString(),
+            permissionPayload: payload,
+          });
+        }
+        req.io.emit('attendance:permission_request', payload);
+      }
+
+      if (Messages) {
+        try {
+          const msg = new Messages({
+            senderName: displayName,
+            senderId: targetEmpId,
+            text: reason === 'late_start'
+              ? `Request to start late duty from ${displayName}. Shift started at ${shiftStartTime || 'N/A'}.`
+              : `Request to end duty early from ${displayName}.`,
+            type: 'text',
+            isOneToOne: false,
+            status: 'unseen',
+          });
+          await msg.save();
+          if (req.io && req.tenantDbName) req.io.to(req.tenantDbName).emit('newMessage', msg);
+        } catch (_) {}
+      }
+
+      return res.json({ success: true, message: 'Permission request sent to Admin successfully', data: payload });
+    } catch (err) {
+      console.error('requestAttendancePermission error:', err);
+      return res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  /**
+   * Admin response to permission request
+   * POST /service/hr/attendance/permission-response
+   */
+  respondAttendancePermission: async (req, res) => {
+    try {
+      const { requestId, employeeId, attendanceId, approved, reason, message } = req.body;
+      const { Attendance, Employees } = req.tenantModels || {};
+      const userMaster = require('../models/userMaster');
+
+      const adminName = req.user?.userDisplayName || req.user?.name || 'Admin';
+
+      if (!approved) {
+        if (req.io) {
+          const deniedPayload = {
+            requestId,
+            employeeId,
+            attendanceId,
+            reason,
+            approved: false,
+            message: message || `Request denied by ${adminName}.`,
+          };
+          if (req.tenantDbName) {
+            req.io.to(req.tenantDbName).emit('attendance:permission_denied', deniedPayload);
+          }
+          req.io.emit('attendance:permission_denied', deniedPayload);
+        }
+        return res.json({ success: true, message: 'Request denied successfully' });
+      }
+
+      if (reason === 'early_end') {
+        let query = {};
+        if (attendanceId && mongoose.isValidObjectId(attendanceId)) {
+          query._id = attendanceId;
+        } else if (employeeId) {
+          query.employeeId = mongoose.isValidObjectId(employeeId) ? new mongoose.Types.ObjectId(employeeId) : employeeId;
+          query.$or = [{ dutyEnd: { $exists: false } }, { dutyEnd: null }];
+        }
+
+        let attRecord = null;
+        if (Attendance) {
+          attRecord = await Attendance.findOne(query);
+          if (attRecord) {
+            attRecord.dutyEnd = new Date();
+            attRecord.forcedOff = true;
+            attRecord.forcedOffReason = `Admin approved early end (${adminName})`;
+            if (attRecord.dutyStart) {
+              const diffMs = new Date(attRecord.dutyEnd).getTime() - new Date(attRecord.dutyStart).getTime();
+              attRecord.hoursWorked = parseFloat((diffMs / 3600000).toFixed(2));
+            }
+            await attRecord.save();
+          }
+        }
+
+        const approvedPayload = {
+          requestId,
+          employeeId,
+          attendanceId: attRecord?._id || attendanceId,
+          reason: 'early_end',
+          approved: true,
+          message: `Early end duty approved by ${adminName}.`,
+        };
+
+        if (req.io) {
+          if (req.tenantDbName) {
+            req.io.to(req.tenantDbName).emit('attendance:duty_off', {
+              employeeId,
+              attendanceId: attRecord?._id,
+              forcedOff: true,
+            });
+            req.io.to(req.tenantDbName).emit('attendance:permission_approved', approvedPayload);
+          }
+          req.io.emit('attendance:duty_off', { employeeId, attendanceId: attRecord?._id });
+          req.io.emit('attendance:permission_approved', approvedPayload);
+        }
+
+        return res.json({ success: true, message: 'Early end duty approved successfully', data: attRecord });
+      } else {
+        // Late start approved
+        let attRecord = null;
+        if (Attendance && employeeId) {
+          const qId = mongoose.isValidObjectId(employeeId) ? new mongoose.Types.ObjectId(employeeId) : employeeId;
+          attRecord = await Attendance.findOne({
+            employeeId: qId,
+            $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }],
+          });
+
+          if (!attRecord) {
+            let emp = Employees && mongoose.isValidObjectId(qId) ? await Employees.findById(qId).lean() : null;
+            let uDoc = mongoose.isValidObjectId(qId) ? await userMaster.findById(qId).lean() : null;
+            const now = new Date();
+            const displayName = uDoc?.userDisplayName || emp?.name || 'Staff';
+            const role = uDoc?.userRole || emp?.role || 'project';
+            const isWorker = !!emp && !uDoc;
+
+            attRecord = new Attendance({
+              employeeId: qId,
+              employeeType: isWorker ? 'Employees' : 'userMaster',
+              startLat: uDoc?.location?.lat || emp?.location?.lat || null,
+              startLong: uDoc?.location?.long || emp?.location?.long || null,
+              role,
+              date: now,
+              dutyStartScheduled: now,
+              dutyStart: now,
+              dutyEndScheduled: new Date(now.getTime() + 8 * 3600000),
+              shiftCode: 'G',
+              shiftType: '8hr',
+              shiftPeriod: 'General',
+              status: 'Present',
+              site_name: 'HQ/Remote',
+              markedByDevice: false,
+              markedByUserName: adminName,
+              remarks: `Late start approved by ${adminName}`,
+            });
+            await attRecord.save();
+          }
+        }
+
+        const approvedPayload = {
+          requestId,
+          employeeId,
+          attendanceId: attRecord?._id,
+          reason: 'late_start',
+          approved: true,
+          activeDuty: attRecord,
+          canStart: true,
+          message: `Late start approved by ${adminName}. Duty is now ON.`,
+        };
+
+        if (req.io) {
+          if (req.tenantDbName) {
+            req.io.to(req.tenantDbName).emit('attendance:duty_on', {
+              employeeId,
+              attendanceId: attRecord?._id,
+              shiftCode: attRecord?.shiftCode || 'G',
+              shiftPeriod: attRecord?.shiftPeriod || 'General',
+            });
+            req.io.to(req.tenantDbName).emit('attendance:permission_approved', approvedPayload);
+          }
+          req.io.emit('attendance:duty_on', { employeeId, attendanceId: attRecord?._id });
+          req.io.emit('attendance:permission_approved', approvedPayload);
+        }
+
+        return res.json({ success: true, message: 'Late start approved and duty started successfully', data: attRecord });
+      }
+    } catch (err) {
+      console.error('respondAttendancePermission error:', err);
+      return res.status(500).json({ success: false, message: err.message });
     }
   },
 };
