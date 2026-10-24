@@ -9,10 +9,13 @@
 const userMaster = require('../models/userMaster');
 const mongoose = require('mongoose');
 const ExcelJS = require('exceljs');
+const path = require('path');
+const fs = require('fs');
 const externalService = require('../utils/externalService');
 const { resolveDatePreset } = require('../utils/dateUtils');
 const autoEndScheduler = require('../utils/autoEndScheduler');
 const relieverRotation = require('../utils/relieverRotation');
+const { findActiveSession, resolveAllLinkedIds } = require('../utils/attendanceSessionResolver');
 
 // ── Phase 2a: Unique partial index — one active session per worker ─────────────
 // Track which tenant DBs already have the index so we only create it once.
@@ -1736,7 +1739,7 @@ exports.manageEmployees = {
       }
       const limitVal = req.query.limit ? parseInt(req.query.limit, 10) : 5000;
       const data = await Attendance.find(q)
-        .select('_id employeeId employeeType leadId clientId siteId site_name shiftCode shiftPeriod shiftGroupName date status dutyLevel rate dutyStart dutyEnd markedByUserName geoHistory')
+        .select('_id employeeId employeeType leadId clientId siteId site_name shiftCode shiftPeriod shiftGroupName date status dutyLevel rate dutyStart dutyEnd dutyEndScheduled startLat startLong siteLat siteLong markedByUserName geoHistory')
         .sort({ date: -1 })
         .limit(limitVal)
         .lean();
@@ -1772,7 +1775,7 @@ exports.manageEmployees = {
           ? Employees.find({ _id: { $in: uniqueEmployeeIds } }).select('_id name enrollment_no role mobile photo photo_url daily_rate rate employmentHistory').lean()
           : Promise.resolve([]),
         uniqueLeadIds.length > 0
-          ? Leads.find({ _id: { $in: uniqueLeadIds } }).select('_id sender_name displayName client_name siteShifts status').lean()
+          ? Leads.find({ _id: { $in: uniqueLeadIds } }).select('_id sender_name displayName client_name siteShifts status location sender_city').lean()
           : Promise.resolve([]),
       ]);
 
@@ -1822,6 +1825,9 @@ exports.manageEmployees = {
         const lIdStr = item.leadId?.toString();
         if (lIdStr && leadsMap[lIdStr]) {
           item.leadId = leadsMap[lIdStr];
+          if (!item.site_name && leadsMap[lIdStr].sender_name) {
+            item.site_name = leadsMap[lIdStr].sender_name;
+          }
         }
       }
 
@@ -1892,7 +1898,8 @@ exports.manageEmployees = {
       // Duty start is BLOCKED if the site has no active shifts configured.
       let siteShiftOverride = null;
       let siteShiftExcess = null;
-      const targetLeadIdForShift = leadId;
+      const effectiveLeadId = leadId || req.body.siteId;
+      const targetLeadIdForShift = effectiveLeadId;
       if (targetLeadIdForShift && !dutyEnd) {
         const siteDoc = await Leads.findById(targetLeadIdForShift)
           .select('siteShifts sender_name')
@@ -2129,14 +2136,15 @@ exports.manageEmployees = {
       const finalDutyEndScheduled =
         req.body.dutyEndScheduled || new Date(dutyStartMs + finalShiftLockHours * 3600000);
 
-      // Fetch site coordinates if leadId exists
+      // Fetch site coordinates if effectiveLeadId exists
       let siteLat = undefined;
       let siteLong = undefined;
-      if (leadId) {
-        const site = await Leads.findById(leadId).lean();
-        if (site && site.location && site.location.lat && site.location.long) {
-          siteLat = Number(site.location.lat);
-          siteLong = Number(site.location.long);
+      let siteDoc = null;
+      if (effectiveLeadId && Leads) {
+        siteDoc = await Leads.findById(effectiveLeadId).lean();
+        if (siteDoc && siteDoc.location && siteDoc.location.lat && siteDoc.location.long) {
+          siteLat = Number(siteDoc.location.lat);
+          siteLong = Number(siteDoc.location.long);
         }
       }
 
@@ -2146,15 +2154,21 @@ exports.manageEmployees = {
       const record = new Attendance({
         employeeId,
         employeeType: employeeDoc ? 'Employees' : 'userMaster',
+        identityType: employeeDoc ? 'WORKER' : 'REGISTERED_USER',
+        userId: userDoc ? userDoc._id : null,
+        workerName: emp?.name || emp?.userDisplayName || '',
         role,
-        leadId,
+        leadId: effectiveLeadId || null,
+        siteId: req.body.siteId || effectiveLeadId || null,
         clientId: clientId || null,
         status: status || 'Present',
         customCreated: true, // Tag it so we know it was manually marked/handled
         dutyLevel: dutyLevel ?? 1,
         rate: rate || siteShiftOverride?.billRate || 0,
         date: date || new Date(),
-        site_name,
+        site_name: site_name || siteDoc?.sender_name || siteDoc?.displayName || siteDoc?.client_name || 'HQ/Remote',
+        lockStatus: { isLocked: false },
+        leaveCoverage: req.body.leaveCoverage || { isCoveringForLeave: false },
         remarks,
         dutyStartScheduled:
           req.body.dutyStartScheduled || (dutyStart ? new Date(dutyStart) : new Date()),
@@ -2451,6 +2465,67 @@ exports.manageEmployees = {
       res.status(500).json({ success: false, message: err.message });
     }
   },
+  updateCompactGps: async (req, res) => {
+    try {
+      const { Attendance } = req.tenantModels;
+      const { id } = req.params;
+      const record = await Attendance.findById(id);
+      if (!record) {
+        return res.status(404).json({ success: false, message: 'Attendance record not found' });
+      }
+
+      const recordRole = (record.role || '').toLowerCase();
+      const isAdminRole = ['corpadmin', 'useradmin', 'admin'].includes(recordRole);
+      if (isAdminRole && recordRole !== 'project') {
+        return res.json({ success: true, message: 'Admin is exempt from tracking' });
+      }
+
+      let payload = typeof req.body === 'string' ? req.body : (req.body.payload || req.body);
+      if (typeof payload === 'object' && payload !== null && typeof payload.data === 'string') {
+        payload = payload.data;
+      }
+
+      if (typeof payload === 'string' && payload.includes('|')) {
+        const segments = payload.split('|');
+        const base = parseInt(segments[0], 10);
+        const ticks = [];
+        for (let i = 1; i < segments.length; i++) {
+          const parts = segments[i].split(',');
+          if (parts.length >= 2) {
+            const lat = parseFloat(parts[0]);
+            const lng = parseFloat(parts[1]);
+            const off = (parseInt(parts[2], 10) || 0) * 1000;
+            const acc = parseInt(parts[3], 10);
+            if (!isNaN(lat) && !isNaN(lng)) {
+              ticks.push({
+                lat,
+                long: lng,
+                accuracy: isNaN(acc) || acc === -1 ? null : acc,
+                timestamp: new Date(base + off).toISOString(),
+                type: 'tick',
+              });
+            }
+          }
+        }
+        if (ticks.length > 0) {
+          record.geoHistory.push(...ticks);
+          await record.save();
+
+          if (req.io && req.tenantDbName) {
+            req.io.to(req.tenantDbName).emit('attendance:geo_update', {
+              attendanceId: record._id,
+              tick: ticks[ticks.length - 1],
+              allTicks: ticks,
+            });
+          }
+        }
+      }
+      return res.json({ success: true, count: record.geoHistory.length });
+    } catch (err) {
+      console.error('🔴 [updateCompactGps] Error:', err.message);
+      return res.status(500).json({ success: false, message: err.message });
+    }
+  },
   getRateLookup: async (req, res) => {
     try {
       const { Attendance } = req.tenantModels;
@@ -2474,78 +2549,11 @@ exports.manageEmployees = {
       if (!employeeId)
         return res.status(400).json({ success: false, message: 'employeeId required' });
 
-      const queryId = mongoose.isValidObjectId(employeeId)
-        ? new mongoose.Types.ObjectId(employeeId)
-        : employeeId;
-
-      const userMaster = require('../models/userMaster');
-      let userDoc = await userMaster.findById(queryId).lean();
-      let employeeDoc = await Employees.findById(queryId).lean();
-
-      if (userDoc && !employeeDoc) {
-        employeeDoc = await Employees.findOne({
-          $or: [
-            { user_id: userDoc._id },
-            { mobile: userDoc.mobile || userDoc.userMobile || userDoc.username },
-            { email: userDoc.email },
-          ].filter((q) => q.user_id || q.mobile || q.email),
-        }).lean();
-      } else if (employeeDoc && !userDoc) {
-        userDoc = await userMaster
-          .findOne({
-            $or: [
-              { _id: employeeDoc.user_id },
-              { mobile: employeeDoc.mobile },
-              { email: employeeDoc.email },
-            ].filter((q) => q._id || q.mobile || q.email),
-          })
-          .lean();
-      }
-
-      let emp = null;
-      if (employeeDoc) emp = { ...employeeDoc };
-      if (userDoc) emp = { ...emp, ...userDoc };
-
-      const allLinkedIds = [];
-      const addLinkedId = (val) => {
-        if (!val) return;
-        const s = String(val._id || val);
-        if (s && !allLinkedIds.some(x => String(x) === s)) {
-          allLinkedIds.push(s);
-          if (mongoose.isValidObjectId(s)) {
-            try { allLinkedIds.push(new mongoose.Types.ObjectId(s)); } catch(e){}
-          }
-        }
-      };
-      addLinkedId(employeeId);
-      addLinkedId(queryId);
-      if (emp?.user_id) addLinkedId(emp.user_id);
-      if (emp?._id) addLinkedId(emp._id);
-      if (userDoc?._id) addLinkedId(userDoc._id);
-      if (employeeDoc?._id) addLinkedId(employeeDoc._id);
-
-      // Find an open session (dutyEnd not exists, null, or empty string) using all linked IDs (both ObjectId and String)
-      let active = await Attendance.findOne({
-        employeeId: { $in: allLinkedIds },
-        $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }, { dutyEnd: '' }],
-      })
-        .sort({ dutyStart: -1 })
-        .lean();
-
-      // Fallback: also check if session marked with markedByUserName or matching mobile/user_id
-      if (!active && (userDoc?._id || employeeDoc?._id)) {
-        const fallbacks = [];
-        if (userDoc?.userDisplayName) fallbacks.push({ markedByUserName: userDoc.userDisplayName });
-        if (userDoc?._id) fallbacks.push({ employeeId: userDoc._id });
-        if (fallbacks.length > 0) {
-          active = await Attendance.findOne({
-            $or: fallbacks,
-            $and: [{ $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }, { dutyEnd: '' }] }],
-          })
-            .sort({ dutyStart: -1 })
-            .lean();
-        }
-      }
+      const active = await findActiveSession(Attendance, Employees, {
+        employeeId,
+        userId: req.user?._id || req.user?.userId,
+        userDisplayName: req.user?.userDisplayName || req.user?.name,
+      });
 
       res.json({ success: true, data: active || null });
     } catch (err) {
@@ -2722,11 +2730,12 @@ exports.manageEmployees = {
       if (userDoc?._id) addLinkedId(userDoc._id);
       if (employeeDoc?._id) addLinkedId(employeeDoc._id);
 
-      // 2. Find open session using all linked IDs (both ObjectId and String)
-      let record = await Attendance.findOne({
-        employeeId: { $in: allLinkedIds },
-        $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }, { dutyEnd: '' }],
-      }).sort({ dutyStart: -1 });
+      // 2. Find open session symmetrically using multi-field resolver
+      let record = await findActiveSession(Attendance, Employees, {
+        employeeId,
+        userId: req.user?._id || req.user?.userId,
+        userDisplayName: req.user?.userDisplayName || req.user?.name,
+      });
 
       if (type === 'ON') {
         if (record) {
@@ -2975,6 +2984,18 @@ exports.manageEmployees = {
         }
         if (!finalShiftGroupName) finalShiftGroupName = 'MANG';
 
+        const userRoleLower = String(
+          req.user?.userRole ||
+          req.user?.role ||
+          emp.userRole ||
+          emp.role ||
+          linkedRole ||
+          ''
+        ).trim().toLowerCase();
+
+        const isGeofenceExempt = ['corpadmin', 'useradmin', 'admin', 'project', 'projectuser'].includes(userRoleLower);
+        const isExemptUser = ['corpadmin', 'useradmin', 'admin'].includes(userRoleLower);
+
         let finalLat = lat;
         let finalLong = long;
         let finalSiteName = site_name || 'HQ/Remote';
@@ -2997,6 +3018,13 @@ exports.manageEmployees = {
               if (!startLong) startLong = siteLong;
               finalLat = siteLat;
               finalLong = siteLong;
+              finalSiteName = site.sender_name || finalSiteName;
+            } else if (isGeofenceExempt) {
+              // 🚀 Exclude Admin and Project users from geofence restrictions
+              finalLat = lat || siteLat;
+              finalLong = long || siteLong;
+              startLat = finalLat;
+              startLong = finalLong;
               finalSiteName = site.sender_name || finalSiteName;
             } else {
               if (!lat || !long) {
@@ -3072,6 +3100,9 @@ exports.manageEmployees = {
         record = new Attendance({
           employeeId: isWorker ? emp._id : queryId,
           employeeType: isWorker ? 'Employees' : 'userMaster',
+          identityType: isWorker ? 'WORKER' : 'REGISTERED_USER',
+          userId: !isWorker ? queryId : (emp?.user_id || null),
+          workerName: emp?.name || emp?.userDisplayName || (linkedUser?.userDisplayName || linkedUser?.name) || 'User',
           startLat,
           startLong,
           siteLat,
@@ -3102,6 +3133,8 @@ exports.manageEmployees = {
               : req.user?.userDisplayName || req.user?.name || req.user?.mobile || 'Supervisor',
           isLate: shiftStartTime ? diffMins > 15 : false,
           remarks: shiftStartTime && diffMins > 15 ? 'On Duty-Late Coming' : undefined,
+          lockStatus: { isLocked: false },
+          leaveCoverage: req.body.leaveCoverage || { isCoveringForLeave: false },
         });
         await record.save();
 
@@ -4113,6 +4146,430 @@ exports.manageEmployees = {
       return res.status(500).json({ success: false, message: err.message });
     }
   },
+
+  lockBatchAttendance: async (req, res) => {
+    try {
+      const { Attendance } = req.tenantModels;
+      const userRole = (req.user?.userRole || req.user?.role || '').toLowerCase();
+      if (!['corpadmin', 'useradmin', 'project', 'admin'].includes(userRole)) {
+        return res.status(403).json({ success: false, message: 'Unauthorized to lock attendance' });
+      }
+
+      const { month, startDate, endDate, leadId, attendanceIds } = req.body;
+      const filter = { 'lockStatus.isLocked': { $ne: true } };
+
+      if (attendanceIds && Array.isArray(attendanceIds) && attendanceIds.length > 0) {
+        filter._id = { $in: attendanceIds.map(id => new mongoose.Types.ObjectId(id)) };
+      } else if (month) {
+        const [y, m] = month.split('-').map(Number);
+        const start = new Date(Date.UTC(y, m - 1, 1, 0, 0, 0));
+        const end = new Date(Date.UTC(y, m, 0, 23, 59, 59, 999));
+        filter.date = { $gte: start, $lte: end };
+      } else if (startDate && endDate) {
+        filter.date = { $gte: new Date(startDate), $lte: new Date(endDate) };
+      } else {
+        return res.status(400).json({ success: false, message: 'Please specify month or date range or attendance IDs.' });
+      }
+
+      if (leadId) {
+        filter.leadId = mongoose.isValidObjectId(leadId) ? new mongoose.Types.ObjectId(leadId) : leadId;
+      }
+
+      const lockBatchId = new mongoose.Types.ObjectId().toString();
+      const result = await Attendance.updateMany(filter, {
+        $set: {
+          'lockStatus.isLocked': true,
+          'lockStatus.lockedAt': new Date(),
+          'lockStatus.lockedBy': req.user?._id,
+          'lockStatus.lockedByName': req.user?.userDisplayName || req.user?.name || 'Admin',
+          'lockStatus.lockBatchId': lockBatchId,
+        },
+      });
+
+      if (req.io && req.tenantDbName) {
+        req.io.to(req.tenantDbName).emit('attendance:batch_locked', {
+          lockBatchId,
+          count: result.modifiedCount,
+        });
+      }
+
+      res.json({
+        success: true,
+        message: `Successfully locked ${result.modifiedCount} attendance records.`,
+        modifiedCount: result.modifiedCount,
+        lockBatchId,
+      });
+    } catch (err) {
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  unlockBatchAttendance: async (req, res) => {
+    try {
+      const { Attendance } = req.tenantModels;
+      const userRole = (req.user?.userRole || req.user?.role || '').toLowerCase();
+      if (!['corpadmin', 'useradmin'].includes(userRole)) {
+        return res.status(403).json({
+          success: false,
+          message: 'Only CorpAdmin or userAdmin can unlock finalized attendance.',
+        });
+      }
+
+      const { month, startDate, endDate, leadId, attendanceIds, lockBatchId, reason } = req.body;
+      if (!reason || typeof reason !== 'string' || reason.trim().length < 5) {
+        return res.status(400).json({
+          success: false,
+          message: 'A mandatory justification reason (min 5 characters) is required to unlock attendance.',
+        });
+      }
+
+      const filter = { 'lockStatus.isLocked': true };
+
+      if (lockBatchId) {
+        filter['lockStatus.lockBatchId'] = lockBatchId;
+      } else if (attendanceIds && Array.isArray(attendanceIds) && attendanceIds.length > 0) {
+        filter._id = { $in: attendanceIds.map(id => new mongoose.Types.ObjectId(id)) };
+      } else if (month) {
+        const [y, m] = month.split('-').map(Number);
+        const start = new Date(Date.UTC(y, m - 1, 1, 0, 0, 0));
+        const end = new Date(Date.UTC(y, m, 0, 23, 59, 59, 999));
+        filter.date = { $gte: start, $lte: end };
+      } else if (startDate && endDate) {
+        filter.date = { $gte: new Date(startDate), $lte: new Date(endDate) };
+      } else {
+        return res.status(400).json({ success: false, message: 'Please specify month, date range, or lockBatchId.' });
+      }
+
+      if (leadId) {
+        filter.leadId = mongoose.isValidObjectId(leadId) ? new mongoose.Types.ObjectId(leadId) : leadId;
+      }
+
+      const unlockEntry = {
+        unlockedBy: req.user?._id,
+        unlockedByName: req.user?.userDisplayName || req.user?.name || 'Admin',
+        unlockedAt: new Date(),
+        reason: reason.trim(),
+      };
+
+      const result = await Attendance.updateMany(filter, {
+        $set: { 'lockStatus.isLocked': false },
+        $push: { 'lockStatus.unlockHistory': unlockEntry },
+      });
+
+      if (req.io && req.tenantDbName) {
+        req.io.to(req.tenantDbName).emit('attendance:batch_unlocked', {
+          count: result.modifiedCount,
+          reason,
+        });
+      }
+
+      res.json({
+        success: true,
+        message: `Successfully unlocked ${result.modifiedCount} attendance records for correction.`,
+        modifiedCount: result.modifiedCount,
+      });
+    } catch (err) {
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  relockBatchAttendance: async (req, res) => {
+    try {
+      const { Attendance } = req.tenantModels;
+      const userRole = (req.user?.userRole || req.user?.role || '').toLowerCase();
+      if (!['corpadmin', 'useradmin'].includes(userRole)) {
+        return res.status(403).json({ success: false, message: 'Unauthorized' });
+      }
+
+      const { month, startDate, endDate, leadId, attendanceIds } = req.body;
+      const filter = { 'lockStatus.isLocked': false };
+
+      if (attendanceIds && Array.isArray(attendanceIds) && attendanceIds.length > 0) {
+        filter._id = { $in: attendanceIds.map(id => new mongoose.Types.ObjectId(id)) };
+      } else if (month) {
+        const [y, m] = month.split('-').map(Number);
+        const start = new Date(Date.UTC(y, m - 1, 1, 0, 0, 0));
+        const end = new Date(Date.UTC(y, m, 0, 23, 59, 59, 999));
+        filter.date = { $gte: start, $lte: end };
+      } else if (startDate && endDate) {
+        filter.date = { $gte: new Date(startDate), $lte: new Date(endDate) };
+      }
+
+      if (leadId) {
+        filter.leadId = mongoose.isValidObjectId(leadId) ? new mongoose.Types.ObjectId(leadId) : leadId;
+      }
+
+      const result = await Attendance.updateMany(filter, {
+        $set: {
+          'lockStatus.isLocked': true,
+          'lockStatus.lockedAt': new Date(),
+          'lockStatus.lockedBy': req.user?._id,
+          'lockStatus.lockedByName': req.user?.userDisplayName || req.user?.name || 'Admin',
+        },
+      });
+
+      res.json({
+        success: true,
+        message: `Re-locked ${result.modifiedCount} records.`,
+        modifiedCount: result.modifiedCount,
+      });
+    } catch (err) {
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  backupAndPurgeAttendance: async (req, res) => {
+    try {
+      const { Attendance, AttendanceBackupLogs, Leads } = req.tenantModels;
+      const userRole = (req.user?.userRole || req.user?.role || '').toLowerCase();
+      if (!['corpadmin', 'useradmin'].includes(userRole)) {
+        return res.status(403).json({
+          success: false,
+          message: 'Only CorpAdmin or userAdmin can backup and clear attendance records.',
+        });
+      }
+
+      const { month, startDate, endDate, leadId, confirmPurge } = req.body;
+      if (!confirmPurge) {
+        return res.status(400).json({
+          success: false,
+          message: 'Explicit confirmation (confirmPurge: true) is required to clear attendance data.',
+        });
+      }
+
+      let start = null;
+      let end = null;
+      let periodLabel = '';
+
+      if (month) {
+        const [y, m] = month.split('-').map(Number);
+        start = new Date(Date.UTC(y, m - 1, 1, 0, 0, 0));
+        end = new Date(Date.UTC(y, m, 0, 23, 59, 59, 999));
+        periodLabel = month;
+      } else if (startDate && endDate) {
+        start = new Date(startDate);
+        end = new Date(endDate);
+        periodLabel = `${startDate}_to_${endDate}`;
+      } else {
+        return res.status(400).json({
+          success: false,
+          message: 'Provide month (YYYY-MM) or both startDate and endDate.',
+        });
+      }
+
+      const filter = {
+        date: { $gte: start, $lte: end },
+        'lockStatus.isLocked': true,
+      };
+      if (leadId) {
+        filter.leadId = mongoose.isValidObjectId(leadId)
+          ? new mongoose.Types.ObjectId(leadId)
+          : leadId;
+      }
+
+      const records = await Attendance.find(filter).lean();
+      if (!records || records.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'No locked attendance records found for this period to backup.',
+        });
+      }
+
+      const tenantDb = req.tenantDbName || 'default_tenant';
+      const backupDir = path.join(__dirname, '..', 'backups', 'attendance', tenantDb);
+      if (!fs.existsSync(backupDir)) {
+        fs.mkdirSync(backupDir, { recursive: true });
+      }
+
+      const timestamp = Date.now();
+      const fileName = `attendance_backup_${tenantDb}_${periodLabel}_${timestamp}.json`;
+      const filePath = path.join(backupDir, fileName);
+
+      const backupPayload = {
+        meta: {
+          tenantDb,
+          periodLabel,
+          startDate: start,
+          endDate: end,
+          backedUpAt: new Date(),
+          backedUpBy: req.user?._id,
+          backedUpByName: req.user?.userDisplayName || req.user?.name || 'Admin',
+          recordCount: records.length,
+        },
+        records,
+      };
+
+      fs.writeFileSync(filePath, JSON.stringify(backupPayload, null, 2), 'utf-8');
+      const stats = fs.statSync(filePath);
+
+      let siteName = 'All Sites';
+      if (leadId && Leads) {
+        const sDoc = await Leads.findById(leadId).select('sender_name').lean();
+        if (sDoc?.sender_name) siteName = sDoc.sender_name;
+      }
+
+      let backupLog = null;
+      if (AttendanceBackupLogs) {
+        backupLog = new AttendanceBackupLogs({
+          backupPeriod: periodLabel,
+          startDate: start,
+          endDate: end,
+          leadId: leadId || null,
+          siteName,
+          fileName,
+          filePath,
+          fileSizeBytes: stats.size,
+          recordCount: records.length,
+          backedUpBy: req.user?._id,
+          backedUpByName: req.user?.userDisplayName || req.user?.name || 'Admin',
+          purgedFromDb: true,
+          purgedAt: new Date(),
+        });
+        await backupLog.save();
+      }
+
+      // Clear the locked records from MongoDB
+      const recordIds = records.map((r) => r._id);
+      const deleteResult = await Attendance.deleteMany({ _id: { $in: recordIds } });
+
+      if (req.io && req.tenantDbName) {
+        req.io.to(req.tenantDbName).emit('attendance:purged', {
+          periodLabel,
+          purgedCount: deleteResult.deletedCount,
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: `Successfully backed up to server and purged ${deleteResult.deletedCount} locked attendance records.`,
+        backupId: backupLog?._id,
+        fileName,
+        fileSizeBytes: stats.size,
+        purgedCount: deleteResult.deletedCount,
+      });
+    } catch (err) {
+      console.error('backupAndPurgeAttendance error:', err);
+      return res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  getBackupLogs: async (req, res) => {
+    try {
+      const { AttendanceBackupLogs } = req.tenantModels;
+      if (!AttendanceBackupLogs) return res.json({ success: true, data: [] });
+      const logs = await AttendanceBackupLogs.find().sort({ createdAt: -1 }).lean();
+      res.json({ success: true, data: logs });
+    } catch (err) {
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  downloadBackupArchive: async (req, res) => {
+    try {
+      const { AttendanceBackupLogs } = req.tenantModels;
+      const userRole = (req.user?.userRole || req.user?.role || '').toLowerCase();
+      if (!['corpadmin', 'useradmin'].includes(userRole)) {
+        return res.status(403).json({ success: false, message: 'Forbidden' });
+      }
+
+      const { backupId } = req.params;
+      const log = await AttendanceBackupLogs.findById(backupId);
+      if (!log || !fs.existsSync(log.filePath)) {
+        return res.status(404).json({ success: false, message: 'Backup file not found on server' });
+      }
+
+      res.download(log.filePath, log.fileName);
+    } catch (err) {
+      return res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  coverShiftForLeave: async (req, res) => {
+    try {
+      const { Attendance, Employees, Leads } = req.tenantModels;
+      const {
+        coveringWorkerId,
+        scheduledWorkerId,
+        shiftCode,
+        shiftPeriod,
+        leadId,
+        site_name,
+        leaveType,
+        overtimeRate,
+        notes,
+      } = req.body;
+
+      if (!coveringWorkerId || !scheduledWorkerId) {
+        return res.status(400).json({
+          success: false,
+          message: 'coveringWorkerId and scheduledWorkerId are required',
+        });
+      }
+
+      const [coveringWorker, scheduledWorker] = await Promise.all([
+        Employees.findById(coveringWorkerId).lean(),
+        Employees.findById(scheduledWorkerId).lean(),
+      ]);
+
+      if (!coveringWorker) {
+        return res.status(404).json({ success: false, message: 'Covering worker not found' });
+      }
+
+      const now = new Date();
+      let siteName = site_name || 'Site';
+      if (leadId && Leads) {
+        const lDoc = await Leads.findById(leadId).select('sender_name').lean();
+        if (lDoc?.sender_name) siteName = lDoc.sender_name;
+      }
+
+      const coveringAttendance = new Attendance({
+        employeeId: coveringWorker._id,
+        employeeType: 'Employees',
+        identityType: 'WORKER',
+        workerName: coveringWorker.name || 'Worker',
+        role: coveringWorker.role || 'worker',
+        date: now,
+        dutyStart: now,
+        dutyStartScheduled: now,
+        shiftCode: shiftCode || 'G',
+        shiftPeriod: shiftPeriod || 'General',
+        site_name: siteName,
+        leadId: leadId || null,
+        status: 'Present',
+        customCreated: true,
+        rate: overtimeRate || coveringWorker.daily_rate || 0,
+        remarks: notes || `Covering for ${scheduledWorker?.name || 'Staff'} on ${leaveType || 'Leave'}`,
+        lockStatus: { isLocked: false },
+        leaveCoverage: {
+          isCoveringForLeave: true,
+          originalWorkerId: scheduledWorker?._id || scheduledWorkerId,
+          originalWorkerName: scheduledWorker?.name || '',
+          leaveType: leaveType || 'LONG_LEAVE',
+          handoverType: 'LAST_WORKER_COVER',
+          overtimeRate: overtimeRate || 1.5,
+        },
+      });
+
+      await coveringAttendance.save();
+
+      if (req.io && req.tenantDbName) {
+        req.io.to(req.tenantDbName).emit('attendance:leave_covered', {
+          attendanceId: coveringAttendance._id,
+          coveringWorkerId: coveringWorker._id,
+          originalWorkerId: scheduledWorker?._id,
+        });
+      }
+
+      res.status(201).json({
+        success: true,
+        message: `Shift successfully covered for ${scheduledWorker?.name || 'scheduled staff'}.`,
+        data: coveringAttendance,
+      });
+    } catch (err) {
+      console.error('coverShiftForLeave error:', err);
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
 };
 
 /**
@@ -4152,35 +4609,30 @@ exports.manageStaff = {
         .findByIdAndUpdate(req.params.id, req.body, { new: true })
         .select('-userPassword');
 
-      // 💸 Create Petty Cash Book if allowed cash flow or is Project/Admin/Finance role
-      if (
-        staff.allowCashFlow ||
-        ['CorpAdmin', 'userAdmin', 'Project', 'Finance'].includes(staff.userRole)
-      ) {
-        try {
-          const dbConnector = require('../utils/dbConnector');
-          const { getTenantModels } = require('../models/TenantModels');
-          const financeCtrl = require('./FinanceController');
-          const targetDbName = staff.accessCorporate?.[0]?.dbName;
+      // 💸 Create Petty Cash Book for all registered staff users
+      try {
+        const dbConnector = require('../utils/dbConnector');
+        const { getTenantModels } = require('../models/TenantModels');
+        const financeCtrl = require('./FinanceController');
+        const targetDbName = staff.accessCorporate?.[0]?.dbName;
 
-          if (targetDbName) {
-            const tenantConnection = await dbConnector.getTenantConnection(targetDbName);
-            const models = getTenantModels(tenantConnection);
+        if (targetDbName) {
+          const tenantConnection = await dbConnector.getTenantConnection(targetDbName);
+          const models = getTenantModels(tenantConnection);
 
-            await financeCtrl.ensureLedgerFolioInternal(models, {
-              name: `Petty Cash - ${staff.userDisplayName}`,
-              group: 'Cash-in-hand',
-              nature: 'Dr',
-              refId: staff._id,
-              refType: 'User',
-            });
-            console.log(
-              `Auto-created Petty Cash Book for ${staff.userDisplayName} in ${targetDbName}`
-            );
-          }
-        } catch (pcErr) {
-          console.error('Failed to auto-create Petty Cash Book:', pcErr.message);
+          await financeCtrl.ensureLedgerFolioInternal(models, {
+            name: `Petty Cash - ${staff.userDisplayName}`,
+            group: 'Cash-in-hand',
+            nature: 'Dr',
+            refId: staff._id,
+            refType: 'User',
+          });
+          console.log(
+            `Auto-created Petty Cash Book for ${staff.userDisplayName} in ${targetDbName}`
+          );
         }
+      } catch (pcErr) {
+        console.error('Failed to auto-create Petty Cash Book:', pcErr.message);
       }
 
       // 👷 Sync with Employee Collection for specific roles

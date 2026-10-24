@@ -52,7 +52,22 @@ io.on("connection", (socket) => {
 
   socket.on("joinRoom", (dbName) => {
     if (dbName) {
-      socket.join(dbName);
+      const room = String(dbName).trim();
+      socket.join(room);
+      socket.currentRoom = room;
+    }
+  });
+
+  socket.on("update_location", (data) => {
+    if (data) {
+      const targetRoom = socket.currentRoom || data.dbName;
+      if (targetRoom) {
+        socket.to(String(targetRoom).trim()).emit("live_location", data);
+        socket.to(String(targetRoom).trim()).emit("live_location_update", data);
+      } else {
+        socket.broadcast.emit("live_location", data);
+        socket.broadcast.emit("live_location_update", data);
+      }
     }
   });
 

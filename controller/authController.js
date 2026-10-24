@@ -304,28 +304,26 @@ exports.register = async (req, res) => {
                 console.error("Failed to auto-create or link employee record:", empErr.message);
             }
         }
-        // 💸 Auto-create Petty Cash Book on registration if allowed cash flow or has Project/Admin/Finance role
-        if (newUser.allowCashFlow || ["CorpAdmin", "userAdmin", "Project", "Finance"].includes(newUser.userRole)) {
-            try {
-                const dbConnector = require("../utils/dbConnector");
-                const { getTenantModels } = require("../models/TenantModels");
-                const financeCtrl = require("./FinanceController");
-                const targetDbName = newUserPayload.accessCorporate?.[0]?.dbName;
-                if (targetDbName) {
-                    const tenantConnection = await dbConnector.getTenantConnection(targetDbName);
-                    const models = getTenantModels(tenantConnection);
-                    await financeCtrl.ensureLedgerFolioInternal(models, {
-                        name: `Petty Cash - ${newUser.userDisplayName}`,
-                        group: "Cash-in-hand",
-                        nature: "Dr",
-                        refId: newUser._id,
-                        refType: "User"
-                    });
-                    console.log(`Auto-created Petty Cash Book on registration for ${newUser.userDisplayName} in ${targetDbName}`);
-                }
-            } catch (pcErr) {
-                console.error("Failed to auto-create Petty Cash Book on registration:", pcErr.message);
+        // 💸 Auto-create Petty Cash Book on registration for every registered user
+        try {
+            const dbConnector = require("../utils/dbConnector");
+            const { getTenantModels } = require("../models/TenantModels");
+            const financeCtrl = require("./FinanceController");
+            const targetDbName = newUserPayload.accessCorporate?.[0]?.dbName;
+            if (targetDbName) {
+                const tenantConnection = await dbConnector.getTenantConnection(targetDbName);
+                const models = getTenantModels(tenantConnection);
+                await financeCtrl.ensureLedgerFolioInternal(models, {
+                    name: `Petty Cash - ${newUser.userDisplayName}`,
+                    group: "Cash-in-hand",
+                    nature: "Dr",
+                    refId: newUser._id,
+                    refType: "User"
+                });
+                console.log(`Auto-created Petty Cash Book on registration for ${newUser.userDisplayName} in ${targetDbName}`);
             }
+        } catch (pcErr) {
+            console.error("Failed to auto-create Petty Cash Book on registration:", pcErr.message);
         }
 
         return res.status(201).json({ success: true, message: "User registered", userId: newUser._id });

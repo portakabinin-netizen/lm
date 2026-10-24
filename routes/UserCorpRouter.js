@@ -14,6 +14,7 @@ const tenant = require("../middleware/tenantMiddleware");
 const ctrl = require("../controller/UserCorpController");
 const chatCtrl = require("../controller/chatController");
 const financeCtrl = require("../controller/FinanceController");
+const attendanceLockGuard = require("../middleware/attendanceLockGuard");
 
 // Setup Multer for Bulk Uploads
 const storage = multer.memoryStorage();
@@ -81,9 +82,18 @@ router.post("/hr/attendance/continue-shift",         ctrl.manageEmployees.contin
 router.post("/hr/broadcast",                         ctrl.manageEmployees.sendBroadcast);
 
 router.post("/hr/attendance/clean-reconcile", ctrl.manageEmployees.cleanReconcileAttendance);
-router.post("/hr/attendance",    ctrl.manageEmployees.markAttendance);
-router.put("/hr/attendance/:id", ctrl.manageEmployees.updateAttendance);
-router.delete("/hr/attendance/:id", ctrl.manageEmployees.deleteAttendance);
+router.post("/hr/attendance/lock-batch", ctrl.manageEmployees.lockBatchAttendance);
+router.post("/hr/attendance/unlock-batch", ctrl.manageEmployees.unlockBatchAttendance);
+router.post("/hr/attendance/relock-batch", ctrl.manageEmployees.relockBatchAttendance);
+router.post("/hr/attendance/backup-and-purge", ctrl.manageEmployees.backupAndPurgeAttendance);
+router.get("/hr/attendance/backup-logs", ctrl.manageEmployees.getBackupLogs);
+router.get("/hr/attendance/download-backup/:backupId", ctrl.manageEmployees.downloadBackupArchive);
+router.post("/hr/attendance/cover-shift-leave", ctrl.manageEmployees.coverShiftForLeave);
+
+router.post("/hr/attendance",    attendanceLockGuard, ctrl.manageEmployees.markAttendance);
+router.put("/hr/attendance/:id/compact-gps", attendanceLockGuard, ctrl.manageEmployees.updateCompactGps);
+router.put("/hr/attendance/:id", attendanceLockGuard, ctrl.manageEmployees.updateAttendance);
+router.delete("/hr/attendance/:id", attendanceLockGuard, ctrl.manageEmployees.deleteAttendance);
 router.get("/hr/rate-lookup",   ctrl.manageEmployees.getRateLookup);
 
 

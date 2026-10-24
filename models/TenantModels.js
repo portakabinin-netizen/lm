@@ -317,6 +317,40 @@ const attendanceSchema = new mongoose.Schema(
     ],
     isPosted: { type: Boolean, default: false },
     voucherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Vouchers' },
+
+    // ── Explicit Identity & Link ──
+    identityType: { type: String, enum: ['WORKER', 'REGISTERED_USER'], default: 'WORKER' },
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'userMaster', default: null },
+    workerName: { type: String, trim: true },
+
+    // ── 🔒 Lock Status (Finalized Periods) ──
+    lockStatus: {
+      isLocked: { type: Boolean, default: false },
+      lockedAt: { type: Date },
+      lockedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'userMaster' },
+      lockedByName: { type: String },
+      lockBatchId: { type: String },
+      unlockHistory: [
+        {
+          unlockedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'userMaster' },
+          unlockedByName: { type: String },
+          unlockedAt: { type: Date, default: Date.now },
+          reason: { type: String },
+          reLockedAt: { type: Date },
+          reLockedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'userMaster' },
+        },
+      ],
+    },
+
+    // ── 🔄 Long Leave Handover & Coverage ──
+    leaveCoverage: {
+      isCoveringForLeave: { type: Boolean, default: false },
+      originalWorkerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Employees' },
+      originalWorkerName: { type: String },
+      leaveType: { type: String, enum: ['ShortLeave', 'LongLeave', 'UnannouncedAbsent', null], default: null },
+      handoverType: { type: String, enum: ['DoubleShift', 'Reliever', 'Overtime', null], default: null },
+      overtimeRate: { type: Number, default: 0 },
+    },
   },
   { timestamps: true }
 );
@@ -332,6 +366,28 @@ attendanceSchema.index({ leadId: 1 });
 attendanceSchema.index({ clientId: 1 });
 attendanceSchema.index({ status: 1 });
 attendanceSchema.index({ employeeType: 1 });
+attendanceSchema.index({ 'lockStatus.isLocked': 1, date: -1 });
+attendanceSchema.index({ 'leaveCoverage.isCoveringForLeave': 1, date: -1 });
+
+// ── 💾 Attendance Backup Logs Schema ──
+const attendanceBackupLogSchema = new mongoose.Schema(
+  {
+    tenantDb: { type: String, required: true },
+    backupBatchId: { type: String, required: true },
+    period: {
+      month: { type: Number, required: true },
+      year: { type: Number, required: true },
+    },
+    recordCount: { type: Number, required: true },
+    archiveFileName: { type: String, required: true },
+    archiveFilePath: { type: String, required: true },
+    fileSizeBytes: { type: Number, required: true },
+    backedUpBy: { type: mongoose.Schema.Types.ObjectId, ref: 'userMaster' },
+    backedUpByName: { type: String },
+    purgedFromDatabase: { type: Boolean, default: true },
+  },
+  { timestamps: true }
+);
 
 // 7. Accounting
 const groupSchema = new mongoose.Schema(
@@ -564,6 +620,9 @@ const getTenantModels = (connection) => {
     SiteClientCheck:
       connection.models.SiteClientCheck ||
       connection.model('SiteClientCheck', siteClientCheckSchema),
+    AttendanceBackupLogs:
+      connection.models.AttendanceBackupLogs ||
+      connection.model('AttendanceBackupLogs', attendanceBackupLogSchema),
   };
 };
 

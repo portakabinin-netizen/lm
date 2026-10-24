@@ -245,7 +245,36 @@ const attendanceSchema = new mongoose.Schema({
     siteId: { type: String },
     leadId: { type: mongoose.Schema.Types.ObjectId },
     isLate: { type: Boolean, default: false },
-    remarks: { type: String }
+    remarks: { type: String },
+    // ── Explicit Identity & Link ──
+    identityType: { type: String, enum: ['WORKER', 'REGISTERED_USER'], default: 'WORKER' },
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'userMaster', default: null },
+    workerName: { type: String, trim: true },
+    // ── 🔒 Lock Status (Finalized Periods) ──
+    lockStatus: {
+        isLocked: { type: Boolean, default: false },
+        lockedAt: { type: Date },
+        lockedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'userMaster' },
+        lockedByName: { type: String },
+        lockBatchId: { type: String },
+        unlockHistory: [{
+            unlockedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'userMaster' },
+            unlockedByName: { type: String },
+            unlockedAt: { type: Date, default: Date.now },
+            reason: { type: String },
+            reLockedAt: { type: Date },
+            reLockedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'userMaster' }
+        }]
+    },
+    // ── 🔄 Long Leave Handover & Coverage ──
+    leaveCoverage: {
+        isCoveringForLeave: { type: Boolean, default: false },
+        originalWorkerId: { type: mongoose.Schema.Types.ObjectId },
+        originalWorkerName: { type: String },
+        leaveType: { type: String, enum: ['ShortLeave', 'LongLeave', 'UnannouncedAbsent', null], default: null },
+        handoverType: { type: String, enum: ['DoubleShift', 'Reliever', 'Overtime', null], default: null },
+        overtimeRate: { type: Number, default: 0 }
+    }
 }, { _id: true, timestamps: true });
 
 // 🎡 Corporate Data Slot

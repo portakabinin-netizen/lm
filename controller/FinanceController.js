@@ -73,10 +73,6 @@ const getActiveCashFlowUsers = async (tenantDbName) => {
     const userMaster = require("../models/userMaster");
     const query = {
         userActive: true,
-        $or: [
-            { allowCashFlow: true },
-            { userRole: { $in: ["CorpAdmin", "userAdmin", "Project", "Finance"] } }
-        ]
     };
 
     if (tenantDbName) {
@@ -887,23 +883,25 @@ exports.manageLedgers = {
  * 🎫 VOUCHERS MANAGEMENT
  */
 const isAllowedUserCashFlowLedger = async (tenantModels, ledgerId, activeUserId) => {
-    if (ledgerId === "cash_in_hand" || ledgerId === "main_bank") return true;
+    if (ledgerId === "cash_in_hand") return true; // maps directly to active user's petty cash
+    if (ledgerId === "main_bank") return true;
     if (!mongoose.Types.ObjectId.isValid(ledgerId)) return false;
     const ledger = await tenantModels.Ledgers.findById(ledgerId).lean();
     if (!ledger) return false;
 
-    // If it's a Bank Account, anyone can transact through it
+    // If it's a Bank Account, allowed for bank cash flow
     const group = await tenantModels.Groups.findById(ledger.ledgerGroupId).lean();
     if (group && group.groupName === "Bank Accounts") {
         return true;
     }
 
-    // If it's in Cash-in-hand, it must belong to the active user or be general
+    // If it's in Cash-in-hand, it MUST belong to the active user's own Petty Cash book
+    // NO generic cash, NO other user's petty cash. Same rule applies to all users (including Admin).
     if (group && group.groupName === "Cash-in-hand") {
-        if (ledger.refType === "User") {
-            return String(ledger.refId) === String(activeUserId);
+        if (ledger.refType === "User" && String(ledger.refId) === String(activeUserId)) {
+            return true;
         }
-        return true;
+        return false;
     }
 
     return false;
