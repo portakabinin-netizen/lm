@@ -107,16 +107,25 @@ async function findActiveSession(AttendanceModel, EmployeesModel, { employeeId, 
     if (session) return session;
   }
 
-  // 2. Secondary search: by userId or markedByUserName fallback (vital for Admins and Supervisors)
+  // 2. Secondary search: by userId or self-marked records (NEVER match other workers marked as supervisor)
   const fallbacks = [];
-  if (userDoc?._id) fallbacks.push({ userId: userDoc._id });
-  if (userDisplayName) fallbacks.push({ markedByUserName: userDisplayName });
-  if (userDoc?.userDisplayName) fallbacks.push({ markedByUserName: userDoc.userDisplayName });
+  if (userDoc?._id) {
+    fallbacks.push({ userId: userDoc._id });
+  }
+  if (userDoc?.userDisplayName) {
+    fallbacks.push({ workerName: userDoc.userDisplayName, markedByDevice: true });
+    fallbacks.push({ markedByUserName: userDoc.userDisplayName, markedByDevice: true, employeeType: 'userMaster' });
+  } else if (userDisplayName) {
+    fallbacks.push({ workerName: userDisplayName, markedByDevice: true });
+    fallbacks.push({ markedByUserName: userDisplayName, markedByDevice: true, employeeType: 'userMaster' });
+  }
 
   if (fallbacks.length > 0) {
     let session = await AttendanceModel.findOne({
-      $or: fallbacks,
-      ...openFilter,
+      $and: [
+        { $or: fallbacks },
+        openFilter,
+      ],
     })
       .sort({ dutyStart: -1 });
 

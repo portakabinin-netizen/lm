@@ -1,7 +1,7 @@
 /**
- * autoEndScheduler.js  (Phase 2b)
- * Lightweight in-memory scheduler for auto-closing single-worker shift attendance.
- * No external queue infrastructure needed.
+ * autoEndScheduler.js
+ * Robust scheduler for auto-closing single-worker and scheduled shift attendance.
+ * Provides both in-memory real-time timers and resilient database sweepers.
  */
 
 'use strict';
@@ -23,10 +23,10 @@ function scheduleAutoEnd(attendanceId, scheduledEndAt, AttendanceModel, tenantDb
       const endTime = new Date(scheduledEndAt);
       const result = await AttendanceModel.findOneAndUpdate(
         { _id: id, $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }] },
-        { $set: { dutyEnd: endTime, status: 'AUTO_COMPLETED_SCHEDULED', autoCompleted: true, autoCompletedAt: endTime } },
+        { $set: { dutyEnd: endTime, status: 'Present', autoCompleted: true, autoCompletedAt: endTime } },
         { new: true }
       );
-      if (!result) return; // already clocked out manually — no-op
+      if (!result) return; // already clocked out manually - no-op
 
       const elapsedHrs = (endTime - result.dutyStart) / 3600000;
       const standardHours = result.shiftHours || result.shiftLockHours || 8;
@@ -34,28 +34,29 @@ function scheduleAutoEnd(attendanceId, scheduledEndAt, AttendanceModel, tenantDb
       const dailyEarn = parseFloat(((hoursWorked / standardHours) * (result.dailyRate || 0)).toFixed(2));
       await AttendanceModel.updateOne({ _id: id }, { $set: { hoursWorked, dailyEarn } });
 
-      if (io) {
+      if (io && tenantDbName) {
         io.to(tenantDbName).emit('attendance:duty_off', {
           employeeId: String(result.employeeId), attendanceId: id, hoursWorked, autoCompleted: true,
         });
+        io.to(tenantDbName).emit('attendance:active_updated');
         io.to(tenantDbName).emit('admin:broadcast', {
-          id: `auto-end-${id}`,
+          id: 'auto-end-' + id,
           title: 'Shift Auto-Completed',
-          message: `Single-worker shift (${result.shiftCode || ''}) closed at scheduled end time.`,
+          message: 'Single-worker shift (' + (result.shiftCode || '') + ') closed at scheduled end time.',
           priority: 'normal',
           targetRoles: ['CorpAdmin', 'userAdmin', 'Project'],
           sentBy: 'System',
           at: endTime.toISOString(),
         });
       }
-      console.log(`[autoEndScheduler] Auto-closed attendance ${id} at scheduled end.`);
+      console.log('[autoEndScheduler] Auto-closed attendance ' + id + ' at scheduled end.');
     } catch (err) {
-      console.error(`[autoEndScheduler] Error auto-closing attendance ${id}:`, err.message);
+      console.error('[autoEndScheduler] Error auto-closing attendance ' + id + ':', err.message);
     }
   }, delayMs);
 
   _timers.set(id, timer);
-  console.log(`[autoEndScheduler] Scheduled auto-end for ${id} in ${Math.round(delayMs / 60000)} min`);
+  console.log('[autoEndScheduler] Scheduled auto-end for ' + id + ' in ' + Math.round(delayMs / 60000) + ' min');
 }
 
 function cancelAutoEnd(attendanceId) {
@@ -66,6 +67,60 @@ function cancelAutoEnd(attendanceId) {
   }
 }
 
+/**
+ * Sweeper function that detects and auto-closes any expired open shifts in MongoDB.
+ * Ensures shifts are cleanly closed even after server restarts or network disconnects.
+ */
+async function sweepExpiredShifts(AttendanceModel, tenantDbName, io) {
+  if (!AttendanceModel) return;
+  try {
+    const now = new Date();
+    const expiredRecords = await AttendanceModel.find({
+      $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }],
+      dutyEndScheduled: { $exists: true, $ne: null, $lte: now },
+      shiftHours: { $exists: true },
+    }).lean();
+
+    if (!expiredRecords || expiredRecords.length === 0) return;
+
+    for (const rec of expiredRecords) {
+      const endTime = rec.dutyEndScheduled ? new Date(rec.dutyEndScheduled) : now;
+      const elapsedHrs = (endTime - new Date(rec.dutyStart)) / 3600000;
+      const standardHours = rec.shiftHours || rec.shiftLockHours || 8;
+      const hoursWorked = parseFloat(Math.max(0, elapsedHrs).toFixed(2));
+      const dailyEarn = parseFloat(((hoursWorked / standardHours) * (rec.dailyRate || 0)).toFixed(2));
+
+      const updated = await AttendanceModel.findOneAndUpdate(
+        { _id: rec._id, $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }] },
+        {
+          $set: {
+            dutyEnd: endTime,
+            status: 'Present',
+            autoCompleted: true,
+            autoCompletedAt: endTime,
+            hoursWorked,
+            dailyEarn,
+          },
+        },
+        { new: true }
+      );
+
+      if (updated && io && tenantDbName) {
+        cancelAutoEnd(rec._id);
+        io.to(tenantDbName).emit('attendance:duty_off', {
+          employeeId: String(rec.employeeId),
+          attendanceId: String(rec._id),
+          hoursWorked,
+          autoCompleted: true,
+        });
+        io.to(tenantDbName).emit('attendance:active_updated');
+      }
+    }
+  } catch (err) {
+    console.error('[autoEndScheduler] sweepExpiredShifts error:', err.message);
+  }
+}
+
 function activeTimerCount() { return _timers.size; }
 
-module.exports = { scheduleAutoEnd, cancelAutoEnd, activeTimerCount };
+module.exports = { scheduleAutoEnd, cancelAutoEnd, sweepExpiredShifts, activeTimerCount };

@@ -68,13 +68,14 @@ router.post("/hr/employees",     ctrl.manageEmployees.create);
 router.put("/hr/employees/:id",  ctrl.manageEmployees.update);
 router.delete("/hr/employees/:id", ctrl.manageEmployees.delete);
 router.get("/hr/attendance",     ctrl.manageEmployees.listAttendance);
+router.get("/hr/attendance/available-months", ctrl.manageEmployees.getAvailableMonths);
 router.get("/hr/attendance-dashboard", ctrl.manageEmployees.getAttendanceDashboard);
 router.get("/hr/attendance/bulk-template", ctrl.manageEmployees.generateAttendanceTemplate);
 router.post("/hr/attendance/bulk-upload", upload.single("file"), ctrl.manageEmployees.bulkImportAttendance);
 router.get("/hr/attendance/active", ctrl.manageEmployees.getActiveAttendance);
 router.get("/hr/attendance/active-staff", ctrl.manageEmployees.listActiveStaff);
 router.get("/hr/attendance/roster-suggestion", ctrl.manageEmployees.getRosterSuggestion); // Phase 2c
-router.post("/hr/attendance/toggle", ctrl.manageEmployees.toggleAttendance);
+router.post("/hr/attendance/toggle", attendanceLockGuard, ctrl.manageEmployees.toggleAttendance);
 router.post("/hr/attendance/permission-request", ctrl.manageEmployees.requestAttendancePermission);
 router.post("/hr/attendance/permission-response", ctrl.manageEmployees.respondAttendancePermission);
 router.post("/hr/attendance/emergency-end-employee", ctrl.manageEmployees.emergencyEndEmployee); // individual emergency off

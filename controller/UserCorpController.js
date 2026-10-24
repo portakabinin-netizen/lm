@@ -1739,7 +1739,7 @@ exports.manageEmployees = {
       }
       const limitVal = req.query.limit ? parseInt(req.query.limit, 10) : 5000;
       const data = await Attendance.find(q)
-        .select('_id employeeId employeeType leadId clientId siteId site_name shiftCode shiftPeriod shiftGroupName date status dutyLevel rate dutyStart dutyEnd dutyEndScheduled startLat startLong siteLat siteLong markedByUserName geoHistory')
+        .select('_id employeeId employeeType leadId clientId siteId site_name workerName shiftCode shiftPeriod shiftGroupName date status dutyLevel rate dailyEarn hoursWorked lockStatus dutyStart dutyEnd dutyEndScheduled startLat startLong siteLat siteLong markedByUserName forcedOff emergencyOff')
         .sort({ date: -1 })
         .limit(limitVal)
         .lean();
@@ -1772,7 +1772,7 @@ exports.manageEmployees = {
           ? userMaster.find({ _id: { $in: uniqueUserMasterIds } }).select('_id name userDisplayName userProfileImage email mobile role').lean()
           : Promise.resolve([]),
         uniqueEmployeeIds.length > 0
-          ? Employees.find({ _id: { $in: uniqueEmployeeIds } }).select('_id name enrollment_no role mobile photo photo_url daily_rate rate employmentHistory').lean()
+          ? Employees.find({ _id: { $in: uniqueEmployeeIds } }).select('_id name enrollment_no role mobile photo photo_url daily_rate monthly_rate rate employmentHistory').lean()
           : Promise.resolve([]),
         uniqueLeadIds.length > 0
           ? Leads.find({ _id: { $in: uniqueLeadIds } }).select('_id sender_name displayName client_name siteShifts status location sender_city').lean()
@@ -1829,11 +1829,59 @@ exports.manageEmployees = {
             item.site_name = leadsMap[lIdStr].sender_name;
           }
         }
+
+        if (!item.workerName && item.employeeId?.name) {
+          item.workerName = item.employeeId.name;
+        }
       }
 
       res.json({ success: true, data });
     } catch (err) {
       console.error('🔴 [Error] listAttendance Failed:', err);
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+  getAvailableMonths: async (req, res) => {
+    try {
+      const { Attendance } = req.tenantModels;
+      const pipeline = [
+        {
+          $project: {
+            targetDate: { $ifNull: ["$date", "$dutyStart"] },
+          },
+        },
+        {
+          $match: {
+            targetDate: { $ne: null },
+          },
+        },
+        {
+          $group: {
+            _id: {
+              year: { $year: "$targetDate" },
+              month: { $month: "$targetDate" },
+            },
+            count: { $sum: 1 },
+          },
+        },
+        {
+          $sort: {
+            "_id.year": -1,
+            "_id.month": -1,
+          },
+        },
+      ];
+
+      const results = await Attendance.aggregate(pipeline);
+      const months = results.map((r) => ({
+        month: r._id.month - 1, // 0-indexed for JavaScript Date
+        year: r._id.year,
+        count: r.count,
+      }));
+
+      res.json({ success: true, data: months });
+    } catch (err) {
+      console.error('🔴 [Error] getAvailableMonths Failed:', err);
       res.status(500).json({ success: false, message: err.message });
     }
   },
@@ -1867,19 +1915,13 @@ exports.manageEmployees = {
 
       // ─── ONE WORKER · ONE SHIFT · ONE ATTENDANCE ──────────────────────────
       // Reject if this employee already has an open (active) duty session.
-      // This prevents duplicate attendance records regardless of which site or
-      // which UI surface triggered the create request.
+      // Uses symmetrical resolver to check both Employees and userMaster identities.
       if (employeeId && !dutyEnd) {
-        const mongoose = require('mongoose');
-        const qId = mongoose.isValidObjectId(employeeId)
-          ? new mongoose.Types.ObjectId(employeeId)
-          : employeeId;
-        const openSession = await Attendance.findOne({
-          employeeId: qId,
-          $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }],
-        })
-          .select('shiftCode site_name leadId')
-          .lean();
+        const { findActiveSession } = require('../utils/attendanceSessionResolver');
+        const openSession = await findActiveSession(Attendance, Employees, {
+          employeeId,
+          userId: req.user?._id || req.user?.userId,
+        });
         if (openSession) {
           const where = openSession.site_name || 'another site';
           const code = openSession.shiftCode || 'active shift';
@@ -2441,6 +2483,7 @@ exports.manageEmployees = {
       }
 
       if (update.dutyEnd && newlyEnded) {
+        autoEndScheduler.cancelAutoEnd(record._id);
         req.io.to(req.tenantDbName).emit('attendance:duty_off', {
           employeeId: record.employeeId,
           attendanceId: record._id,
@@ -2911,34 +2954,100 @@ exports.manageEmployees = {
 
           if (diffMins > 60 && !req.body.adminOverride && !req.body.force && !req.body.permissionGranted && !req.body.adminApprovedLate) {
             if (req.body.requestPermission) {
-              const { Messages } = req.tenantModels;
-              if (Messages) {
-                const msg = new Messages({
-                  senderName: displayName,
-                  senderId: queryId,
-                  text: `⚠️ Request to start late duty from ${displayName}. Shift started at ${shiftStartTime}.`,
-                  type: 'text',
-                  isOneToOne: false,
-                  status: 'unseen',
-                });
-                await msg.save();
-                req.io.to(req.tenantDbName).emit('newMessage', msg);
+              const reqId = new mongoose.Types.ObjectId().toString();
+              const permPayload = {
+                _id: reqId,
+                requestId: reqId,
+                employeeId: String(queryId),
+                employeeName: displayName,
+                userRole: emp?.role || emp?.userRole || req.user?.userRole || 'project',
+                reason: 'late_start',
+                message: req.body.message || `Request to start late duty from ${displayName}. Shift started at ${shiftStartTime} (${Math.round(diffMins)} min late).`,
+                shiftCode: shiftCode || req.body.shiftCode || 'G',
+                shiftType: req.body.shiftType || '8hr',
+                shiftPeriod: req.body.shiftPeriod || 'General',
+                shiftStartTime: shiftStartTime,
+                minutesLate: Math.round(diffMins),
+                site_name: req.body.site_name || 'HQ/Remote',
+                lat: req.body.lat ?? null,
+                long: req.body.long ?? null,
+                requestedAt: now.toISOString(),
+              };
+
+              if (req.io) {
+                if (req.tenantDbName) {
+                  req.io.to(req.tenantDbName).emit('attendance:permission_request', permPayload);
+                  req.io.to(req.tenantDbName).emit('admin:broadcast', {
+                    id: reqId,
+                    title: 'Late Start Permission Request',
+                    message: `${displayName} requested permission to start duty late (Shift started at ${shiftStartTime}, ${Math.round(diffMins)} min late).`,
+                    priority: 'high',
+                    targetRoles: ['CorpAdmin', 'Admin', 'userAdmin'],
+                    sentBy: displayName,
+                    sentByRole: emp?.role || emp?.userRole || req.user?.userRole || 'project',
+                    at: now.toISOString(),
+                    permissionPayload: permPayload,
+                  });
+                }
+                req.io.emit('attendance:permission_request', permPayload);
               }
 
-              req.io.to(req.tenantDbName).emit('admin:broadcast', {
-                id: new mongoose.Types.ObjectId().toString(),
-                title: '⚠️ Late Start Request',
-                message: `Employee ${displayName} requested to start duty late. Shift started at ${shiftStartTime}.`,
-                priority: 'normal',
-                targetRoles: ['CorpAdmin'],
-                sentBy: displayName,
-                sentByRole: 'Employee',
-                at: now.toISOString(),
-              });
+              const { Messages, Employees } = req.tenantModels || {};
+              if (Messages) {
+                try {
+                  const userMaster = require('../models/userMaster');
+                  const adminIds = new Set();
+                  if (mongoose.connection.readyState === 1) {
+                    const uAdmins = await userMaster.find({
+                      'accessCorporate.dbName': req.tenantDbName,
+                      userRole: { $in: ['CorpAdmin', 'userAdmin', 'Admin'] },
+                    }).select('_id').lean().catch(() => []);
+                    uAdmins.forEach((u) => adminIds.add(String(u._id)));
+                  }
+                  if (Employees) {
+                    const empAdmins = await Employees.find({
+                      role: { $in: ['CorpAdmin', 'userAdmin', 'Admin'] },
+                    }).select('_id user_id').lean().catch(() => []);
+                    empAdmins.forEach((e) => {
+                      if (e.user_id) adminIds.add(String(e.user_id));
+                      else adminIds.add(String(e._id));
+                    });
+                  }
+                  if (adminIds.size === 0 && mongoose.connection.readyState === 1) {
+                    const fallbackAdmins = await userMaster.find({
+                      userRole: { $in: ['CorpAdmin', 'userAdmin', 'Admin'] },
+                    }).select('_id').limit(5).lean().catch(() => []);
+                    fallbackAdmins.forEach((u) => adminIds.add(String(u._id)));
+                  }
+
+                  const reqText = `⚠️ Request to start late duty from ${displayName}. Shift started at ${shiftStartTime} (${Math.round(diffMins)} min late).`;
+
+                  // Strictly 1-to-1 chats only, no workforce chat messages
+                  if (adminIds.size > 0) {
+                    for (const adminId of adminIds) {
+                      const p2pMsg = new Messages({
+                        senderName: displayName,
+                        senderId: String(queryId),
+                        receiverId: String(adminId),
+                        text: reqText,
+                        type: 'text',
+                        isOneToOne: true,
+                        status: 'unseen',
+                      });
+                      await p2pMsg.save();
+                      if (req.tenantDbName && req.io) req.io.to(req.tenantDbName).emit('newMessage', p2pMsg);
+                    }
+                  }
+                } catch (chatErr) {
+                  console.error('Error sending P2P late start chat message:', chatErr);
+                }
+              }
 
               return res.json({
                 success: true,
-                message: `Request to start duty late has been sent to Admin via chatroom.`,
+                isPermissionRequest: true,
+                message: `Request to start duty late sent to Admin. Please wait for approval.`,
+                data: permPayload,
               });
             }
             return res.status(403).json({
@@ -3240,8 +3349,9 @@ exports.manageEmployees = {
         const canOverride =
           ['corpadmin', 'project', 'useradmin'].includes(requesterRole) ||
           ['corpadmin', 'project', 'sales', 'finance', 'useradmin'].includes(employeeRole);
+        const isGracePeriod = (elapsedHrs * 60) <= 5.0; // 5m grace period for accidental check-in cancellation
 
-        if (isLocked && !forcedOff && !emergencyOff && !canOverride) {
+        if (isLocked && !canOverride && !(isGracePeriod && forcedOff)) {
           return res.status(403).json({
             success: false,
             locked: true,
@@ -3729,6 +3839,26 @@ exports.manageEmployees = {
         return res.json({ success: true, data: [] });
       }
 
+      // Proactively sweep and close any open shifts that reached their scheduled end
+      autoEndScheduler.sweepExpiredShifts(Attendance, req.tenantDbName, req.io).catch(() => {});
+
+      // Batch resolve Leads coordinates for sites where workers are active
+      const { Leads } = req.tenantModels;
+      const siteMap = new Map();
+      if (Leads) {
+        try {
+          const leadIds = active
+            .map((a) => a.leadId || a.siteId)
+            .filter((id) => id && mongoose.Types.ObjectId.isValid(String(id)));
+          if (leadIds.length > 0) {
+            const sites = await Leads.find({ _id: { $in: leadIds } })
+              .select('location sender_name')
+              .lean();
+            sites.forEach((s) => siteMap.set(String(s._id), s));
+          }
+        } catch (_) {}
+      }
+
       const employeeIds = active
         .map((a) => a.employeeId)
         .filter((id) => {
@@ -3805,10 +3935,11 @@ exports.manageEmployees = {
         );
 
         if (!currentLat || !currentLong) {
-          currentLat = a.startLat ?? a.siteLat ?? user?.location?.lat ?? emp?.location?.lat ?? null;
-          currentLong = a.startLong ?? a.siteLong ?? user?.location?.long ?? emp?.location?.long ?? null;
+          const siteDoc = siteMap.get(String(a.leadId || a.siteId));
+          currentLat = a.startLat ?? a.siteLat ?? siteDoc?.location?.lat ?? user?.location?.lat ?? emp?.location?.lat ?? null;
+          currentLong = a.startLong ?? a.siteLong ?? siteDoc?.location?.long ?? user?.location?.long ?? emp?.location?.long ?? null;
         }
-        const displayName = user?.userDisplayName || emp?.name || a.markedByUserName || 'Staff';
+        const displayName = user?.userDisplayName || emp?.name || a.workerName || a.markedByUserName || 'Staff';
         const resolvedRole = a.role || user?.userRole || emp?.userRole || emp?.role || 'Staff';
 
         // An attendance record is for a real employee/staff if:
@@ -3836,22 +3967,18 @@ exports.manageEmployees = {
         };
       });
 
-
       // ─── Filter: only show actual employees & registered staff in live tracking ──
       // Always exclude Clients, Guests, Vendors regardless of requester role.
       let employeeData = data.filter((item) => item.isEmployee);
 
-      // ─── Admin role filter ─────────────────────────────────────────────────
-      // CorpAdmin/userAdmin/Admin should see all active workers & registered users
-      // but NOT other admin/corpadmin users — admins don't track other admins.
-      const requesterRole = (req.user?.userRole || req.user?.role || '').toLowerCase();
+      // ─── Admin role filter: ALWAYS exclude CorpAdmin, userAdmin, and Admin from map markers ─
+      // Ensures that ONLY active workforce staff and non-admin registered users (Project, Sales, Finance, etc.)
+      // are rendered on the live map, keeping admin users hidden as requested.
       const ADMIN_ROLES_FILTER = new Set(['corpadmin', 'useradmin', 'admin']);
-      if (ADMIN_ROLES_FILTER.has(requesterRole)) {
-        employeeData = employeeData.filter((item) => {
-          const staffRole = (item.role || '').toLowerCase();
-          return !ADMIN_ROLES_FILTER.has(staffRole);
-        });
-      }
+      employeeData = employeeData.filter((item) => {
+        const staffRole = (item.role || '').toLowerCase();
+        return !ADMIN_ROLES_FILTER.has(staffRole);
+      });
 
       res.json({ success: true, data: employeeData });
 
@@ -3949,8 +4076,13 @@ exports.manageEmployees = {
         reason: reason || 'late_start',
         message: message || '',
         shiftCode: shiftCode || 'G',
+        shiftType: req.body.shiftType || '8hr',
+        shiftPeriod: req.body.shiftPeriod || 'General',
         shiftStartTime: shiftStartTime || '',
         minutesLate: minutesLate || 0,
+        site_name: req.body.site_name || 'HQ/Remote',
+        lat: req.body.lat ?? null,
+        long: req.body.long ?? null,
         requestedAt: requestedAt || new Date().toISOString(),
       };
 
@@ -3959,7 +4091,7 @@ exports.manageEmployees = {
           req.io.to(req.tenantDbName).emit('attendance:permission_request', payload);
           req.io.to(req.tenantDbName).emit('admin:broadcast', {
             id: reqId,
-            title: reason === 'late_start' ? 'Late Start Request' : 'Early End Duty Request',
+            title: reason === 'late_start' ? 'Late Start Permission Request' : 'Early End Duty Request',
             message: message || `${displayName} requested ${reason === 'late_start' ? 'late duty start' : 'early end duty'}.`,
             priority: 'high',
             targetRoles: ['CorpAdmin', 'Admin', 'userAdmin'],
@@ -3974,18 +4106,50 @@ exports.manageEmployees = {
 
       if (Messages) {
         try {
-          const msg = new Messages({
-            senderName: displayName,
-            senderId: targetEmpId,
-            text: reason === 'late_start'
-              ? `Request to start late duty from ${displayName}. Shift started at ${shiftStartTime || 'N/A'}.`
-              : `Request to end duty early from ${displayName}.`,
-            type: 'text',
-            isOneToOne: false,
-            status: 'unseen',
-          });
-          await msg.save();
-          if (req.io && req.tenantDbName) req.io.to(req.tenantDbName).emit('newMessage', msg);
+          const adminIds = new Set();
+          if (mongoose.connection.readyState === 1) {
+            const uAdmins = await userMaster.find({
+              'accessCorporate.dbName': req.tenantDbName,
+              userRole: { $in: ['CorpAdmin', 'userAdmin', 'Admin'] },
+            }).select('_id').lean().catch(() => []);
+            uAdmins.forEach((u) => adminIds.add(String(u._id)));
+          }
+          if (Employees) {
+            const empAdmins = await Employees.find({
+              role: { $in: ['CorpAdmin', 'userAdmin', 'Admin'] },
+            }).select('_id user_id').lean().catch(() => []);
+            empAdmins.forEach((e) => {
+              if (e.user_id) adminIds.add(String(e.user_id));
+              else adminIds.add(String(e._id));
+            });
+          }
+          if (adminIds.size === 0 && mongoose.connection.readyState === 1) {
+            const fallbackAdmins = await userMaster.find({
+              userRole: { $in: ['CorpAdmin', 'userAdmin', 'Admin'] },
+            }).select('_id').limit(5).lean().catch(() => []);
+            fallbackAdmins.forEach((u) => adminIds.add(String(u._id)));
+          }
+
+          const reqText = reason === 'late_start'
+            ? `⚠️ Request to start late duty from ${displayName}. Shift started at ${shiftStartTime || 'N/A'}.`
+            : `⚠️ Request to end duty early from ${displayName}.`;
+
+          // Strictly 1-to-1 chats only, no workforce chat messages
+          if (adminIds.size > 0) {
+            for (const adminId of adminIds) {
+              const p2pMsg = new Messages({
+                senderName: displayName,
+                senderId: String(targetEmpId),
+                receiverId: String(adminId),
+                text: reqText,
+                type: 'text',
+                isOneToOne: true,
+                status: 'unseen',
+              });
+              await p2pMsg.save();
+              if (req.io && req.tenantDbName) req.io.to(req.tenantDbName).emit('newMessage', p2pMsg);
+            }
+          }
         } catch (_) {}
       }
 
@@ -4003,7 +4167,7 @@ exports.manageEmployees = {
   respondAttendancePermission: async (req, res) => {
     try {
       const { requestId, employeeId, attendanceId, approved, reason, message } = req.body;
-      const { Attendance, Employees } = req.tenantModels || {};
+      const { Attendance, Employees, Messages } = req.tenantModels || {};
       const userMaster = require('../models/userMaster');
 
       const adminName = req.user?.userDisplayName || req.user?.name || 'Admin';
@@ -4014,16 +4178,33 @@ exports.manageEmployees = {
             requestId,
             employeeId,
             attendanceId,
-            reason,
+            reason: reason || 'late_start',
             approved: false,
-            message: message || `Request denied by ${adminName}.`,
+            message: message || 'Request not allowed by Admin.',
           };
           if (req.tenantDbName) {
             req.io.to(req.tenantDbName).emit('attendance:permission_denied', deniedPayload);
           }
           req.io.emit('attendance:permission_denied', deniedPayload);
         }
-        return res.json({ success: true, message: 'Request denied successfully' });
+
+        if (Messages && employeeId) {
+          try {
+            const replyMsg = new Messages({
+              senderName: adminName,
+              senderId: String(req.user?.userId || req.user?._id || 'admin'),
+              receiverId: String(employeeId),
+              text: `❌ Request not allowed by Admin (${adminName}). Late start duty rejected.`,
+              type: 'text',
+              isOneToOne: true,
+              status: 'unseen',
+            });
+            await replyMsg.save();
+            if (req.tenantDbName && req.io) req.io.to(req.tenantDbName).emit('newMessage', replyMsg);
+          } catch (_) {}
+        }
+
+        return res.json({ success: true, message: 'Request denied and sender notified (Request not allowed)' });
       }
 
       if (reason === 'early_end') {
@@ -4084,32 +4265,43 @@ exports.manageEmployees = {
           });
 
           if (!attRecord) {
-            let emp = Employees && mongoose.isValidObjectId(qId) ? await Employees.findById(qId).lean() : null;
-            let uDoc = mongoose.isValidObjectId(qId) ? await userMaster.findById(qId).lean() : null;
+            let emp = Employees && mongoose.isValidObjectId(qId) ? await Employees.findById(qId).lean().catch(() => null) : null;
+            let uDoc = null;
+            if (mongoose.isValidObjectId(qId) && mongoose.connection.readyState === 1) {
+              uDoc = await userMaster.findById(qId).lean().catch(() => null);
+            }
             const now = new Date();
-            const displayName = uDoc?.userDisplayName || emp?.name || 'Staff';
-            const role = uDoc?.userRole || emp?.role || 'project';
-            const isWorker = !!emp && !uDoc;
+            const displayName = req.body.employeeName || uDoc?.userDisplayName || emp?.name || 'Staff';
+            const role = req.body.userRole || uDoc?.userRole || emp?.role || 'project';
+            const isWorker = !uDoc && !!emp;
 
             attRecord = new Attendance({
               employeeId: qId,
               employeeType: isWorker ? 'Employees' : 'userMaster',
-              startLat: uDoc?.location?.lat || emp?.location?.lat || null,
-              startLong: uDoc?.location?.long || emp?.location?.long || null,
+              identityType: isWorker ? 'WORKER' : 'REGISTERED_USER',
+              userId: isWorker ? null : qId,
+              workerName: displayName,
+              startLat: req.body.lat ?? uDoc?.location?.lat ?? emp?.location?.lat ?? null,
+              startLong: req.body.long ?? uDoc?.location?.long ?? emp?.location?.long ?? null,
               role,
               date: now,
               dutyStartScheduled: now,
               dutyStart: now,
               dutyEndScheduled: new Date(now.getTime() + 8 * 3600000),
-              shiftCode: 'G',
-              shiftType: '8hr',
-              shiftPeriod: 'General',
+              shiftCode: req.body.shiftCode || 'G',
+              shiftType: req.body.shiftType || '8hr',
+              shiftPeriod: req.body.shiftPeriod || 'General',
               status: 'Present',
-              site_name: 'HQ/Remote',
+              site_name: req.body.site_name || 'HQ/Remote',
               markedByDevice: false,
               markedByUserName: adminName,
               remarks: `Late start approved by ${adminName}`,
             });
+            await attRecord.save();
+          } else {
+            attRecord.dutyStart = attRecord.dutyStart || new Date();
+            attRecord.status = 'Present';
+            attRecord.remarks = (attRecord.remarks ? attRecord.remarks + '; ' : '') + `Late start approved by ${adminName}`;
             await attRecord.save();
           }
         }
@@ -4122,7 +4314,7 @@ exports.manageEmployees = {
           approved: true,
           activeDuty: attRecord,
           canStart: true,
-          message: `Late start approved by ${adminName}. Duty is now ON.`,
+          message: `Late start allowed by ${adminName}. Attendance added and duty is now ON.`,
         };
 
         if (req.io) {
@@ -4130,16 +4322,33 @@ exports.manageEmployees = {
             req.io.to(req.tenantDbName).emit('attendance:duty_on', {
               employeeId,
               attendanceId: attRecord?._id,
-              shiftCode: attRecord?.shiftCode || 'G',
-              shiftPeriod: attRecord?.shiftPeriod || 'General',
+              shiftCode: attRecord?.shiftCode || req.body.shiftCode || 'G',
+              shiftPeriod: attRecord?.shiftPeriod || req.body.shiftPeriod || 'General',
+              activeDuty: attRecord,
             });
             req.io.to(req.tenantDbName).emit('attendance:permission_approved', approvedPayload);
           }
-          req.io.emit('attendance:duty_on', { employeeId, attendanceId: attRecord?._id });
+          req.io.emit('attendance:duty_on', { employeeId, attendanceId: attRecord?._id, activeDuty: attRecord });
           req.io.emit('attendance:permission_approved', approvedPayload);
         }
 
-        return res.json({ success: true, message: 'Late start approved and duty started successfully', data: attRecord });
+        if (Messages && employeeId) {
+          try {
+            const replyMsg = new Messages({
+              senderName: adminName,
+              senderId: String(req.user?.userId || req.user?._id || 'admin'),
+              receiverId: String(employeeId),
+              text: `✅ Late start allowed by Admin (${adminName}). Attendance added to database and duty is now ON.`,
+              type: 'text',
+              isOneToOne: true,
+              status: 'unseen',
+            });
+            await replyMsg.save();
+            if (req.tenantDbName && req.io) req.io.to(req.tenantDbName).emit('newMessage', replyMsg);
+          } catch (_) {}
+        }
+
+        return res.json({ success: true, message: 'Late start approved and attendance added to database successfully', data: attRecord });
       }
     } catch (err) {
       console.error('respondAttendancePermission error:', err);
