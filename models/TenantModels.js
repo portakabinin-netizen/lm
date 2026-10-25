@@ -215,6 +215,15 @@ const leadSchema = new mongoose.Schema(
           billRate: { type: Number, default: 0 }, // Amount charged to client per worker per shift
           salaryRate: { type: Number, default: 0 }, // Amount paid to worker per shift
           active: { type: Boolean, default: true },
+          exemptDays: [{ type: String }],
+          allowedHolidays: [{ type: String }],
+          boundWorkerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Employees', default: null },
+          boundWorkerName: { type: String, trim: true },
+          weeklyRestDay: {
+            type: String,
+            enum: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', null],
+            default: null,
+          },
         },
         { _id: true }
       ),
@@ -259,6 +268,21 @@ const attendanceSchema = new mongoose.Schema(
     rate: { type: Number, default: 0 },
     site_name: { type: String, trim: true },
     remarks: { type: String, trim: true },
+    // ── ⚖️ Penalty & Lapse Fields on Duty Date ──
+    penaltyImposed: { type: Number, default: 0 },
+    penaltyDeducted: { type: Number, default: 0 },
+    penaltyWaivedOff: { type: Number, default: 0 },
+    penaltyReason: { type: String, trim: true },
+    violationType: { type: String, trim: true },
+    penaltyApprovedBy: { type: String, trim: true },
+    penaltyMediaUrl: { type: String, trim: true },
+    penaltyMedia: [
+      {
+        url: { type: String },
+        type: { type: String, default: 'image' }, // image or video
+        uploadedAt: { type: Date, default: Date.now },
+      },
+    ],
     siteId: { type: String },
     leadId: { type: mongoose.Schema.Types.ObjectId },
     clientId: { type: mongoose.Schema.Types.ObjectId },
@@ -282,6 +306,11 @@ const attendanceSchema = new mongoose.Schema(
     dailyRate: { type: Number, default: 0 },
     dailyEarn: { type: Number, default: 0 },
     dutyCount: { type: Number, default: 1 },
+    // ── ⏱️ Overtime (OT) Tracking (Single Rate 1.0x) ──
+    isOvertime: { type: Boolean, default: false },
+    overtimeHours: { type: Number, default: 0 },
+    overtimeRate: { type: Number, default: 1.0 }, // Single rate (1.0x, not 1.5x)
+    overtimeEarn: { type: Number, default: 0 },
     // ── Double / Consecutive Shift ──
     isDoubleShift: { type: Boolean, default: false }, // true if worker continued into next shift
     previousShiftId: { type: mongoose.Schema.Types.ObjectId, ref: 'Attendance', default: null }, // links to prior shift record
@@ -591,6 +620,53 @@ const siteClientCheckSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// 11. Site Roster & Holiday Master
+const siteRosterHolidaySchema = new mongoose.Schema(
+  {
+    year: { type: Number, required: true },
+    month: { type: Number, required: true },
+    date: { type: String, index: true }, // 'YYYY-MM-DD'
+    dayName: { type: String },
+
+    // Mandatory Client / Site Linkage
+    siteId: { type: mongoose.Schema.Types.ObjectId, ref: 'Leads', required: true, index: true },
+    clientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Parties' },
+    siteName: { type: String, required: true },
+    shiftCode: { type: String, trim: true },
+
+    // Stationed Worker on this Site
+    workerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Employees', required: true, index: true },
+    workerName: { type: String, required: true },
+
+    type: {
+      type: String,
+      required: true,
+      enum: [
+        'WeeklyRest',
+        'NationalHoliday',
+        'FestivalHoliday',
+        'SiteClosed',
+        'SickLeave',
+        'CasualLeave',
+        'PaidHoliday',
+      ],
+      index: true,
+    },
+    restDayOfWeek: {
+      type: String,
+      enum: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', null],
+      default: null,
+    },
+    remark: { type: String, required: true },
+    isPaid: { type: Boolean, default: true },
+    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'userMaster' },
+  },
+  { timestamps: true }
+);
+
+siteRosterHolidaySchema.index({ siteId: 1, workerId: 1, restDayOfWeek: 1 });
+siteRosterHolidaySchema.index({ siteId: 1, date: 1 });
+
 /**
  * Factory function to bind models to a tenant connection
  */
@@ -623,6 +699,9 @@ const getTenantModels = (connection) => {
     AttendanceBackupLogs:
       connection.models.AttendanceBackupLogs ||
       connection.model('AttendanceBackupLogs', attendanceBackupLogSchema),
+    SiteRosterHolidays:
+      connection.models.SiteRosterHolidays ||
+      connection.model('SiteRosterHolidays', siteRosterHolidaySchema),
   };
 };
 

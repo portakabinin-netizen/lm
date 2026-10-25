@@ -905,6 +905,42 @@ exports.manageLeads = {
         { new: true }
       );
       if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
+
+      // Automatically sync SiteRosterHolidays for bound workers with weeklyRestDay
+      try {
+        const { SiteRosterHolidays, Employees } = req.tenantModels;
+        if (SiteRosterHolidays) {
+          for (const s of siteShifts) {
+            if (s.boundWorkerId && s.weeklyRestDay) {
+              let wName = s.boundWorkerName;
+              if (!wName && Employees) {
+                const emp = await Employees.findById(s.boundWorkerId).lean();
+                wName = emp?.name || 'Worker';
+              }
+              await SiteRosterHolidays.findOneAndUpdate(
+                { siteId: req.params.id, workerId: s.boundWorkerId, type: 'WeeklyRest' },
+                {
+                  $set: {
+                    siteName: lead.sender_name || lead.name || 'Site',
+                    clientId: lead.clientId || null,
+                    shiftCode: s.shiftCode || '',
+                    workerName: wName || 'Worker',
+                    year: new Date().getFullYear(),
+                    month: new Date().getMonth() + 1,
+                    restDayOfWeek: s.weeklyRestDay,
+                    remark: `${wName || 'Worker'} - ${s.weeklyRestDay} Weekly Rest at ${lead.sender_name || 'Site'}`,
+                    isPaid: true,
+                  },
+                },
+                { upsert: true, new: true }
+              );
+            }
+          }
+        }
+      } catch (syncErr) {
+        console.error('Failed to sync SiteRosterHolidays in updateSiteShifts:', syncErr.message);
+      }
+
       req.io.to(req.tenantDbName).emit('lead:updated', { data: lead });
       res.json({ success: true, data: lead });
     } catch (err) {
@@ -1664,7 +1700,7 @@ exports.manageEmployees = {
   listAttendance: async (req, res) => {
     try {
       const { Attendance } = req.tenantModels;
-      const { from_date, to_date, date, employeeId } = req.query;
+      const { from_date, to_date, date, employeeId, leadId, siteId } = req.query;
       let q = {};
 
       if (employeeId) {
@@ -1736,6 +1772,14 @@ exports.manageEmployees = {
         q = {
           $or: [{ date: { $gte: defaultStart } }, { dutyEnd: { $exists: false } }, { dutyEnd: null }],
         };
+      }
+      const targetSite = leadId || siteId;
+      if (targetSite) {
+        const siteOr = [{ siteId: String(targetSite) }, { leadId: String(targetSite) }];
+        if (mongoose.Types.ObjectId.isValid(String(targetSite))) {
+          siteOr.push({ leadId: new mongoose.Types.ObjectId(String(targetSite)) });
+        }
+        q = Object.keys(q).length > 0 ? { $and: [q, { $or: siteOr }] } : { $or: siteOr };
       }
       const limitVal = req.query.limit ? parseInt(req.query.limit, 10) : 5000;
       const data = await Attendance.find(q)
@@ -2234,6 +2278,39 @@ exports.manageEmployees = {
         siteLong,
       });
       await record.save();
+
+      // Auto-bind: once worker is posted on site, bound to that site shift until supervisor changes it
+      if (effectiveLeadId && Leads && employeeDoc && finalShiftCode) {
+        try {
+          await Leads.updateOne(
+            { _id: effectiveLeadId, 'siteShifts.shiftCode': finalShiftCode },
+            {
+              $set: {
+                'siteShifts.$.boundWorkerId': employeeId,
+                'siteShifts.$.boundWorkerName': emp?.name || '',
+              },
+            }
+          );
+        } catch (bindErr) {
+          console.error('Auto-binding site shift worker error:', bindErr.message);
+        }
+      }
+
+      // Schedule auto-end timer and automatic handover rollover at scheduled completion
+      if (finalDutyEndScheduled && autoEndScheduler) {
+        try {
+          autoEndScheduler.scheduleAutoEnd(
+            record._id,
+            finalDutyEndScheduled,
+            Attendance,
+            req.tenantDbName,
+            req.io
+          );
+        } catch (schedErr) {
+          console.error('scheduleAutoEnd error in markAttendance:', schedErr.message);
+        }
+      }
+
       const emit = require('../utils/socketEmitter');
       emit(req, 'attendance:created', { data: record });
       if (req.io && req.tenantDbName) {
@@ -2407,6 +2484,14 @@ exports.manageEmployees = {
         'dutyEnd',
         'dailyRate',
         'dailyEarn',
+        'penaltyImposed',
+        'penaltyDeducted',
+        'penaltyWaivedOff',
+        'penaltyReason',
+        'violationType',
+        'penaltyApprovedBy',
+        'penaltyMediaUrl',
+        'penaltyMedia',
       ];
       const update = {};
       allowed.forEach((k) => {
@@ -3367,6 +3452,13 @@ exports.manageEmployees = {
         }
         record.hoursWorked = parseFloat(Math.max(0, elapsedHrs).toFixed(2));
         const standardHours = record.shiftHours || record.shiftLockHours || 8;
+        const overtimeHours = parseFloat(Math.max(0, record.hoursWorked - standardHours).toFixed(2));
+        const overtimeRate = 1.0; // Single rate (1.0x, not 1.5x)
+        const baseHourlyRate = (record.dailyRate || 0) / standardHours;
+        record.isOvertime = overtimeHours > 0;
+        record.overtimeHours = overtimeHours;
+        record.overtimeRate = overtimeRate;
+        record.overtimeEarn = parseFloat((overtimeHours * baseHourlyRate * overtimeRate).toFixed(2));
         record.dailyEarn = parseFloat(
           ((record.hoursWorked / standardHours) * (record.dailyRate || 0)).toFixed(2)
         );
@@ -4776,6 +4868,496 @@ exports.manageEmployees = {
       });
     } catch (err) {
       console.error('coverShiftForLeave error:', err);
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  listSiteRosterHolidays: async (req, res) => {
+    try {
+      const { SiteRosterHolidays } = req.tenantModels;
+      const { siteId, year, month, workerId } = req.query;
+      const filter = {};
+      if (siteId) filter.siteId = siteId;
+      if (workerId) filter.workerId = workerId;
+
+      if (year && month) {
+        filter.$or = [
+          { year: parseInt(year, 10), month: parseInt(month, 10) },
+          { type: 'WeeklyRest', restDayOfWeek: { $ne: null } },
+        ];
+      } else if (year) {
+        filter.$or = [
+          { year: parseInt(year, 10) },
+          { type: 'WeeklyRest', restDayOfWeek: { $ne: null } },
+        ];
+      }
+
+      const records = await SiteRosterHolidays.find(filter).sort({ date: 1, restDayOfWeek: 1 }).lean();
+      res.json({ success: true, data: records });
+    } catch (err) {
+      console.error('listSiteRosterHolidays error:', err);
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  saveSiteRosterHoliday: async (req, res) => {
+    try {
+      const { SiteRosterHolidays, Leads, Employees } = req.tenantModels;
+      const {
+        siteId,
+        workerId,
+        date,
+        type,
+        restDayOfWeek,
+        remark,
+        isPaid,
+        shiftCode,
+      } = req.body;
+
+      if (!siteId) {
+        return res.status(400).json({ success: false, message: 'siteId is required' });
+      }
+
+      const site = await Leads.findById(siteId).lean();
+      const siteName = site?.sender_name || site?.name || 'Site';
+      const clientId = site?.clientId || null;
+
+      let workerName = req.body.workerName || '';
+      if (workerId && !workerName) {
+        const emp = await Employees.findById(workerId).lean();
+        workerName = emp?.name || '';
+      }
+
+      let year = req.body.year;
+      let month = req.body.month;
+      let dayName = req.body.dayName;
+      if (date) {
+        const dt = new Date(date);
+        if (!isNaN(dt.getTime())) {
+          year = year || dt.getFullYear();
+          month = month || (dt.getMonth() + 1);
+          const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+          dayName = dayName || days[dt.getDay()];
+        }
+      }
+
+      const doc = new SiteRosterHolidays({
+        siteId,
+        clientId,
+        siteName,
+        shiftCode: shiftCode || '',
+        workerId: workerId || req.user?._id,
+        workerName: workerName || 'Worker',
+        year: year || new Date().getFullYear(),
+        month: month || (new Date().getMonth() + 1),
+        date: date || '',
+        dayName: dayName || restDayOfWeek || '',
+        type: type || 'WeeklyRest',
+        restDayOfWeek: restDayOfWeek || null,
+        remark: remark || 'Site Rest / Holiday',
+        isPaid: isPaid !== false,
+        createdBy: req.user?._id || null,
+      });
+
+      await doc.save();
+      res.status(201).json({ success: true, message: 'Site roster holiday saved', data: doc });
+    } catch (err) {
+      console.error('saveSiteRosterHoliday error:', err);
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  setupSiteWeeklyRest: async (req, res) => {
+    try {
+      const { SiteRosterHolidays, Leads, Employees } = req.tenantModels;
+      const { siteId, shiftCode, workerId, restDayOfWeek } = req.body;
+
+      if (!siteId || !workerId || !restDayOfWeek) {
+        return res.status(400).json({
+          success: false,
+          message: 'siteId, workerId, and restDayOfWeek are required',
+        });
+      }
+
+      const site = await Leads.findById(siteId);
+      if (!site) {
+        return res.status(404).json({ success: false, message: 'Site not found' });
+      }
+
+      const emp = await Employees.findById(workerId).lean();
+      const workerName = emp?.name || 'Worker';
+      const siteName = site.sender_name || site.name || 'Site';
+
+      // 1. Update siteShifts subdocument in Lead
+      if (shiftCode && Array.isArray(site.siteShifts)) {
+        const targetShift = site.siteShifts.find(
+          (s) => s.shiftCode === shiftCode && s.active !== false
+        );
+        if (targetShift) {
+          targetShift.boundWorkerId = workerId;
+          targetShift.boundWorkerName = workerName;
+          targetShift.weeklyRestDay = restDayOfWeek;
+          await site.save();
+        }
+      }
+
+      // 2. Upsert in SiteRosterHolidays collection
+      const now = new Date();
+      const existing = await SiteRosterHolidays.findOne({
+        siteId,
+        workerId,
+        type: 'WeeklyRest',
+      });
+
+      if (existing) {
+        existing.restDayOfWeek = restDayOfWeek;
+        existing.shiftCode = shiftCode || existing.shiftCode || '';
+        existing.remark = `${workerName} - ${restDayOfWeek} Weekly Rest at ${siteName}`;
+        await existing.save();
+        return res.json({ success: true, message: 'Weekly rest updated', data: existing });
+      } else {
+        const newRecord = new SiteRosterHolidays({
+          siteId,
+          clientId: site.clientId || null,
+          siteName,
+          shiftCode: shiftCode || '',
+          workerId,
+          workerName,
+          year: now.getFullYear(),
+          month: now.getMonth() + 1,
+          type: 'WeeklyRest',
+          restDayOfWeek,
+          remark: `${workerName} - ${restDayOfWeek} Weekly Rest at ${siteName}`,
+          isPaid: true,
+          createdBy: req.user?._id || null,
+        });
+        await newRecord.save();
+        return res.status(201).json({ success: true, message: 'Weekly rest created', data: newRecord });
+      }
+    } catch (err) {
+      console.error('setupSiteWeeklyRest error:', err);
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  generateYearHolidays: async (req, res) => {
+    try {
+      const { SiteRosterHolidays, Leads } = req.tenantModels;
+      const { siteId, year, holidays } = req.body;
+      const targetYear = parseInt(year, 10) || new Date().getFullYear();
+
+      if (!siteId) {
+        return res.status(400).json({ success: false, message: 'siteId is required' });
+      }
+
+      // Standard Gazette & Major Festival Holidays template
+      const standardHolidays = [
+        { date: `${targetYear}-01-26`, remark: 'Republic Day', type: 'NationalHoliday' },
+        { date: `${targetYear}-03-14`, remark: 'Holi', type: 'FestivalHoliday' },
+        { date: `${targetYear}-05-01`, remark: 'Maharashtra / Labour Day', type: 'NationalHoliday' },
+        { date: `${targetYear}-08-15`, remark: 'Independence Day', type: 'NationalHoliday' },
+        { date: `${targetYear}-10-02`, remark: 'Gandhi Jayanti', type: 'NationalHoliday' },
+        { date: `${targetYear}-10-20`, remark: 'Dussehra', type: 'FestivalHoliday' },
+        { date: `${targetYear}-11-08`, remark: 'Diwali', type: 'FestivalHoliday' },
+        { date: `${targetYear}-12-25`, remark: 'Christmas', type: 'FestivalHoliday' },
+      ];
+
+      const rawHolidays = Array.isArray(holidays) && holidays.length > 0 ? holidays : standardHolidays;
+      const now = new Date();
+      const currentYearNum = now.getFullYear();
+      const todayStr = `${currentYearNum}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+
+      // Only schedule upcoming holidays (past holidays like Oct 2 and Oct 20 are omitted once passed)
+      const holidaysToProcess = rawHolidays.filter((h) => {
+        const dStr = (h.date || '').split('T')[0].trim();
+        return !dStr || dStr >= todayStr || targetYear > currentYearNum;
+      });
+
+      let sitesToProcess = [];
+      if (siteId === '__all__') {
+        sitesToProcess = await Leads.find({
+          status: { $in: ['Accepted', 'Engaged', 'Tax Invoice'] },
+        }).lean();
+      } else {
+        const singleSite = await Leads.findById(siteId).lean();
+        if (singleSite) sitesToProcess.push(singleSite);
+      }
+
+      if (sitesToProcess.length === 0) {
+        return res.status(404).json({ success: false, message: 'No sites found for holiday setup' });
+      }
+
+      let createdCount = 0;
+      for (const site of sitesToProcess) {
+        const curSiteId = site._id;
+        const siteName = site?.sender_name || site?.name || 'Site';
+        const clientId = site?.clientId || null;
+
+        for (const h of holidaysToProcess) {
+          const dt = new Date(h.date);
+          const month = dt.getMonth() + 1;
+          const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+          const dayName = days[dt.getDay()];
+
+          const exists = await SiteRosterHolidays.findOne({
+            siteId: curSiteId,
+            date: h.date,
+          });
+
+          if (!exists) {
+            await new SiteRosterHolidays({
+              siteId: curSiteId,
+              clientId,
+              siteName,
+              workerId: req.user?._id || new mongoose.Types.ObjectId(),
+              workerName: 'ALL_POST_WORKERS',
+              year: targetYear,
+              month,
+              date: h.date,
+              dayName,
+              type: h.type || 'FestivalHoliday',
+              remark: h.remark || 'Site Holiday',
+              isPaid: h.isPaid !== false,
+              createdBy: req.user?._id || null,
+            }).save();
+            createdCount++;
+          }
+        }
+      }
+
+      res.json({
+        success: true,
+        message: `Applied ${holidaysToProcess.length} holiday(s) across ${sitesToProcess.length} site(s) (${createdCount} new records created)`,
+      });
+    } catch (err) {
+      console.error('generateYearHolidays error:', err);
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  deleteSiteRosterHoliday: async (req, res) => {
+    try {
+      const { SiteRosterHolidays } = req.tenantModels;
+      const { id } = req.params;
+      const deleted = await SiteRosterHolidays.findByIdAndDelete(id);
+      if (!deleted) {
+        return res.status(404).json({ success: false, message: 'Record not found' });
+      }
+      res.json({ success: true, message: 'Record removed successfully' });
+    } catch (err) {
+      console.error('deleteSiteRosterHoliday error:', err);
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  listWorkerPenalties: async (req, res) => {
+    try {
+      const { Attendance } = req.tenantModels;
+      const { month, year, siteId, workerId } = req.query;
+
+      const targetYear = year ? parseInt(year, 10) : new Date().getFullYear();
+      const targetMonth =
+        month !== undefined && month !== '' ? parseInt(month, 10) : new Date().getMonth();
+
+      const fromDate = new Date(targetYear, targetMonth, 1, 0, 0, 0, 0);
+      const toDate = new Date(targetYear, targetMonth + 1, 0, 23, 59, 59, 999);
+
+      const query = {
+        date: { $gte: fromDate, $lte: toDate },
+        $or: [
+          { penaltyImposed: { $gt: 0 } },
+          { penaltyDeducted: { $gt: 0 } },
+          { penaltyWaivedOff: { $gt: 0 } },
+          { violationType: { $ne: null } },
+        ],
+      };
+
+      if (workerId) query.employeeId = workerId;
+      if (siteId && siteId !== '__all__') query.leadId = siteId;
+
+      const attRecords = await Attendance.find(query)
+        .populate('employeeId', 'name role enrollment_no')
+        .sort({ date: -1 })
+        .lean();
+
+      const records = attRecords.map((att) => {
+        const emp = att.employeeId || {};
+        const imposed = att.penaltyImposed || 0;
+        const deducted = att.penaltyDeducted || 0;
+        const waived = att.penaltyWaivedOff || 0;
+
+        let status = 'Imposed';
+        if (waived >= imposed && imposed > 0) {
+          status = 'Waived Off';
+        } else if (deducted >= imposed && imposed > 0) {
+          status = 'Deducted';
+        } else if (deducted > 0 && deducted < imposed) {
+          status = 'Partially Deducted';
+        }
+
+        return {
+          _id: att._id,
+          id: att._id,
+          attendanceId: att._id,
+          workerId: String(emp._id || att.employeeId || ''),
+          workerName: emp.name || att.workerName || 'Worker',
+          role: emp.role || att.role || 'Worker',
+          enrollmentNo: emp.enrollment_no || '',
+          siteId: att.leadId ? String(att.leadId) : att.siteId || null,
+          siteName: att.site_name || 'Site',
+          shiftName: att.shiftPeriod || att.shiftCode || 'General',
+          month: targetMonth,
+          year: targetYear,
+          date: att.date ? new Date(att.date).toISOString().split('T')[0] : '',
+          violationType: att.violationType || 'Late Arrival',
+          imposedAmount: imposed,
+          deductedAmount: deducted,
+          waivedOffAmount: waived,
+          reason: att.penaltyReason || att.remarks || '',
+          status,
+          approvedBy: att.penaltyApprovedBy || '',
+          penaltyMediaUrl: att.penaltyMediaUrl || (att.penaltyMedia && att.penaltyMedia[0]?.url) || '',
+          penaltyMedia: att.penaltyMedia || [],
+        };
+      });
+
+      res.json({ success: true, data: records });
+    } catch (err) {
+      console.error('listWorkerPenalties error:', err);
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  saveWorkerPenalty: async (req, res) => {
+    try {
+      const { Attendance, Employees, Leads } = req.tenantModels;
+      const {
+        id,
+        _id,
+        attendanceId,
+        workerId,
+        siteId,
+        shiftName,
+        date,
+        violationType,
+        imposedAmount,
+        deductedAmount,
+        waivedOffAmount,
+        reason,
+        approvedBy,
+        penaltyMediaUrl,
+        penaltyMedia,
+      } = req.body;
+
+      const targetId = req.params?.id || attendanceId || id || _id;
+      const imposed = Number(imposedAmount) || 0;
+      const deducted = Number(deductedAmount) || 0;
+      const waived = Number(waivedOffAmount) || 0;
+
+      let emp = null;
+      if (workerId) {
+        emp = await Employees.findById(workerId).lean();
+      }
+
+      let site = null;
+      if (siteId && siteId !== '__all__') {
+        site = await Leads.findById(siteId).lean();
+      }
+
+      const siteName = req.body.siteName || site?.sender_name || site?.name || 'All Sites';
+      let record = null;
+
+      if (targetId) {
+        record = await Attendance.findById(targetId);
+      }
+
+      if (!record && workerId && date) {
+        const startOfDay = new Date(date);
+        startOfDay.setHours(0, 0, 0, 0);
+        const endOfDay = new Date(date);
+        endOfDay.setHours(23, 59, 59, 999);
+
+        record = await Attendance.findOne({
+          employeeId: workerId,
+          date: { $gte: startOfDay, $lte: endOfDay },
+        });
+      }
+
+      if (record) {
+        // Update penalty on existing duty attendance record
+        record.penaltyImposed = imposed;
+        record.penaltyDeducted = deducted;
+        record.penaltyWaivedOff = waived;
+        record.penaltyReason = reason || record.penaltyReason || '';
+        record.violationType = violationType || record.violationType || 'Late Arrival';
+        record.penaltyApprovedBy = approvedBy || req.user?.name || '';
+        if (penaltyMediaUrl !== undefined) record.penaltyMediaUrl = penaltyMediaUrl;
+        if (penaltyMedia !== undefined) record.penaltyMedia = penaltyMedia;
+        if (siteId && siteId !== '__all__') record.leadId = siteId;
+        if (siteName && siteName !== 'All Sites') record.site_name = siteName;
+        if (shiftName && shiftName !== 'All Shifts') record.shiftPeriod = shiftName;
+        await record.save();
+      } else {
+        // Create duty date attendance record with lapse penalty
+        record = new Attendance({
+          employeeId: workerId,
+          workerName: req.body.workerName || emp?.name || 'Worker',
+          role: req.body.role || emp?.role || 'Worker',
+          date: new Date(date || Date.now()),
+          status: violationType === 'Absenteeism' ? 'Absent' : 'Present',
+          site_name: siteName,
+          leadId: siteId && siteId !== '__all__' ? siteId : undefined,
+          shiftPeriod: shiftName || 'General',
+          shiftHours: 8,
+          hoursWorked: 0,
+          penaltyImposed: imposed,
+          penaltyDeducted: deducted,
+          penaltyWaivedOff: waived,
+          penaltyReason: reason || '',
+          violationType: violationType || 'Late Arrival',
+          penaltyApprovedBy: approvedBy || req.user?.name || '',
+          penaltyMediaUrl: penaltyMediaUrl || '',
+          penaltyMedia: penaltyMedia || (penaltyMediaUrl ? [{ url: penaltyMediaUrl, type: penaltyMediaUrl.match(/\.(mp4|mov|avi|mkv|webm)$/i) ? 'video' : 'image' }] : []),
+          markedByDevice: false,
+          markedByUserName: req.user?.name || 'HR Admin',
+        });
+        await record.save();
+      }
+
+      res.status(200).json({
+        success: true,
+        message: 'Penalty recorded in attendance on duty date successfully',
+        data: record,
+      });
+    } catch (err) {
+      console.error('saveWorkerPenalty error:', err);
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  deleteWorkerPenalty: async (req, res) => {
+    try {
+      const { Attendance } = req.tenantModels;
+      const { id } = req.params;
+
+      const record = await Attendance.findById(id);
+      if (!record) {
+        return res.status(404).json({ success: false, message: 'Attendance record not found' });
+      }
+
+      record.penaltyImposed = 0;
+      record.penaltyDeducted = 0;
+      record.penaltyWaivedOff = 0;
+      record.penaltyReason = '';
+      record.violationType = null;
+      record.penaltyApprovedBy = '';
+      record.penaltyMediaUrl = '';
+      record.penaltyMedia = [];
+      await record.save();
+
+      res.json({ success: true, message: 'Penalty reset on duty attendance record successfully' });
+    } catch (err) {
+      console.error('deleteWorkerPenalty error:', err);
       res.status(500).json({ success: false, message: err.message });
     }
   },

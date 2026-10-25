@@ -97,6 +97,19 @@ router.put("/hr/attendance/:id", attendanceLockGuard, ctrl.manageEmployees.updat
 router.delete("/hr/attendance/:id", attendanceLockGuard, ctrl.manageEmployees.deleteAttendance);
 router.get("/hr/rate-lookup",   ctrl.manageEmployees.getRateLookup);
 
+// --- 🏖️ SITE ROSTER, REST DAYS & HOLIDAYS ---
+router.get("/hr/site-roster-holidays", ctrl.manageEmployees.listSiteRosterHolidays);
+router.post("/hr/site-roster-holidays", ctrl.manageEmployees.saveSiteRosterHoliday);
+router.post("/hr/site-roster-holidays/setup-weekly-rest", ctrl.manageEmployees.setupSiteWeeklyRest);
+router.post("/hr/site-roster-holidays/generate-year", ctrl.manageEmployees.generateYearHolidays);
+router.delete("/hr/site-roster-holidays/:id", ctrl.manageEmployees.deleteSiteRosterHoliday);
+
+// --- ⚖️ WORKER PENALTIES & DEDUCTIONS ---
+router.get("/hr/worker-penalties", ctrl.manageEmployees.listWorkerPenalties);
+router.post("/hr/worker-penalties", ctrl.manageEmployees.saveWorkerPenalty);
+router.put("/hr/worker-penalties/:id", ctrl.manageEmployees.saveWorkerPenalty);
+router.delete("/hr/worker-penalties/:id", ctrl.manageEmployees.deleteWorkerPenalty);
+
 
 // --- 👥 PARTIES (Clients & Suppliers) ---
 router.get("/parties/clients",   ctrl.manageClients.list);

@@ -19,6 +19,7 @@ const uploadRouter = require("./routes/uploadRouter");
 const UserCorpRouter = require("./routes/UserCorpRouter");
 const FinanceRouter = require("./routes/FinanceRouter");
 const dbConnector = require("./utils/dbConnector");
+const autoEndScheduler = require("./utils/autoEndScheduler");
 const path = require("path");
 
 const app = express();
@@ -183,6 +184,9 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`🖇️ App running on port->${PORT} & Started at: ${new Date().toLocaleString()}`);
+  
+  // ⏱️ Start 24/7 persistent background sweeper daemon (sweeps all active corporate tenants every 15 minutes)
+  autoEndScheduler.startBackgroundSweeper(io, 15 * 60 * 1000);
 });
 
 server.on("error", (err) => {

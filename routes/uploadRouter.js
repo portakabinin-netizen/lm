@@ -31,12 +31,25 @@ router.post("/cloudinary", upload.single("file"), async (req, res) => {
     try {
         if (!req.file) return res.status(400).json({ error: "No file uploaded" });
         const leadFolder = req.body.lead_no || "general";
-        const dbName = req.tenantDbName || req.user.dbName;
-        const subFolder = req.body.subFolder || "leads"; // Default to leads
+        const dbName = req.tenantDbName || req.user?.dbName || req.user?.corporateId || "corporate";
+        const subFolder = req.body.subFolder || req.body.folder || "leads"; // Default to leads
         
-        const folderPath = subFolder === "leads" 
-            ? `hipk/${dbName}/leads/${leadFolder}`
-            : `hipk/${dbName}/${subFolder}`;
+        let folderPath;
+        if (req.body.folder) {
+            folderPath = req.body.folder.startsWith("hipk/")
+                ? req.body.folder
+                : `hipk/${dbName}/${req.body.folder}`;
+        } else if (subFolder === "leads") {
+            folderPath = `hipk/${dbName}/leads/${leadFolder}`;
+        } else if (subFolder.startsWith("corporate/")) {
+            folderPath = leadFolder && leadFolder !== "general"
+                ? `hipk/${dbName}/${subFolder}/${leadFolder}`
+                : `hipk/${dbName}/${subFolder}`;
+        } else if (subFolder === "penalties") {
+            folderPath = `hipk/${dbName}/corporate/penalties/${leadFolder}`;
+        } else {
+            folderPath = `hipk/${dbName}/${subFolder}`;
+        }
 
         const { ProfileMaster } = req.tenantModels || {};
         let customConfig = null;
