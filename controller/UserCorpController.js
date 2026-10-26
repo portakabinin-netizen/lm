@@ -2574,6 +2574,13 @@ exports.manageEmployees = {
           attendanceId: record._id,
           hoursWorked: record.hoursWorked,
         });
+
+        // ── Trigger Auto Shift Rollover on manual attendance update ──
+        if (record.leadId || record.siteId) {
+          autoEndScheduler.handleAutoShiftRollover(record, Attendance, req.tenantDbName, req.io).catch((err) =>
+            console.error('[updateAttendance] Rollover error:', err.message)
+          );
+        }
       }
 
       const emit = require('../utils/socketEmitter');
@@ -3487,6 +3494,13 @@ exports.manageEmployees = {
         autoEndScheduler.cancelAutoEnd(record._id);
 
         await record.save();
+
+        // ── Trigger Auto Shift Rollover on manual clock-out ──
+        if (record.leadId || record.siteId) {
+          autoEndScheduler.handleAutoShiftRollover(record, Attendance, req.tenantDbName, req.io).catch((err) =>
+            console.error('[toggleAttendance] Rollover error:', err.message)
+          );
+        }
 
         // ── Async geocoding: patch end tick address after response ──────────
         if (!isExemptUser && lat && long) {

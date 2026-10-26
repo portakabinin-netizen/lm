@@ -328,6 +328,8 @@ const attendanceSchema = new mongoose.Schema(
     hoursWorked: { type: Number, default: 0 },
     forcedOff: { type: Boolean, default: false },
     forcedOffReason: { type: String, trim: true },
+    autoCompleted: { type: Boolean, default: false },
+    autoCompletedAt: { type: Date },
     // ── Emergency Control ──
     emergencyOff: { type: Boolean, default: false }, // true = ended via emergency override
     emergencyReason: { type: String, trim: true }, // Reason for emergency end

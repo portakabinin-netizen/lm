@@ -83,11 +83,12 @@ function scheduleAutoEnd(attendanceId, scheduledEndAt, AttendanceModel, tenantDb
  * (always picked from previous duty on same shift & site) unless today is weekly rest / leave.
  */
 async function handleAutoShiftRollover(closedAttendance, AttendanceModel, tenantDbName, io) {
-  if (!closedAttendance || !closedAttendance.leadId) return;
+  const effectiveLeadId = closedAttendance.leadId || closedAttendance.siteId;
+  if (!closedAttendance || !effectiveLeadId) return;
   try {
     const db = AttendanceModel.db;
     const Leads = db.models.Leads || db.model('Leads');
-    const lead = await Leads.findById(closedAttendance.leadId).lean();
+    const lead = await Leads.findById(effectiveLeadId).lean();
     if (!lead || !Array.isArray(lead.siteShifts) || lead.siteShifts.length === 0) return;
 
     const activeSiteShifts = lead.siteShifts.filter((s) => s.active !== false);
@@ -128,7 +129,7 @@ async function handleAutoShiftRollover(closedAttendance, AttendanceModel, tenant
 
     if (!incomingWorkerId) {
       prevDuty = await AttendanceModel.findOne({
-        leadId: closedAttendance.leadId,
+        leadId: effectiveLeadId,
         shiftCode: targetShiftCode,
         dutyEnd: { $exists: true, $ne: null },
       })
@@ -171,62 +172,24 @@ async function handleAutoShiftRollover(closedAttendance, AttendanceModel, tenant
     const incomingWorkerName =
       incomingEmp?.name || matchedShift.boundWorkerName || prevDuty?.workerName || 'Worker';
 
-    // ── Guard: Auto attendance NOT applicable to workers who mark attendance own/self ──
-    let isSelfMarkingWorker = false;
-
-    // A) If employee has a registered user account (user_id), they have app access to mark themselves
-    if (incomingEmp?.user_id) {
-      isSelfMarkingWorker = true;
-    }
-
     const endTime = closedAttendance.dutyEnd ? new Date(closedAttendance.dutyEnd) : new Date();
     const startOfToday = new Date(endTime);
     startOfToday.setHours(0, 0, 0, 0);
     const endOfToday = new Date(endTime);
     endOfToday.setHours(23, 59, 59, 999);
 
-    // B) Check if worker has already marked attendance self/own today
-    if (!isSelfMarkingWorker) {
-      const selfDutyToday = await AttendanceModel.findOne({
-        employeeId: incomingWorkerId,
-        date: { $gte: startOfToday, $lte: endOfToday },
-        markedByDevice: true,
-      }).lean();
+    // Guard: Prevent double-clocking for the same shift if already marked today
+    const alreadyDutyToday = await AttendanceModel.findOne({
+      employeeId: incomingWorkerId,
+      leadId: effectiveLeadId,
+      shiftCode: targetShiftCode,
+      date: { $gte: startOfToday, $lte: endOfToday },
+    }).lean();
 
-      if (selfDutyToday) {
-        isSelfMarkingWorker = true;
-      }
-    }
-
-    // C) Check if worker's recent duty history shows self-marking on their own device
-    if (!isSelfMarkingWorker) {
-      const recentSelfDuty = await AttendanceModel.findOne({
-        employeeId: incomingWorkerId,
-        markedByDevice: true,
-        markedByUserName: { $nin: ['Auto Shift Rollover', 'System'] },
-      })
-        .sort({ dutyStart: -1 })
-        .lean();
-
-      if (recentSelfDuty) {
-        isSelfMarkingWorker = true;
-      }
-    }
-
-    if (isSelfMarkingWorker) {
+    if (alreadyDutyToday) {
       console.log(
-        `[autoEndScheduler] Worker ${incomingWorkerName} (${incomingWorkerId}) marks attendance own/self. Auto attendance not applicable. Skipping auto-start.`
+        `[autoEndScheduler] Worker ${incomingWorkerName} already has attendance on shift ${targetShiftCode} today. Skipping auto-start.`
       );
-      if (io && tenantDbName) {
-        io.to(tenantDbName).emit('attendance:self_marking_worker_waiting', {
-          siteId: String(lead._id),
-          siteName: lead.sender_name || lead.name || 'Site',
-          shiftCode: targetShiftCode,
-          workerId: incomingWorkerId,
-          workerName: incomingWorkerName,
-          reason: 'Worker marks attendance own/self',
-        });
-      }
       return;
     }
 
@@ -333,8 +296,8 @@ async function handleAutoShiftRollover(closedAttendance, AttendanceModel, tenant
       employeeType: 'Employees',
       workerName: incomingWorkerName,
       role: incomingEmp?.role || closedAttendance.role || 'Security',
-      leadId: closedAttendance.leadId,
-      siteId: closedAttendance.leadId,
+      leadId: effectiveLeadId,
+      siteId: effectiveLeadId,
       clientId: closedAttendance.clientId || lead.clientId || null,
       site_name: lead.sender_name || lead.name || closedAttendance.site_name,
       status: 'Present',
@@ -349,6 +312,7 @@ async function handleAutoShiftRollover(closedAttendance, AttendanceModel, tenant
       shiftPeriod:
         matchedShift.shiftPeriod ||
         (targetShiftCode === 'N2' ? 'Night12' : targetShiftCode === 'D' ? 'Day' : 'General'),
+      shiftHours: nextDurationHrs,
       shiftLockHours: nextDurationHrs,
       dutyEnd: null,
       forcedOff: false,
@@ -403,7 +367,6 @@ async function sweepExpiredShifts(AttendanceModel, tenantDbName, io) {
     const expiredRecords = await AttendanceModel.find({
       $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }],
       dutyEndScheduled: { $exists: true, $ne: null, $lte: now },
-      shiftHours: { $exists: true },
     }).lean();
 
     if (!expiredRecords || expiredRecords.length === 0) return;
@@ -463,8 +426,245 @@ let _sweeperInterval = null;
 let _isSweeping = false;
 
 /**
- * Sweeps all active tenant databases to auto-close expired shifts, compute single-rate OT,
- * and trigger shift rollovers. Runs independently of user app state 24/7.
+ * Auto-Starts scheduled shifts across all sites for a tenant.
+ * Reuses the reliever / worker resolution logic from Shift Change Management:
+ * 1. Checks current time window for site's active shifts.
+ * 2. If slot is vacant (< workerSlots) and no duty has started for today's slot:
+ * 3. Priority 1: Shift boundWorkerId.
+ *    Priority 2: Worker who performed the last duty on this shift at this site.
+ * 4. Checks weekly rest day, exempt days, and SiteRosterHolidays (leaves, holidays).
+ * 5. Auto-creates Attendance record, schedules autoEnd, and notifies via Socket.IO.
+ */
+async function autoStartScheduledShifts(conn, tenantDbName, io) {
+  if (!conn) return;
+  try {
+    const { getTenantModels } = require('../models/TenantModels');
+    const { Attendance, Leads, Employees, SiteRosterHolidays } = getTenantModels(conn);
+    if (!Attendance || !Leads || !Employees) return;
+
+    const now = new Date();
+    // India Standard Time (IST) is UTC + 5:30 (330 minutes)
+    const istOffsetMs = 5.5 * 3600000;
+    const istDate = new Date(now.getTime() + istOffsetMs);
+    const todayDateStr = istDate.toISOString().split('T')[0];
+    const currentHour = istDate.getUTCHours();
+    const currentMin = istDate.getUTCMinutes();
+    const currentTotalMins = currentHour * 60 + currentMin;
+
+    const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const currentDayOfWeek = days[istDate.getUTCDay()];
+
+    const leads = await Leads.find({
+      'siteShifts.active': { $ne: false },
+    }).lean();
+
+    if (!Array.isArray(leads) || leads.length === 0) return;
+
+    for (const lead of leads) {
+      if (!Array.isArray(lead.siteShifts) || lead.siteShifts.length === 0) continue;
+      const activeShifts = lead.siteShifts.filter((s) => s.active !== false);
+
+      for (const shift of activeShifts) {
+        const shiftCode = String(shift.shiftCode || 'G').trim().toUpperCase();
+        const durationHrs = shift.durationHrs || (shift.shiftType === '12hr' ? 12 : 8);
+        const startTimeStr =
+          shift.startTime || (shiftCode === 'N2' || shiftCode === 'N' ? '20:00' : '08:00');
+        const [sH, sM] = startTimeStr.split(':').map(Number);
+        const shiftStartMins = (isNaN(sH) ? 8 : sH) * 60 + (isNaN(sM) ? 0 : sM);
+
+        // Check if current time is within this shift's window
+        let isWithinShift = false;
+        const shiftEndMinsRaw = shiftStartMins + durationHrs * 60;
+        if (shiftEndMinsRaw <= 1440) {
+          isWithinShift = currentTotalMins >= shiftStartMins && currentTotalMins < shiftEndMinsRaw;
+        } else {
+          const wrappedEndMins = shiftEndMinsRaw % 1440;
+          isWithinShift = currentTotalMins >= shiftStartMins || currentTotalMins < wrappedEndMins;
+        }
+
+        if (!isWithinShift) continue;
+
+        // 1. Check current active duty count for this site and shift
+        const activeCount = await Attendance.countDocuments({
+          leadId: lead._id,
+          shiftCode: shift.shiftCode,
+          $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }],
+        });
+
+        const targetSlots = shift.workerSlots || 1;
+        if (activeCount >= targetSlots) {
+          continue; // Slot already full
+        }
+
+        // 2. Check scheduled times for today
+        const scheduledStartIst = new Date(todayDateStr + 'T00:00:00.000Z');
+        scheduledStartIst.setUTCHours(isNaN(sH) ? 8 : sH, isNaN(sM) ? 0 : sM, 0, 0);
+        const scheduledStartUtc = new Date(scheduledStartIst.getTime() - istOffsetMs);
+        const scheduledEndUtc = new Date(scheduledStartUtc.getTime() + durationHrs * 3600000);
+
+        if (now >= scheduledEndUtc) continue; // Shift period has already expired
+
+        // Check if duty has already started today for this site & shift slot
+        const alreadyRanDuty = await Attendance.findOne({
+          leadId: lead._id,
+          shiftCode: shift.shiftCode,
+          dutyStart: { $gte: new Date(scheduledStartUtc.getTime() - 2 * 3600000), $lte: scheduledEndUtc },
+        }).lean();
+
+        if (alreadyRanDuty) {
+          continue; // Already started today
+        }
+
+        // 3. Resolve Worker:
+        // Priority 1: Shift boundWorkerId
+        // Priority 2: Worker who performed the last completed duty on this shift at this site
+        let targetWorkerId = shift.boundWorkerId ? String(shift.boundWorkerId) : null;
+        let prevDuty = null;
+
+        if (!targetWorkerId) {
+          prevDuty = await Attendance.findOne({
+            leadId: lead._id,
+            shiftCode: shift.shiftCode,
+            dutyEnd: { $exists: true, $ne: null },
+          })
+            .sort({ dutyStart: -1 })
+            .lean();
+
+          if (prevDuty && prevDuty.employeeId) {
+            targetWorkerId = String(prevDuty.employeeId);
+          }
+        }
+
+        if (!targetWorkerId) continue;
+
+        // 4. Guard: Worker already active on any duty?
+        const workerBusy = await Attendance.findOne({
+          employeeId: targetWorkerId,
+          $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }],
+        }).lean();
+
+        if (workerBusy) continue;
+
+        const emp = await Employees.findById(targetWorkerId).lean();
+        const workerName = emp?.name || shift.boundWorkerName || prevDuty?.workerName || 'Worker';
+
+        // 5. Guard: Weekly Rest Day & Exempt Days
+        const isShiftRestDay =
+          shift.weeklyRestDay === currentDayOfWeek ||
+          (Array.isArray(shift.exemptDays) && shift.exemptDays.includes(currentDayOfWeek));
+
+        if (isShiftRestDay) {
+          if (io && tenantDbName) {
+            io.to(tenantDbName).emit('attendance:reliever_needed', {
+              siteId: String(lead._id),
+              siteName: lead.sender_name || lead.name || 'Site',
+              shiftCode: shift.shiftCode,
+              boundWorkerId: targetWorkerId,
+              boundWorkerName: workerName,
+              reason: `${currentDayOfWeek} Weekly Rest`,
+            });
+          }
+          continue;
+        }
+
+        // 6. Guard: SiteRosterHolidays
+        if (SiteRosterHolidays) {
+          const offRecord = await SiteRosterHolidays.findOne({
+            siteId: lead._id,
+            $or: [
+              { workerId: targetWorkerId, type: 'WeeklyRest', restDayOfWeek: currentDayOfWeek },
+              {
+                workerId: targetWorkerId,
+                date: todayDateStr,
+                type: { $in: ['SickLeave', 'CasualLeave', 'OtherLeave', 'PaidHoliday'] },
+              },
+              { siteId: { $in: [lead._id, String(lead._id), '__all__'] }, date: todayDateStr, type: 'SiteClosed' },
+            ],
+          }).lean();
+
+          if (offRecord) {
+            if (io && tenantDbName) {
+              io.to(tenantDbName).emit('attendance:reliever_needed', {
+                siteId: String(lead._id),
+                siteName: lead.sender_name || lead.name || 'Site',
+                shiftCode: shift.shiftCode,
+                boundWorkerId: targetWorkerId,
+                boundWorkerName: workerName,
+                reason: offRecord.remark || offRecord.type,
+              });
+            }
+            continue;
+          }
+        }
+
+        // 7. Auto-start duty
+        const dutyStartActual = now < scheduledStartUtc ? scheduledStartUtc : now;
+        const dutyEndScheduled = new Date(dutyStartActual.getTime() + durationHrs * 3600000);
+
+        const newDuty = new Attendance({
+          employeeId: targetWorkerId,
+          employeeType: 'Employees',
+          workerName,
+          role: emp?.role || 'Security',
+          leadId: lead._id,
+          siteId: lead._id,
+          clientId: lead.clientId || null,
+          site_name: lead.sender_name || lead.name || 'Site',
+          status: 'Present',
+          dutyLevel: 1,
+          rate: shift.salaryRate || emp?.rate || 0,
+          date: scheduledStartUtc,
+          dutyStart: dutyStartActual,
+          dutyStartScheduled: scheduledStartUtc,
+          dutyEndScheduled: dutyEndScheduled,
+          shiftCode: shift.shiftCode,
+          shiftType: durationHrs === 12 ? '12hr' : '8hr',
+          shiftPeriod:
+            shift.shiftPeriod ||
+            (shiftCode === 'N2' ? 'Night12' : shiftCode === 'D' ? 'Day' : 'General'),
+          shiftHours: durationHrs,
+          shiftLockHours: durationHrs,
+          dutyEnd: null,
+          forcedOff: false,
+          markedByDevice: false,
+          markedByUserName: 'Auto Shift Rollover',
+          remarks: `Auto-started duty for ${shift.shiftName || shiftCode} (${shift.boundWorkerId ? 'Bound Worker' : 'Last Duty Performer'})`,
+        });
+
+        await newDuty.save();
+
+        // Schedule auto-end timer
+        scheduleAutoEnd(newDuty._id, dutyEndScheduled, Attendance, tenantDbName, io);
+
+        if (io && tenantDbName) {
+          io.to(tenantDbName).emit('attendance:created', { data: newDuty });
+          io.to(tenantDbName).emit('attendance:active_updated');
+          io.to(tenantDbName).emit('admin:broadcast', {
+            id: 'auto-start-' + newDuty._id,
+            title: 'Auto Shift Started',
+            message: `${lead.sender_name || 'Site'}: ${shift.shiftCode} shift auto-started for ${workerName}`,
+            priority: 'normal',
+            targetRoles: ['CorpAdmin', 'userAdmin', 'Project'],
+            sentBy: 'System',
+            at: dutyStartActual.toISOString(),
+          });
+        }
+
+        console.log(
+          `[autoEndScheduler] Auto-started scheduled shift ${shiftCode} at site "${lead.sender_name || 'Site'}" for ${workerName} (${targetWorkerId})`
+        );
+      }
+    }
+  } catch (err) {
+    console.error('[autoEndScheduler] autoStartScheduledShifts error:', err.message);
+  }
+}
+
+/**
+ * Sweeps all active tenant databases to:
+ * 1. Auto-close expired shifts and compute OT.
+ * 2. Auto-start scheduled shifts across active sites (post-weekend, after weekly off, or shift start time).
+ * Runs independently 24/7.
  */
 async function sweepAllTenants(io) {
   if (_isSweeping) return;
@@ -493,6 +693,8 @@ async function sweepAllTenants(io) {
           if (Attendance) {
             await sweepExpiredShifts(Attendance, dbName, io);
           }
+          // Auto-start scheduled shifts for sites (post-weekend/holidays or normal scheduled start)
+          await autoStartScheduledShifts(conn, dbName, io);
         }
       } catch (tenantErr) {
         // Non-fatal per-tenant error
@@ -541,4 +743,5 @@ module.exports = {
   startBackgroundSweeper,
   activeTimerCount,
   handleAutoShiftRollover,
+  autoStartScheduledShifts,
 };
