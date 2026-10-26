@@ -1783,7 +1783,7 @@ exports.manageEmployees = {
       }
       const limitVal = req.query.limit ? parseInt(req.query.limit, 10) : 5000;
       const data = await Attendance.find(q)
-        .select('_id employeeId employeeType leadId clientId siteId site_name workerName shiftCode shiftPeriod shiftGroupName date status dutyLevel rate dailyEarn hoursWorked lockStatus dutyStart dutyEnd dutyEndScheduled startLat startLong siteLat siteLong markedByUserName forcedOff emergencyOff')
+        .select('_id employeeId employeeType leadId clientId siteId site_name workerName shiftCode shiftPeriod shiftGroupName date status dutyLevel rate dailyEarn hoursWorked lockStatus dutyStart dutyEnd dutyEndScheduled startLat startLong siteLat siteLong markedByUserName forcedOff emergencyOff penaltyImposed penaltyDeducted penaltyWaivedOff penaltyReason violationType')
         .sort({ date: -1 })
         .limit(limitVal)
         .lean();

@@ -99,13 +99,17 @@ async function handleAutoShiftRollover(closedAttendance, AttendanceModel, tenant
     let nextShiftCode = '';
 
     if (outgoingCode === 'D' || outgoingCode === 'DAY') {
-      nextShiftCode = 'N2';
+      const nightShift = activeSiteShifts.find((s) => /^(N2|N|NIGHT)$/i.test(s.shiftCode));
+      nextShiftCode = nightShift ? nightShift.shiftCode : 'N2';
     } else if (outgoingCode === 'N2' || outgoingCode === 'N' || outgoingCode === 'NIGHT') {
-      nextShiftCode = 'D';
+      const dayShift = activeSiteShifts.find((s) => /^(D|DAY|MORNING|M)$/i.test(s.shiftCode));
+      nextShiftCode = dayShift ? dayShift.shiftCode : 'D';
     } else if (outgoingCode === 'M' || outgoingCode === 'MORNING') {
-      nextShiftCode = 'A';
+      const aftShift = activeSiteShifts.find((s) => /^(A|AFTERNOON)$/i.test(s.shiftCode));
+      nextShiftCode = aftShift ? aftShift.shiftCode : 'A';
     } else if (outgoingCode === 'A' || outgoingCode === 'AFTERNOON') {
-      nextShiftCode = 'N';
+      const nightShift = activeSiteShifts.find((s) => /^(N|N2|NIGHT)$/i.test(s.shiftCode));
+      nextShiftCode = nightShift ? nightShift.shiftCode : 'N';
     } else if (outgoingCode === 'G') {
       nextShiftCode = 'G';
     } else {
@@ -225,24 +229,27 @@ async function handleAutoShiftRollover(closedAttendance, AttendanceModel, tenant
     let offRecord = null;
     if (SiteRosterHolidays) {
       // 1. Worker specific leave or rest
-      const workerOff = await SiteRosterHolidays.findOne({
-        siteId: closedAttendance.leadId,
-        $or: [
-          { workerId: incomingWorkerId, type: 'WeeklyRest', restDayOfWeek: dayOfWeek },
-          {
-            workerId: incomingWorkerId,
-            date: todayStr,
-            type: { $in: ['SickLeave', 'CasualLeave', 'OtherLeave', 'PaidHoliday'] },
-          },
-        ],
-      }).lean();
+      let workerOff = null;
+      if (incomingWorkerId) {
+        workerOff = await SiteRosterHolidays.findOne({
+          siteId: closedAttendance.leadId,
+          workerId: incomingWorkerId,
+          $or: [
+            { type: 'WeeklyRest', restDayOfWeek: dayOfWeek },
+            {
+              date: todayStr,
+              type: { $in: ['SickLeave', 'CasualLeave', 'OtherLeave', 'PaidHoliday'] },
+            },
+          ],
+        }).lean();
+      }
 
       if (workerOff) {
         offRecord = workerOff;
       } else {
         // 2. Site-wide holiday or closure
         const siteHolidays = await SiteRosterHolidays.find({
-          siteId: { $in: [closedAttendance.leadId, String(closedAttendance.leadId), '__all__'] },
+          siteId: closedAttendance.leadId,
           date: todayStr,
           type: { $in: ['SiteClosed', 'NationalHoliday', 'FestivalHoliday', 'PaidHoliday'] },
         }).lean();
@@ -572,13 +579,17 @@ async function autoStartScheduledShifts(conn, tenantDbName, io) {
           const offRecord = await SiteRosterHolidays.findOne({
             siteId: lead._id,
             $or: [
-              { workerId: targetWorkerId, type: 'WeeklyRest', restDayOfWeek: currentDayOfWeek },
-              {
-                workerId: targetWorkerId,
-                date: todayDateStr,
-                type: { $in: ['SickLeave', 'CasualLeave', 'OtherLeave', 'PaidHoliday'] },
-              },
-              { siteId: { $in: [lead._id, String(lead._id), '__all__'] }, date: todayDateStr, type: 'SiteClosed' },
+              ...(targetWorkerId
+                ? [
+                    { workerId: targetWorkerId, type: 'WeeklyRest', restDayOfWeek: currentDayOfWeek },
+                    {
+                      workerId: targetWorkerId,
+                      date: todayDateStr,
+                      type: { $in: ['SickLeave', 'CasualLeave', 'OtherLeave', 'PaidHoliday'] },
+                    },
+                  ]
+                : []),
+              { date: todayDateStr, type: 'SiteClosed' },
             ],
           }).lean();
 
@@ -597,9 +608,9 @@ async function autoStartScheduledShifts(conn, tenantDbName, io) {
           }
         }
 
-        // 7. Auto-start duty
-        const dutyStartActual = now < scheduledStartUtc ? scheduledStartUtc : now;
-        const dutyEndScheduled = new Date(dutyStartActual.getTime() + durationHrs * 3600000);
+        // 7. Auto-start duty on clock set in client shift schedule
+        const dutyStartActual = scheduledStartUtc;
+        const dutyEndScheduled = scheduledEndUtc;
 
         const newDuty = new Attendance({
           employeeId: targetWorkerId,
