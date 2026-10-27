@@ -297,6 +297,22 @@ exports.ensureLedgerFolioInternal = async (tenantModels, options) => {
             ledger.legalName = legalName;
             changed = true;
         }
+        if (openingBalance !== undefined) {
+            const numBal = parseFloat(openingBalance || 0);
+            if (ledger.openingBalance !== numBal) {
+                const diff = numBal - (ledger.openingBalance || 0);
+                ledger.openingBalance = numBal;
+                ledger.currentBalance = (ledger.currentBalance || 0) + diff;
+                changed = true;
+            }
+        }
+        if (nature) {
+            const normalizedNature = nature.toLowerCase() === "cr" ? "Cr" : "Dr";
+            if (ledger.openingBalanceType !== normalizedNature) {
+                ledger.openingBalanceType = normalizedNature;
+                changed = true;
+            }
+        }
         if (finalName && ledger.ledgerName !== finalName) {
             ledger.ledgerName = finalName;
             changed = true;

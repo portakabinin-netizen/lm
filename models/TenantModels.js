@@ -455,6 +455,7 @@ const ledgerSchema = new mongoose.Schema(
     contactDetails: {
       address: { type: String, trim: true },
       deliveryAddress: { type: String, trim: true },
+      sameAsBilling: { type: Boolean, default: false },
       state: { type: String, trim: true },
       pin: { type: String, trim: true },
       pan: { type: String, uppercase: true, trim: true },
