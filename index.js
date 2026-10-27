@@ -185,8 +185,8 @@ const PORT = process.env.PORT || 5000;
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`🖇️ App running on port->${PORT} & Started at: ${new Date().toLocaleString()}`);
   
-  // ⏱️ Start 24/7 persistent background sweeper daemon (sweeps all active corporate tenants every 15 minutes)
-  autoEndScheduler.startBackgroundSweeper(io, 15 * 60 * 1000);
+  // ⏱️ Start 24/7 persistent background sweeper daemon (sweeps all active corporate tenants every 1 minute)
+  autoEndScheduler.startBackgroundSweeper(io, 60 * 1000);
 });
 
 server.on("error", (err) => {
