@@ -25,6 +25,7 @@ const ledgerGroupSchema = new mongoose.Schema(
 const ledgerSchema = new mongoose.Schema(
     {
         ledgerName: { type: String, required: true, trim: true },
+        legalName: { type: String, trim: true },
         groupName: { 
             type: String, 
             required: true,
@@ -57,6 +58,18 @@ const ledgerSchema = new mongoose.Schema(
         refType: { type: String, enum: ["Lead", "Vendor", "Staff", "Client", "Other"] },
         leadIds: [{ type: mongoose.Schema.Types.ObjectId }], // Multiple inquiries for Debtors
         purchaseOrders: [{ type: mongoose.Schema.Types.ObjectId }], // Linked POs for Creditors
+        contactDetails: {
+            address: { type: String, trim: true },
+            deliveryAddress: { type: String, trim: true },
+            state: { type: String, trim: true },
+            pin: { type: String, trim: true },
+            pan: { type: String, uppercase: true, trim: true },
+            gstn: { type: String, uppercase: true, trim: true },
+            contactPerson: { type: String, trim: true },
+            mobile: { type: String, trim: true },
+            email: { type: String, trim: true },
+            notes: { type: String, trim: true },
+        },
         isActive: { type: Boolean, default: true },
     },
     { _id: true, timestamps: true }

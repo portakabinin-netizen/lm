@@ -150,7 +150,7 @@ const getLedgerEnrollmentMap = async (tenantModels) => {
 exports.ensureLedgerFolioInternal = async (tenantModels, options) => {
     const finalName = options.ledgerName || options.name;
     const finalGroup = options.groupName || options.group;
-    const { parentGroup, refId, refType, openingBalance, nature, leadIds, purchaseOrders } = options;
+    const { parentGroup, refId, refType, openingBalance, nature, leadIds, purchaseOrders, contactDetails, legalName } = options;
     const { Groups, Ledgers, Leads, Vouchers } = tenantModels;
 
     if (!finalGroup) throw new Error("Group name is required to ensure a ledger folio");
@@ -275,6 +275,7 @@ exports.ensureLedgerFolioInternal = async (tenantModels, options) => {
 
         ledger = new Ledgers({
             ledgerName: finalName,
+            legalName: legalName || options.legalName || finalName,
             ledgerGroupId: groupDoc._id,
             refId: refId || null,
             refType: refType || "Manual",
@@ -282,11 +283,20 @@ exports.ensureLedgerFolioInternal = async (tenantModels, options) => {
             openingBalanceType: ledgerNature,
             currentBalance: ledgerNature === "Cr" ? -(openingBalance || 0) : (openingBalance || 0),
             leadIds: leadIds || ((refType === "Lead" && refId) ? [refId] : []),
-            purchaseOrders: purchaseOrders || []
+            purchaseOrders: purchaseOrders || [],
+            contactDetails: contactDetails || {}
         });
         await ledger.save();
     } else {
         let changed = false;
+        if (contactDetails) {
+            ledger.contactDetails = { ...(ledger.contactDetails || {}), ...contactDetails };
+            changed = true;
+        }
+        if (legalName && ledger.legalName !== legalName) {
+            ledger.legalName = legalName;
+            changed = true;
+        }
         if (finalName && ledger.ledgerName !== finalName) {
             ledger.ledgerName = finalName;
             changed = true;
@@ -862,16 +872,36 @@ exports.manageLedgers = {
                         };
                     });
                 } else {
-                    results = await Leads.find({
-                        ...billableLeadQuery,
-                        sender_name: { $regex: new RegExp(q, "i") }
-                    }).limit(10).lean();
+                    let leadSearchFilter = { ...billableLeadQuery };
+                    if (q) {
+                        const numQ = parseInt(q, 10);
+                        leadSearchFilter = {
+                            $and: [
+                                billableLeadQuery,
+                                {
+                                    $or: [
+                                        { sender_name: { $regex: new RegExp(q, "i") } },
+                                        { sender_city: { $regex: new RegExp(q, "i") } },
+                                        { sender_mobile: { $regex: new RegExp(q, "i") } },
+                                        { "location.address": { $regex: new RegExp(q, "i") } },
+                                        ...(!isNaN(numQ) ? [{ lead_no: numQ }] : [])
+                                    ]
+                                }
+                            ]
+                        };
+                    }
+                    results = await Leads.find(leadSearchFilter).sort({ updatedAt: -1, generated_date: -1 }).limit(20).lean();
                 }
             } else if (type === "Vendors") {
-                results = await Parties.find({
-                    type: "Supplier",
-                    name: { $regex: new RegExp(q, "i") }
-                }).limit(10).lean();
+                let vendorFilter = { type: "Supplier" };
+                if (q) {
+                    vendorFilter.$or = [
+                        { name: { $regex: new RegExp(q, "i") } },
+                        { contact_person: { $regex: new RegExp(q, "i") } },
+                        { mobile: { $regex: new RegExp(q, "i") } }
+                    ];
+                }
+                results = await Parties.find(vendorFilter).limit(20).lean();
             }
 
             res.json({ success: true, data: results });
