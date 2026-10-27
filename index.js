@@ -51,12 +51,29 @@ app.use((req, res, next) => { req.io = io; next(); });
 
 io.on("connection", (socket) => {
 
-  socket.on("joinRoom", (dbName) => {
-    if (dbName) {
-      const room = String(dbName).trim();
+  socket.on("joinRoom", (roomData) => {
+    if (!roomData) return;
+    if (typeof roomData === "object") {
+      if (roomData.dbName) {
+        const room = String(roomData.dbName).trim();
+        socket.join(room);
+        socket.currentRoom = room;
+      }
+      if (roomData.employeeId) socket.join(String(roomData.employeeId).trim());
+      if (roomData.userId) socket.join(String(roomData.userId).trim());
+    } else {
+      const room = String(roomData).trim();
       socket.join(room);
       socket.currentRoom = room;
     }
+  });
+
+  socket.on("joinUser", (userId) => {
+    if (userId) socket.join(String(userId).trim());
+  });
+
+  socket.on("leaveRoom", (room) => {
+    if (room) socket.leave(String(room).trim());
   });
 
   socket.on("update_location", (data) => {

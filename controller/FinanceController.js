@@ -239,29 +239,51 @@ exports.ensureLedgerFolioInternal = async (tenantModels, options) => {
     if (refType === "Lead" && refId) {
         currentLead = await Leads.findById(refId);
         if (currentLead && currentLead.ledgerId) {
-            ledger = await Ledgers.findById(currentLead.ledgerId);
+            const candidate = await Ledgers.findById(currentLead.ledgerId);
+            if (candidate && (!candidate.refId || String(candidate.refId) === String(refId) || candidate.refType !== "Lead")) {
+                ledger = candidate;
+            }
         }
         if (!ledger && currentLead && currentLead.sender_mobile) {
             const cleanMobile = String(currentLead.sender_mobile).replace(/\D/g, '').slice(-10);
             if (cleanMobile.length === 10) {
                 const otherLead = await Leads.findOne({
+                    _id: { $ne: currentLead._id },
                     sender_mobile: { $regex: new RegExp(cleanMobile.split('').join('\\D*') + '\\D*$') },
                     ledgerId: { $exists: true, $ne: null }
                 });
-                if (otherLead) {
-                    ledger = await Ledgers.findById(otherLead.ledgerId);
+                if (otherLead && otherLead.ledgerId) {
+                    const candidate = await Ledgers.findById(otherLead.ledgerId);
+                    // Only reuse if ledger name matches exactly (same entity/account)
+                    if (candidate && candidate.ledgerName && candidate.ledgerName.trim().toLowerCase() === finalName.trim().toLowerCase()) {
+                        ledger = candidate;
+                    }
                 }
             }
         }
     }
 
     if (!ledger) {
-        ledger = await Ledgers.findOne({
-            $or: [
-                { ledgerName: { $regex: new RegExp(`^${finalName}$`, "i") } },
-                ... (refId ? [{ refId, ...(refType ? { refType } : {}) }] : [])
-            ]
-        });
+        if (refType === "Lead" && refId) {
+            // Priority 1: Match ledger explicitly created for this lead
+            ledger = await Ledgers.findOne({ refId, refType: "Lead" });
+            if (!ledger) {
+                // Priority 2: Match by exact name, but DO NOT steal a ledger belonging to a different lead
+                const candidate = await Ledgers.findOne({ ledgerName: { $regex: new RegExp(`^${finalName}$`, "i") } });
+                if (candidate) {
+                    if (!candidate.refId || String(candidate.refId) === String(refId) || candidate.refType !== "Lead") {
+                        ledger = candidate;
+                    }
+                }
+            }
+        } else {
+            ledger = await Ledgers.findOne({
+                $or: [
+                    { ledgerName: { $regex: new RegExp(`^${finalName}$`, "i") } },
+                    ...(refId ? [{ refId, ...(refType ? { refType } : {}) }] : [])
+                ]
+            });
+        }
     }
 
     if (!ledger) {
@@ -314,15 +336,18 @@ exports.ensureLedgerFolioInternal = async (tenantModels, options) => {
             }
         }
         if (finalName && ledger.ledgerName !== finalName) {
-            ledger.ledgerName = finalName;
-            changed = true;
-            
-            // Cascade update ledgerName in all vouchers referencing this ledger
-            await Vouchers.updateMany(
-                { "entries.ledgerId": ledger._id },
-                { $set: { "entries.$[elem].ledgerName": finalName } },
-                { arrayFilters: [{ "elem.ledgerId": ledger._id }] }
-            );
+            const isDifferentLead = refType === "Lead" && ledger.refType === "Lead" && ledger.refId && String(ledger.refId) !== String(refId);
+            if (!isDifferentLead) {
+                ledger.ledgerName = finalName;
+                changed = true;
+                
+                // Cascade update ledgerName in all vouchers referencing this ledger
+                await Vouchers.updateMany(
+                    { "entries.ledgerId": ledger._id },
+                    { $set: { "entries.$[elem].ledgerName": finalName } },
+                    { arrayFilters: [{ "elem.ledgerId": ledger._id }] }
+                );
+            }
         }
         if (refType === "Lead" && refId) {
             if (!ledger.leadIds) {
@@ -2073,12 +2098,32 @@ exports.getPettyCashTransactions = async (req, res) => {
             };
         });
 
+        // Calculate opening balance for the period (initial opening balance + vouchers prior to startDate)
+        let periodOpeningBal = ledger.openingBalance || ledger.openingBal || 0;
+        if (startDate) {
+            const priorVouchers = await Vouchers.find({
+                "entries.ledgerId": ledgerId,
+                date: { $lt: new Date(startDate) }
+            }).lean();
+
+            for (const pv of priorVouchers) {
+                if (pv.voucherType === "Contra" && pv.approvalPending && String(pv.contraMetadata?.receiverUserId) === String(ledger.refId)) {
+                    continue;
+                }
+                const entry = pv.entries.find(e => String(e.ledgerId) === String(ledgerId));
+                if (entry) {
+                    periodOpeningBal += (entry.debit || 0) - (entry.credit || 0);
+                }
+            }
+        }
+
         res.json({
             success: true,
             ledger: {
                 _id: ledger._id,
                 name: ledger.ledgerName || ledger.name || "",
-                openingBal: ledger.openingBalance || ledger.openingBal || 0,
+                openingBal: periodOpeningBal,
+                initialOpeningBal: ledger.openingBalance || ledger.openingBal || 0,
                 enrollmentNo: ledgerEnrollmentMap.get(String(ledger._id)) || ""
             },
             data: transactions

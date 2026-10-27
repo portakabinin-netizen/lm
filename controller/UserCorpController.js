@@ -1783,7 +1783,7 @@ exports.manageEmployees = {
       }
       const limitVal = req.query.limit ? parseInt(req.query.limit, 10) : 5000;
       const data = await Attendance.find(q)
-        .select('_id employeeId employeeType leadId clientId siteId site_name workerName shiftCode shiftPeriod shiftGroupName date status dutyLevel rate dailyEarn hoursWorked lockStatus dutyStart dutyEnd dutyEndScheduled startLat startLong siteLat siteLong markedByUserName forcedOff emergencyOff penaltyImposed penaltyDeducted penaltyWaivedOff penaltyReason violationType')
+        .select('_id employeeId employeeType leadId clientId siteId site_name workerName shiftCode shiftPeriod shiftGroupName date status dutyLevel rate dailyEarn hoursWorked lockStatus dutyStartScheduled dutyStart dutyEnd dutyEndScheduled startLat startLong siteLat siteLong markedByUserName forcedOff emergencyOff penaltyImposed penaltyDeducted penaltyWaivedOff penaltyReason violationType')
         .sort({ date: -1 })
         .limit(limitVal)
         .lean();
@@ -2217,10 +2217,12 @@ exports.manageEmployees = {
       const finalShiftLockHours =
         siteShiftOverride?.shiftLockHours || shiftLockHours || defaultShiftLockHours;
 
-      // Compute duty end scheduled using final lock hours
-      const dutyStartMs = dutyStart ? new Date(dutyStart).getTime() : Date.now();
+      // Compute duty end scheduled strictly using shift schedule start + lock hours
+      const scheduledStart = req.body.dutyStartScheduled
+        ? new Date(req.body.dutyStartScheduled)
+        : (dutyStart ? new Date(dutyStart) : new Date());
       const finalDutyEndScheduled =
-        req.body.dutyEndScheduled || new Date(dutyStartMs + finalShiftLockHours * 3600000);
+        req.body.dutyEndScheduled || new Date(scheduledStart.getTime() + finalShiftLockHours * 3600000);
 
       // Fetch site coordinates if effectiveLeadId exists
       let siteLat = undefined;
@@ -2256,8 +2258,7 @@ exports.manageEmployees = {
         lockStatus: { isLocked: false },
         leaveCoverage: req.body.leaveCoverage || { isCoveringForLeave: false },
         remarks,
-        dutyStartScheduled:
-          req.body.dutyStartScheduled || (dutyStart ? new Date(dutyStart) : new Date()),
+        dutyStartScheduled: scheduledStart,
         dutyStart: dutyStart ? new Date(dutyStart) : new Date(),
         dutyEnd: dutyEnd ? new Date(dutyEnd) : undefined,
         dutyEndScheduled: finalDutyEndScheduled,
@@ -2998,7 +2999,7 @@ exports.manageEmployees = {
           shiftStartTime = startTime;
         }
 
-        if (shiftStartTime && !isSpecialAction) {
+        if (shiftStartTime) {
           const [h, m] = shiftStartTime.split(':').map(Number);
 
           // Asia/Kolkata is always UTC+05:30 (offset of 5.5 hours = 19,800,000 ms)
@@ -3036,13 +3037,14 @@ exports.manageEmployees = {
 
           const displayName = emp.name || emp.userDisplayName || 'User';
 
-          if (diffMins < -15) {
-            return res.status(403).json({
-              success: false,
-              tooEarly: true,
-              message: `Too early to start duty. Shift starts at ${shiftStartTime}. Attendance can only be marked starting 15 minutes before shift start.`,
-            });
-          }
+          if (!isSpecialAction) {
+            if (diffMins < -15) {
+              return res.status(403).json({
+                success: false,
+                tooEarly: true,
+                message: `Too early to start duty. Shift starts at ${shiftStartTime}. Attendance can only be marked starting 15 minutes before shift start.`,
+              });
+            }
 
           if (diffMins > 60 && !req.body.adminOverride && !req.body.force && !req.body.permissionGranted && !req.body.adminApprovedLate) {
             if (req.body.requestPermission) {
@@ -3149,6 +3151,7 @@ exports.manageEmployees = {
             });
           }
         }
+      }
 
         const activeShift =
           (emp.employmentHistory || []).find((h) => h.active) ||
@@ -3778,7 +3781,27 @@ exports.manageEmployees = {
           nextRate = nextShift.salaryRate || nextRate;
         }
       }
-      const nextScheduledEnd = new Date(now.getTime() + nextLockHrs * 3600000);
+
+      let nextScheduledStart = now;
+      if (nextShift && nextShift.startTime) {
+        const [mH, mM] = nextShift.startTime.split(':').map(Number);
+        const safeH = isNaN(mH) ? 8 : mH;
+        const safeM = isNaN(mM) ? 0 : mM;
+        const kolkataOffset = 5.5 * 3600000;
+        const nowKolkata = new Date(now.getTime() + kolkataOffset);
+        const targetToday = new Date(nowKolkata);
+        targetToday.setUTCHours(safeH, safeM, 0, 0);
+        const targetYesterday = new Date(targetToday.getTime() - 24 * 3600000);
+        const targetTomorrow = new Date(targetToday.getTime() + 24 * 3600000);
+        const diffs = [
+          { diff: Math.abs(nowKolkata.getTime() - targetToday.getTime()), target: targetToday },
+          { diff: Math.abs(nowKolkata.getTime() - targetYesterday.getTime()), target: targetYesterday },
+          { diff: Math.abs(nowKolkata.getTime() - targetTomorrow.getTime()), target: targetTomorrow },
+        ];
+        diffs.sort((a, b) => a.diff - b.diff);
+        nextScheduledStart = new Date(diffs[0].target.getTime() - kolkataOffset);
+      }
+      const nextScheduledEnd = new Date(nextScheduledStart.getTime() + nextLockHrs * 3600000);
 
       // 4. Create new attendance record for next shift (marked as double shift)
       const nextRecord = new Attendance({
@@ -3788,8 +3811,8 @@ exports.manageEmployees = {
         startLong: long || null,
         siteLat: current.siteLat || null,
         siteLong: current.siteLong || null,
-        date: now,
-        dutyStartScheduled: now,
+        date: nextScheduledStart,
+        dutyStartScheduled: nextScheduledStart,
         dutyStart: now,
         dutyEndScheduled: nextScheduledEnd,
         shiftCode: SHIFT_CODE_MAP[finalNextShiftCode] || finalNextShiftCode || 'G',
@@ -4275,38 +4298,71 @@ exports.manageEmployees = {
       const { requestId, employeeId, attendanceId, approved, reason, message } = req.body;
       const { Attendance, Employees, Messages } = req.tenantModels || {};
       const userMaster = require('../models/userMaster');
+      const emit = require('../utils/socketEmitter');
 
       const adminName = req.user?.userDisplayName || req.user?.name || 'Admin';
+      const tenantDbName = (req.tenantDbName || req.headers?.['x-tenant-id'] || req.body?.dbName || '').trim();
+      const empIdStr = String(employeeId || '').trim();
 
       if (!approved) {
+        const deniedPayload = {
+          requestId,
+          employeeId: empIdStr,
+          attendanceId,
+          reason: reason || 'late_start',
+          approved: false,
+          dutyStatus: 'OFF',
+          status: 'OFF',
+          message: message || 'Request not allowed by Admin.',
+        };
+
         if (req.io) {
-          const deniedPayload = {
-            requestId,
-            employeeId,
-            attendanceId,
-            reason: reason || 'late_start',
-            approved: false,
-            message: message || 'Request not allowed by Admin.',
-          };
-          if (req.tenantDbName) {
-            req.io.to(req.tenantDbName).emit('attendance:permission_denied', deniedPayload);
+          if (tenantDbName) {
+            req.io.to(tenantDbName).emit('attendance:permission_denied', deniedPayload);
+            req.io.to(tenantDbName).emit('attendance:duty_off', {
+              employeeId: empIdStr,
+              attendanceId,
+              dutyStatus: 'OFF',
+              status: 'OFF',
+            });
+            req.io.to(tenantDbName).emit('attendance:active_updated');
+          }
+          if (empIdStr) {
+            req.io.to(empIdStr).emit('attendance:permission_denied', deniedPayload);
+            req.io.to(empIdStr).emit('attendance:duty_off', {
+              employeeId: empIdStr,
+              attendanceId,
+              dutyStatus: 'OFF',
+              status: 'OFF',
+            });
           }
           req.io.emit('attendance:permission_denied', deniedPayload);
+          req.io.emit('attendance:duty_off', {
+            employeeId: empIdStr,
+            attendanceId,
+            dutyStatus: 'OFF',
+            status: 'OFF',
+          });
+          req.io.emit('attendance:active_updated');
         }
 
-        if (Messages && employeeId) {
+        if (Messages && empIdStr) {
           try {
             const replyMsg = new Messages({
               senderName: adminName,
               senderId: String(req.user?.userId || req.user?._id || 'admin'),
-              receiverId: String(employeeId),
-              text: `❌ Request not allowed by Admin (${adminName}). Late start duty rejected.`,
+              receiverId: empIdStr,
+              text: `❌ Request not allowed by Admin (${adminName}). ${reason === 'early_end' ? 'Early duty end rejected' : 'Late start duty rejected'}.`,
               type: 'text',
               isOneToOne: true,
               status: 'unseen',
             });
             await replyMsg.save();
-            if (req.tenantDbName && req.io) req.io.to(req.tenantDbName).emit('newMessage', replyMsg);
+            if (tenantDbName && req.io) req.io.to(tenantDbName).emit('newMessage', replyMsg);
+            if (req.io) {
+              req.io.to(empIdStr).emit('newMessage', replyMsg);
+              req.io.emit('newMessage', replyMsg);
+            }
           } catch (_) {}
         }
 
@@ -4314,17 +4370,24 @@ exports.manageEmployees = {
       }
 
       if (reason === 'early_end') {
-        let query = {};
-        if (attendanceId && mongoose.isValidObjectId(attendanceId)) {
-          query._id = attendanceId;
-        } else if (employeeId) {
-          query.employeeId = mongoose.isValidObjectId(employeeId) ? new mongoose.Types.ObjectId(employeeId) : employeeId;
-          query.$or = [{ dutyEnd: { $exists: false } }, { dutyEnd: null }];
-        }
-
         let attRecord = null;
         if (Attendance) {
-          attRecord = await Attendance.findOne(query);
+          if (attendanceId && mongoose.isValidObjectId(attendanceId)) {
+            attRecord = await Attendance.findById(attendanceId);
+          }
+          if (!attRecord && employeeId) {
+            const qId = mongoose.isValidObjectId(employeeId) ? new mongoose.Types.ObjectId(employeeId) : employeeId;
+            attRecord = await Attendance.findOne({
+              $or: [
+                { employeeId: qId },
+                { employeeId: String(employeeId) },
+                { userId: qId },
+                { userId: String(employeeId) },
+              ],
+              $and: [{ $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }] }],
+            }).sort({ dutyStart: -1 });
+          }
+
           if (attRecord) {
             attRecord.dutyEnd = new Date();
             attRecord.forcedOff = true;
@@ -4334,29 +4397,87 @@ exports.manageEmployees = {
               attRecord.hoursWorked = parseFloat((diffMs / 3600000).toFixed(2));
             }
             await attRecord.save();
+
+            // Cancel any scheduled auto-end timer
+            autoEndScheduler.cancelAutoEnd(attRecord._id);
+
+            // Trigger shift rollover if single-worker slot / lead attached
+            if (attRecord.leadId || attRecord.siteId) {
+              autoEndScheduler.handleAutoShiftRollover(attRecord, Attendance, tenantDbName, req.io).catch((err) =>
+                console.error('[respondAttendancePermission] Rollover error:', err.message)
+              );
+            }
           }
         }
 
+        const resolvedEmpId = String(employeeId || attRecord?.employeeId || '').trim();
+        const userIdStr = attRecord?.userId ? String(attRecord.userId).trim() : resolvedEmpId;
+
         const approvedPayload = {
           requestId,
-          employeeId,
+          employeeId: resolvedEmpId,
+          userId: userIdStr,
           attendanceId: attRecord?._id || attendanceId,
           reason: 'early_end',
           approved: true,
+          dutyStatus: 'OFF',
+          status: 'OFF',
+          hoursWorked: attRecord?.hoursWorked || 0,
           message: `Early end duty approved by ${adminName}.`,
         };
 
+        const dutyOffPayload = {
+          employeeId: resolvedEmpId,
+          userId: userIdStr,
+          attendanceId: attRecord?._id || attendanceId,
+          hoursWorked: attRecord?.hoursWorked || 0,
+          dutyStatus: 'OFF',
+          status: 'OFF',
+          forcedOff: true,
+          earlyEnd: true,
+        };
+
         if (req.io) {
-          if (req.tenantDbName) {
-            req.io.to(req.tenantDbName).emit('attendance:duty_off', {
-              employeeId,
-              attendanceId: attRecord?._id,
-              forcedOff: true,
-            });
-            req.io.to(req.tenantDbName).emit('attendance:permission_approved', approvedPayload);
+          if (tenantDbName) {
+            req.io.to(tenantDbName).emit('attendance:duty_off', dutyOffPayload);
+            req.io.to(tenantDbName).emit('attendance:permission_approved', approvedPayload);
+            req.io.to(tenantDbName).emit('attendance:active_updated');
           }
-          req.io.emit('attendance:duty_off', { employeeId, attendanceId: attRecord?._id });
+          if (resolvedEmpId) {
+            req.io.to(resolvedEmpId).emit('attendance:duty_off', dutyOffPayload);
+            req.io.to(resolvedEmpId).emit('attendance:permission_approved', approvedPayload);
+          }
+          if (userIdStr && userIdStr !== resolvedEmpId) {
+            req.io.to(userIdStr).emit('attendance:duty_off', dutyOffPayload);
+            req.io.to(userIdStr).emit('attendance:permission_approved', approvedPayload);
+          }
+          req.io.emit('attendance:duty_off', dutyOffPayload);
           req.io.emit('attendance:permission_approved', approvedPayload);
+          req.io.emit('attendance:active_updated');
+        }
+
+        if (attRecord) {
+          emit(req, 'attendance:updated', { data: attRecord });
+        }
+
+        if (Messages && resolvedEmpId) {
+          try {
+            const replyMsg = new Messages({
+              senderName: adminName,
+              senderId: String(req.user?.userId || req.user?._id || 'admin'),
+              receiverId: resolvedEmpId,
+              text: `✅ Early end duty approved by Admin (${adminName}). Duty is now ended (OFF).`,
+              type: 'text',
+              isOneToOne: true,
+              status: 'unseen',
+            });
+            await replyMsg.save();
+            if (tenantDbName && req.io) req.io.to(tenantDbName).emit('newMessage', replyMsg);
+            if (req.io) {
+              req.io.to(resolvedEmpId).emit('newMessage', replyMsg);
+              req.io.emit('newMessage', replyMsg);
+            }
+          } catch (_) {}
         }
 
         return res.json({ success: true, message: 'Early end duty approved successfully', data: attRecord });
@@ -4366,9 +4487,14 @@ exports.manageEmployees = {
         if (Attendance && employeeId) {
           const qId = mongoose.isValidObjectId(employeeId) ? new mongoose.Types.ObjectId(employeeId) : employeeId;
           attRecord = await Attendance.findOne({
-            employeeId: qId,
-            $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }],
-          });
+            $or: [
+              { employeeId: qId },
+              { employeeId: String(employeeId) },
+              { userId: qId },
+              { userId: String(employeeId) },
+            ],
+            $and: [{ $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }] }],
+          }).sort({ dutyStart: -1 });
 
           if (!attRecord) {
             let emp = Employees && mongoose.isValidObjectId(qId) ? await Employees.findById(qId).lean().catch(() => null) : null;
@@ -4410,47 +4536,89 @@ exports.manageEmployees = {
             attRecord.remarks = (attRecord.remarks ? attRecord.remarks + '; ' : '') + `Late start approved by ${adminName}`;
             await attRecord.save();
           }
+
+          // Schedule auto-end timer
+          if (attRecord && attRecord.dutyEndScheduled) {
+            autoEndScheduler.scheduleAutoEnd(
+              attRecord._id,
+              attRecord.dutyEndScheduled,
+              Attendance,
+              tenantDbName,
+              req.io
+            );
+          }
         }
+
+        const resolvedEmpId = String(employeeId || attRecord?.employeeId || '').trim();
+        const userIdStr = attRecord?.userId ? String(attRecord.userId).trim() : resolvedEmpId;
 
         const approvedPayload = {
           requestId,
-          employeeId,
+          employeeId: resolvedEmpId,
+          userId: userIdStr,
           attendanceId: attRecord?._id,
           reason: 'late_start',
           approved: true,
           activeDuty: attRecord,
           canStart: true,
+          dutyStatus: 'ON',
+          status: 'ON',
+          shiftCode: attRecord?.shiftCode || req.body.shiftCode || 'G',
+          shiftPeriod: attRecord?.shiftPeriod || req.body.shiftPeriod || 'General',
           message: `Late start allowed by ${adminName}. Attendance added and duty is now ON.`,
         };
 
+        const dutyOnPayload = {
+          employeeId: resolvedEmpId,
+          userId: userIdStr,
+          attendanceId: attRecord?._id,
+          shiftCode: attRecord?.shiftCode || req.body.shiftCode || 'G',
+          shiftPeriod: attRecord?.shiftPeriod || req.body.shiftPeriod || 'General',
+          activeDuty: attRecord,
+          dutyStatus: 'ON',
+          status: 'ON',
+        };
+
         if (req.io) {
-          if (req.tenantDbName) {
-            req.io.to(req.tenantDbName).emit('attendance:duty_on', {
-              employeeId,
-              attendanceId: attRecord?._id,
-              shiftCode: attRecord?.shiftCode || req.body.shiftCode || 'G',
-              shiftPeriod: attRecord?.shiftPeriod || req.body.shiftPeriod || 'General',
-              activeDuty: attRecord,
-            });
-            req.io.to(req.tenantDbName).emit('attendance:permission_approved', approvedPayload);
+          if (tenantDbName) {
+            req.io.to(tenantDbName).emit('attendance:duty_on', dutyOnPayload);
+            req.io.to(tenantDbName).emit('attendance:permission_approved', approvedPayload);
+            req.io.to(tenantDbName).emit('attendance:active_updated');
           }
-          req.io.emit('attendance:duty_on', { employeeId, attendanceId: attRecord?._id, activeDuty: attRecord });
+          if (resolvedEmpId) {
+            req.io.to(resolvedEmpId).emit('attendance:duty_on', dutyOnPayload);
+            req.io.to(resolvedEmpId).emit('attendance:permission_approved', approvedPayload);
+          }
+          if (userIdStr && userIdStr !== resolvedEmpId) {
+            req.io.to(userIdStr).emit('attendance:duty_on', dutyOnPayload);
+            req.io.to(userIdStr).emit('attendance:permission_approved', approvedPayload);
+          }
+          req.io.emit('attendance:duty_on', dutyOnPayload);
           req.io.emit('attendance:permission_approved', approvedPayload);
+          req.io.emit('attendance:active_updated');
         }
 
-        if (Messages && employeeId) {
+        if (attRecord) {
+          emit(req, 'attendance:updated', { data: attRecord });
+        }
+
+        if (Messages && resolvedEmpId) {
           try {
             const replyMsg = new Messages({
               senderName: adminName,
               senderId: String(req.user?.userId || req.user?._id || 'admin'),
-              receiverId: String(employeeId),
+              receiverId: resolvedEmpId,
               text: `✅ Late start allowed by Admin (${adminName}). Attendance added to database and duty is now ON.`,
               type: 'text',
               isOneToOne: true,
               status: 'unseen',
             });
             await replyMsg.save();
-            if (req.tenantDbName && req.io) req.io.to(req.tenantDbName).emit('newMessage', replyMsg);
+            if (tenantDbName && req.io) req.io.to(tenantDbName).emit('newMessage', replyMsg);
+            if (req.io) {
+              req.io.to(resolvedEmpId).emit('newMessage', replyMsg);
+              req.io.emit('newMessage', replyMsg);
+            }
           } catch (_) {}
         }
 

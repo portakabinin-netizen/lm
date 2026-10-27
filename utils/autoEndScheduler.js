@@ -381,7 +381,34 @@ async function handleAutoShiftRollover(closedAttendance, AttendanceModel, tenant
     }
 
     const nextDurationHrs = matchedShift.durationHrs || 8;
-    const nextDutyEndScheduled = new Date(endTime.getTime() + nextDurationHrs * 3600000);
+
+    // Strictly resolve scheduled shift start and end times from the shift definition
+    let scheduledStartUtc = endTime;
+    if (matchedShift.startTime) {
+      const [mH, mM] = matchedShift.startTime.split(':').map(Number);
+      const safeH = isNaN(mH) ? 8 : mH;
+      const safeM = isNaN(mM) ? 0 : mM;
+
+      const kolkataOffset = 5.5 * 3600000;
+      const endTimeKolkata = new Date(endTime.getTime() + kolkataOffset);
+
+      const targetToday = new Date(endTimeKolkata);
+      targetToday.setUTCHours(safeH, safeM, 0, 0);
+
+      const targetYesterday = new Date(targetToday.getTime() - 24 * 3600000);
+      const targetTomorrow = new Date(targetToday.getTime() + 24 * 3600000);
+
+      const diffs = [
+        { diff: Math.abs(endTimeKolkata.getTime() - targetToday.getTime()), target: targetToday },
+        { diff: Math.abs(endTimeKolkata.getTime() - targetYesterday.getTime()), target: targetYesterday },
+        { diff: Math.abs(endTimeKolkata.getTime() - targetTomorrow.getTime()), target: targetTomorrow },
+      ];
+      diffs.sort((a, b) => a.diff - b.diff);
+      const nearest = diffs[0].target;
+      scheduledStartUtc = new Date(nearest.getTime() - kolkataOffset);
+    }
+
+    const nextDutyEndScheduled = new Date(scheduledStartUtc.getTime() + nextDurationHrs * 3600000);
 
     const newDuty = new AttendanceModel({
       employeeId: incomingWorkerId,
@@ -395,9 +422,9 @@ async function handleAutoShiftRollover(closedAttendance, AttendanceModel, tenant
       status: 'Present',
       dutyLevel: 1,
       rate: matchedShift.salaryRate || incomingEmp?.rate || 0,
-      date: endTime,
+      date: scheduledStartUtc,
       dutyStart: endTime,
-      dutyStartScheduled: endTime,
+      dutyStartScheduled: scheduledStartUtc,
       dutyEndScheduled: nextDutyEndScheduled,
       shiftCode: targetShiftCode,
       shiftType: nextDurationHrs === 12 ? '12hr' : '8hr',
@@ -415,7 +442,7 @@ async function handleAutoShiftRollover(closedAttendance, AttendanceModel, tenant
 
     await newDuty.save();
 
-    // Schedule auto-end for this newly created shift
+    // Schedule auto-end strictly at shift schedule end time
     scheduleAutoEnd(newDuty._id, nextDutyEndScheduled, AttendanceModel, tenantDbName, io);
 
     if (io && tenantDbName) {
