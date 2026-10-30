@@ -28,8 +28,13 @@ if (!fs.existsSync(DATA_DIR)) {
 const _leaveCache = new Map();
 
 function getFilePath(tenantDbName) {
-  const safeName = String(tenantDbName || 'default').replace(/[^a-zA-Z0-9_-]/g, '_');
-  return path.join(DATA_DIR, `leaves_${safeName}.json`);
+  if (!tenantDbName || tenantDbName === 'default' || tenantDbName === 'master') {
+    return path.join(DATA_DIR, 'leave.json');
+  }
+  const safeName = String(tenantDbName).replace(/[^a-zA-Z0-9_-]/g, '_');
+  const tenantPath = path.join(DATA_DIR, `leaves_${safeName}.json`);
+  // If tenant-specific file doesn't exist yet but leave.json exists, allow reading leave.json
+  return tenantPath;
 }
 
 /**
@@ -54,17 +59,19 @@ function getDatesInRange(startDateStr, endDateStr) {
  */
 function loadLeaves(tenantDbName) {
   const filePath = getFilePath(tenantDbName);
+  const fallbackPath = path.join(DATA_DIR, 'leave.json');
+  const readPath = fs.existsSync(filePath) ? filePath : (fs.existsSync(fallbackPath) ? fallbackPath : filePath);
   let data = { lastPrunedAt: new Date().toISOString(), records: [] };
 
-  if (fs.existsSync(filePath)) {
+  if (fs.existsSync(readPath)) {
     try {
-      const raw = fs.readFileSync(filePath, 'utf8');
+      const raw = fs.readFileSync(readPath, 'utf8');
       data = JSON.parse(raw);
       if (!Array.isArray(data.records)) {
         data.records = [];
       }
     } catch (err) {
-      console.error(`[leaveManager] Error reading ${filePath}:`, err.message);
+      console.error(`[leaveManager] Error reading ${readPath}:`, err.message);
       data = { lastPrunedAt: new Date().toISOString(), records: [] };
     }
   }
@@ -134,7 +141,7 @@ function isWorkerOnApprovedLeave(tenantDbName, workerId, dateStr) {
 }
 
 /**
- * Applies for a new leave request (by worker self or by supervisor for worker).
+ * Applies for a new leave/advance/articles request (by worker self or by supervisor for worker).
  */
 function applyLeave(tenantDbName, params) {
   const {
@@ -145,24 +152,41 @@ function applyLeave(tenantDbName, params) {
     projectId,
     projectName,
     shiftCode,
+    requestTypes = ['leave'],
     fromDate,
     toDate,
     leaveType,
     reason,
+    advanceAmount,
+    advanceDetails,
+    articleItems,
+    articlesDetails,
     appliedBy,
   } = params;
 
-  if (!workerId || !fromDate || !toDate) {
-    throw new Error('workerId, fromDate, and toDate are required');
+  if (!workerId) {
+    throw new Error('workerId is required');
   }
 
-  const dates = getDatesInRange(fromDate, toDate);
+  const effectiveTypes = Array.isArray(requestTypes) && requestTypes.length > 0
+    ? requestTypes
+    : ['leave'];
+
+  const hasLeave = effectiveTypes.includes('leave');
+  if (hasLeave && (!fromDate || !toDate)) {
+    throw new Error('fromDate and toDate are required for leave requests');
+  }
+
+  const todayStr = new Date().toISOString().split('T')[0];
+  const effFrom = fromDate || todayStr;
+  const effTo = toDate || effFrom;
+  const dates = hasLeave ? getDatesInRange(effFrom, effTo) : [];
   const noOfDays = dates.length;
 
   const data = loadLeaves(tenantDbName);
 
   const newRecord = {
-    id: `LEAVE-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+    id: `REQ-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
     workerId: String(workerId),
     workerName: workerName || 'Worker',
     workerRole: workerRole || 'Security',
@@ -171,12 +195,32 @@ function applyLeave(tenantDbName, params) {
     projectId: projectId ? String(projectId) : '',
     projectName: projectName || 'Site Project',
     shiftCode: shiftCode || '',
-    fromDate,
-    toDate,
+    requestTypes: effectiveTypes,
+    hasLeave,
+    hasAdvance: effectiveTypes.includes('advance'),
+    hasArticles: effectiveTypes.includes('articles'),
+    // Leave Details
+    fromDate: effFrom,
+    toDate: effTo,
     noOfDays,
     dates,
     leaveType: leaveType || 'Casual',
-    reason: reason || 'Leave requested',
+    leaveReason: params.leaveReason || reason || '',
+    // Advance Details
+    advanceAmount: Number(advanceAmount || advanceDetails?.amount || 0),
+    duesAmount: Number(params.duesAmount || advanceDetails?.dues || 0),
+    previousAdvance: Number(params.previousAdvance || advanceDetails?.previousAdvance || 0),
+    penaltyDeductions: Number(params.penaltyDeductions || advanceDetails?.penalty || 0),
+    netDues: Number(params.netDues || advanceDetails?.netDues || 0),
+    advanceReason: params.advanceReason || advanceDetails?.reason || '',
+    // Articles Details
+    articleItems: Array.isArray(articleItems)
+      ? articleItems
+      : Array.isArray(articlesDetails?.items)
+      ? articlesDetails.items
+      : [],
+    articlesReason: params.articlesReason || articlesDetails?.reason || '',
+    reason: reason || 'Request submitted',
     status: 'Pending',
     approvedBy: null,
     approvedById: null,
@@ -237,8 +281,13 @@ function listLeaves(tenantDbName, filter = {}) {
   const data = loadLeaves(tenantDbName);
   let results = [...data.records];
 
-  if (filter.status) {
-    results = results.filter((r) => r.status.toLowerCase() === String(filter.status).toLowerCase());
+  if (filter.status && filter.status !== 'All') {
+    const s = String(filter.status).toLowerCase();
+    if (s === 'cancel' || s === 'cancelled') {
+      results = results.filter((r) => r.status === 'Cancelled' || r.status === 'Disapproved');
+    } else {
+      results = results.filter((r) => r.status.toLowerCase() === s);
+    }
   }
   if (filter.workerId) {
     results = results.filter((r) => String(r.workerId) === String(filter.workerId));
@@ -254,12 +303,32 @@ function listLeaves(tenantDbName, filter = {}) {
   return results;
 }
 
+/**
+ * Cancels a pending request (marks status as 'Cancelled').
+ */
+function cancelLeave(tenantDbName, leaveId, reason = 'Cancelled by user') {
+  const data = loadLeaves(tenantDbName);
+  const record = data.records.find((r) => r.id === leaveId);
+  if (!record) {
+    throw new Error(`Request record ${leaveId} not found`);
+  }
+  if (record.status !== 'Pending') {
+    throw new Error('Only Pending requests can be cancelled');
+  }
+  record.status = 'Cancelled';
+  record.rejectionReason = reason;
+  record.cancelledAt = new Date().toISOString();
+  saveLeaves(tenantDbName, data);
+  return { success: true, message: 'Request cancelled successfully', id: leaveId, record };
+}
+
 module.exports = {
   loadLeaves,
   saveLeaves,
   isWorkerOnApprovedLeave,
   applyLeave,
   reviewLeave,
+  cancelLeave,
   listLeaves,
   getDatesInRange,
 };

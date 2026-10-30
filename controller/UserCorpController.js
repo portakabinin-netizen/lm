@@ -5562,10 +5562,15 @@ exports.manageEmployees = {
         projectId,
         projectName,
         shiftCode,
+        requestTypes,
         fromDate,
         toDate,
         leaveType,
         reason,
+        advanceAmount,
+        advanceDetails,
+        articleItems,
+        articlesDetails,
         isWorkerOnBehalf,
       } = req.body;
 
@@ -5584,19 +5589,25 @@ exports.manageEmployees = {
         projectId,
         projectName,
         shiftCode,
+        requestTypes,
         fromDate,
         toDate,
         leaveType,
         reason,
+        advanceAmount,
+        advanceDetails,
+        articleItems,
+        articlesDetails,
         appliedBy,
       });
 
       if (req.io && req.tenantDbName) {
+        const typesStr = (newRecord.requestTypes || ['leave']).map((t) => t.toUpperCase()).join(' & ');
         req.io.to(req.tenantDbName).emit('leave:applied', { data: newRecord });
         req.io.to(req.tenantDbName).emit('admin:broadcast', {
           id: 'leave-req-' + newRecord.id,
-          title: 'New Leave Request',
-          message: `${newRecord.workerName} requested ${newRecord.noOfDays} day(s) leave (${newRecord.fromDate} to ${newRecord.toDate})`,
+          title: `New ${typesStr} Request`,
+          message: `${newRecord.workerName} submitted ${typesStr} request (${newRecord.projectName || 'Site'})`,
           priority: 'normal',
           targetRoles: ['CorpAdmin', 'userAdmin', 'HR'],
           sentBy: newRecord.workerName,
@@ -5604,10 +5615,118 @@ exports.manageEmployees = {
         });
       }
 
-      res.status(201).json({ success: true, message: 'Leave request submitted successfully', data: newRecord });
+      res.status(201).json({ success: true, message: 'Request submitted successfully', data: newRecord });
     } catch (err) {
       console.error('applyLeave error:', err.message);
       res.status(400).json({ success: false, message: err.message });
+    }
+  },
+
+  cancelLeave: async (req, res) => {
+    try {
+      const leaveManager = require('../utils/leaveManager');
+      const { id } = req.params;
+      const result = leaveManager.cancelLeave(req.tenantDbName, id);
+      if (req.io && req.tenantDbName) {
+        req.io.to(req.tenantDbName).emit('leave:cancelled', { id });
+      }
+      res.json(result);
+    } catch (err) {
+      console.error('cancelLeave error:', err.message);
+      res.status(400).json({ success: false, message: err.message });
+    }
+  },
+
+  getWorkerDuesSummary: async (req, res) => {
+    try {
+      const { workerId, month, year } = req.query;
+      if (!workerId) {
+        return res.status(400).json({ success: false, message: 'workerId is required' });
+      }
+
+      const now = new Date();
+      const targetMonth = month !== undefined ? parseInt(month, 10) : now.getMonth();
+      const targetYear = year !== undefined ? parseInt(year, 10) : now.getFullYear();
+
+      const startOfMonth = new Date(targetYear, targetMonth, 1);
+      const endOfMonth = new Date(targetYear, targetMonth + 1, 0, 23, 59, 59, 999);
+
+      let earnedDues = 0;
+      let advance = 0;
+      let penalty = 0;
+
+      // 1. Attendance & penalty records for worker
+      if (req.models?.Attendance) {
+        const query = {
+          $or: [{ workerId: String(workerId) }, { employeeId: String(workerId) }],
+          date: { $gte: startOfMonth, $lte: endOfMonth },
+        };
+        const attRecords = await req.models.Attendance.find(query).lean().catch(() => []);
+        for (const rec of attRecords) {
+          const rate = Number(rec.dailyRate || rec.rate || 0);
+          if (rec.status === 'Present' || rec.status === 'Double Duty' || rec.status === 'Paid Leave') {
+            earnedDues += rate > 0 ? rate : 500;
+          } else if (rec.status === 'Half Day') {
+            earnedDues += (rate > 0 ? rate : 500) / 2;
+          }
+
+          const imp = Number(rec.penaltyImposed || 0);
+          const ded = Number(rec.penaltyDeducted || 0);
+          const wai = Number(rec.penaltyWaivedOff || 0);
+          penalty += Math.max(0, imp - ded - wai);
+        }
+      }
+
+      // 2. Vouchers for advances
+      if (req.models?.Voucher) {
+        const vQuery = {
+          date: { $gte: startOfMonth, $lte: endOfMonth },
+          $or: [
+            { 'entries.accountId': String(workerId) },
+            { narration: { $regex: new RegExp(String(workerId), 'i') } },
+          ],
+        };
+        const vouchers = await req.models.Voucher.find(vQuery).lean().catch(() => []);
+        for (const v of vouchers) {
+          if (v.voucherType === 'Payment' || /advance|salary/i.test(v.narration || '')) {
+            const entry = (v.entries || []).find((e) => String(e.accountId) === String(workerId));
+            if (entry) {
+              advance += Number(entry.amount || 0);
+            }
+          }
+        }
+      }
+
+      // 3. Fallback to employee master rate if no attendance records yet
+      if (earnedDues === 0 && req.models?.Employees) {
+        const emp = await req.models.Employees.findById(workerId).lean().catch(() => null);
+        if (emp) {
+          const rate = Number(emp.rate || emp.dailyRate || 0);
+          const monthly = Number(emp.monthlyRate || emp.salary || 0);
+          if (rate > 0) {
+            earnedDues = rate * 26;
+          } else if (monthly > 0) {
+            earnedDues = monthly;
+          }
+        }
+      }
+
+      const netDues = Math.max(0, earnedDues - advance - penalty);
+
+      res.json({
+        success: true,
+        data: {
+          earnedDues,
+          advance,
+          penalty,
+          netDues,
+          month: targetMonth + 1,
+          year: targetYear,
+        },
+      });
+    } catch (err) {
+      console.error('getWorkerDuesSummary error:', err.message);
+      res.status(500).json({ success: false, message: err.message });
     }
   },
 

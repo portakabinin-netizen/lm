@@ -114,6 +114,8 @@ router.delete("/hr/worker-penalties/:id", ctrl.manageEmployees.deleteWorkerPenal
 router.post("/hr/leave/apply", ctrl.manageEmployees.applyLeave);
 router.get("/hr/leave/list", ctrl.manageEmployees.listLeaves);
 router.put("/hr/leave/review/:id", ctrl.manageEmployees.reviewLeave);
+router.delete("/hr/leave/cancel/:id", ctrl.manageEmployees.cancelLeave);
+router.get("/hr/worker-dues-summary", ctrl.manageEmployees.getWorkerDuesSummary);
 
 
 // --- 👥 PARTIES (Clients & Suppliers) ---
