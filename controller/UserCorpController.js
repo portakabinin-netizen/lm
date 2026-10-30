@@ -2446,6 +2446,13 @@ exports.manageEmployees = {
       if (!record) {
         return res.status(404).json({ success: false, message: 'Attendance record not found' });
       }
+      if (autoEndScheduler) {
+        autoEndScheduler.cancelAutoEnd(record._id);
+        const effectiveSiteId = record.leadId || record.siteId;
+        if (effectiveSiteId && record.shiftCode) {
+          autoEndScheduler.suppressShiftSlot(req.tenantDbName, effectiveSiteId, record.shiftCode);
+        }
+      }
       const emit = require('../utils/socketEmitter');
       emit(req, 'attendance:deleted', { id: req.params.id });
       if (req.io && req.tenantDbName) {
@@ -5541,6 +5548,110 @@ exports.manageEmployees = {
     } catch (err) {
       console.error('deleteWorkerPenalty error:', err);
       res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  applyLeave: async (req, res) => {
+    try {
+      const leaveManager = require('../utils/leaveManager');
+      const {
+        workerId,
+        workerName,
+        workerRole,
+        workerMobile,
+        projectId,
+        projectName,
+        shiftCode,
+        fromDate,
+        toDate,
+        leaveType,
+        reason,
+        isWorkerOnBehalf,
+      } = req.body;
+
+      const appliedBy = {
+        userId: String(req.user?._id || ''),
+        userName: req.user?.userDisplayName || req.user?.name || workerName || 'User',
+        userRole: req.user?.userRole || 'worker',
+        isSelf: !isWorkerOnBehalf,
+      };
+
+      const newRecord = leaveManager.applyLeave(req.tenantDbName, {
+        workerId,
+        workerName,
+        workerRole,
+        workerMobile,
+        projectId,
+        projectName,
+        shiftCode,
+        fromDate,
+        toDate,
+        leaveType,
+        reason,
+        appliedBy,
+      });
+
+      if (req.io && req.tenantDbName) {
+        req.io.to(req.tenantDbName).emit('leave:applied', { data: newRecord });
+        req.io.to(req.tenantDbName).emit('admin:broadcast', {
+          id: 'leave-req-' + newRecord.id,
+          title: 'New Leave Request',
+          message: `${newRecord.workerName} requested ${newRecord.noOfDays} day(s) leave (${newRecord.fromDate} to ${newRecord.toDate})`,
+          priority: 'normal',
+          targetRoles: ['CorpAdmin', 'userAdmin', 'HR'],
+          sentBy: newRecord.workerName,
+          at: new Date().toISOString(),
+        });
+      }
+
+      res.status(201).json({ success: true, message: 'Leave request submitted successfully', data: newRecord });
+    } catch (err) {
+      console.error('applyLeave error:', err.message);
+      res.status(400).json({ success: false, message: err.message });
+    }
+  },
+
+  listLeaves: async (req, res) => {
+    try {
+      const leaveManager = require('../utils/leaveManager');
+      const records = leaveManager.listLeaves(req.tenantDbName, req.query);
+      res.json({ success: true, data: records });
+    } catch (err) {
+      console.error('listLeaves error:', err.message);
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  reviewLeave: async (req, res) => {
+    try {
+      const leaveManager = require('../utils/leaveManager');
+      const { id } = req.params;
+      const { status, reason } = req.body; // 'Approved' | 'Disapproved'
+      const adminInfo = {
+        id: req.user?._id,
+        name: req.user?.userDisplayName || req.user?.name || req.user?.mobile || 'Admin',
+        reason,
+      };
+      const updated = leaveManager.reviewLeave(req.tenantDbName, id, status, adminInfo);
+
+      if (req.io && req.tenantDbName) {
+        req.io.to(req.tenantDbName).emit('leave:reviewed', { data: updated });
+        req.io.to(req.tenantDbName).emit('admin:broadcast', {
+          id: 'leave-rev-' + updated.id,
+          title: `Leave Request ${status}`,
+          message: `Leave for ${updated.workerName} (${updated.fromDate} to ${updated.toDate}) was ${status.toLowerCase()} by ${adminInfo.name}.`,
+          priority: 'normal',
+          targetRoles: ['CorpAdmin', 'userAdmin', 'Project', 'HR'],
+          sentBy: adminInfo.name,
+          at: new Date().toISOString(),
+        });
+      }
+
+      res.json({ success: true, message: `Leave ${status} successfully`, data: updated });
+    } catch (err) {
+      console.error('reviewLeave error:', err.message);
+      const statusCode = err.message.includes('Self-approval') ? 403 : 400;
+      res.status(statusCode).json({ success: false, message: err.message });
     }
   },
 };

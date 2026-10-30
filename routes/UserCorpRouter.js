@@ -110,6 +110,11 @@ router.post("/hr/worker-penalties", ctrl.manageEmployees.saveWorkerPenalty);
 router.put("/hr/worker-penalties/:id", ctrl.manageEmployees.saveWorkerPenalty);
 router.delete("/hr/worker-penalties/:id", ctrl.manageEmployees.deleteWorkerPenalty);
 
+// --- 🏖️ WORKER & STAFF LEAVE MANAGEMENT (leave.json) ---
+router.post("/hr/leave/apply", ctrl.manageEmployees.applyLeave);
+router.get("/hr/leave/list", ctrl.manageEmployees.listLeaves);
+router.put("/hr/leave/review/:id", ctrl.manageEmployees.reviewLeave);
+
 
 // --- 👥 PARTIES (Clients & Suppliers) ---
 router.get("/parties/clients",   ctrl.manageClients.list);

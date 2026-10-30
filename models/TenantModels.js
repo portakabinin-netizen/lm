@@ -263,7 +263,7 @@ const attendanceSchema = new mongoose.Schema(
     siteLong: { type: Number },
     role: { type: String, trim: true },
     date: { type: Date, required: true },
-    status: { type: String, enum: ['Present', 'Absent', 'Leave'], default: 'Present' },
+    status: { type: String, enum: ['Present', 'Absent', 'Leave', 'Paid Leave', 'Weekly Off', 'NR', 'Half Day'], default: 'Present' },
     dutyLevel: { type: Number, default: 1 },
     rate: { type: Number, default: 0 },
     site_name: { type: String, trim: true },
