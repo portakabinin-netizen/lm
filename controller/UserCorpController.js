@@ -5626,9 +5626,10 @@ exports.manageEmployees = {
     try {
       const leaveManager = require('../utils/leaveManager');
       const { id } = req.params;
-      const result = leaveManager.cancelLeave(req.tenantDbName, id);
+      const userName = req.user?.userDisplayName || req.user?.name || req.user?.mobile || 'User';
+      const result = leaveManager.cancelLeave(req.tenantDbName, id, userName);
       if (req.io && req.tenantDbName) {
-        req.io.to(req.tenantDbName).emit('leave:cancelled', { id });
+        req.io.to(req.tenantDbName).emit('leave:cancelled', { id, record: result.data });
       }
       res.json(result);
     } catch (err) {
