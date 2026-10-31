@@ -21,15 +21,55 @@ const MAX_TIMER_MS = 24 * 60 * 60 * 1000; // 24h cap
 // Map: attendanceId (string) -> NodeJS.Timeout
 const _timers = new Map();
 
-// Valid billable / active lead statuses: strictly 'Accepted' only
-const VALID_LEAD_STATUS_REGEX = /^accepted$/i;
+// Valid billable / active lead statuses: strictly 'Accepted' and 'Tax Invoice'
+const VALID_LEAD_STATUS_REGEX = /^(accepted|tax invoice)$/i;
 
 const isValidLeadStatus = (status) => {
   if (!status) return false;
-  return String(status).trim().toLowerCase() === 'accepted';
+  return /^(accepted|tax invoice)$/i.test(String(status).trim());
 };
 
-const VALID_LEAD_STATUSES_MONGO = ['Accepted', 'accepted'];
+const VALID_LEAD_STATUSES_MONGO = ['Accepted', 'accepted', 'Tax Invoice', 'tax invoice'];
+
+function parseShiftStartTime(timeStr, defaultHour = 8) {
+  if (!timeStr) return { safeH: defaultHour, safeM: 0, totalMins: defaultHour * 60 };
+  const str = String(timeStr).trim();
+  const isPM = /pm/i.test(str);
+  const isAM = /am/i.test(str);
+  const clean = str.replace(/[^\d:]/g, '');
+  const parts = clean.split(':').map(Number);
+  let h = isNaN(parts[0]) ? defaultHour : parts[0];
+  let m = isNaN(parts[1]) ? 0 : parts[1];
+  if (isPM && h < 12) h += 12;
+  if (isAM && h === 12) h = 0;
+  return { safeH: h, safeM: m, totalMins: h * 60 + m };
+}
+
+// ── Time & Day Normalization Helpers (Strict Indian Standard Time +5:30) ──
+const getIstInfo = (date = new Date()) => {
+  const istOffsetMs = 5.5 * 3600000;
+  const istDate = new Date(date.getTime() + istOffsetMs);
+  const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const dayOfWeek = days[istDate.getUTCDay()];
+  const dateStr = istDate.toISOString().split('T')[0];
+  const currentHour = istDate.getUTCHours();
+  const currentMin = istDate.getUTCMinutes();
+  const totalMins = currentHour * 60 + currentMin;
+  return { istDate, dayOfWeek, dateStr, currentHour, currentMin, totalMins };
+};
+
+const normalizeDayOfWeek = (val) => {
+  if (!val) return '';
+  const s = String(val).trim().toLowerCase();
+  if (s.startsWith('sun')) return 'Sun';
+  if (s.startsWith('mon')) return 'Mon';
+  if (s.startsWith('tue')) return 'Tue';
+  if (s.startsWith('wed')) return 'Wed';
+  if (s.startsWith('thu')) return 'Thu';
+  if (s.startsWith('fri')) return 'Fri';
+  if (s.startsWith('sat')) return 'Sat';
+  return '';
+};
 
 // ── Daily Shift Slot Suppression Registry ────────────────────────────────────
 // Prevents the background sweeper from force-restarting a shift slot on the same
@@ -235,143 +275,224 @@ async function handleAutoShiftRollover(closedAttendance, AttendanceModel, tenant
       nextShiftCode = other ? other.shiftCode : outgoingCode;
     }
 
-    const matchedShift =
-      activeSiteShifts.find(
-        (s) =>
-          s.shiftCode === nextShiftCode || s.shiftCode.toUpperCase() === nextShiftCode.toUpperCase()
-      ) || activeSiteShifts[0];
+    // Support Multi-worker sites (e.g., Rajan Bhasin, Bhandari-W70, Lintech):
+    // Gather all candidate shifts matching nextShiftCode so that if one slot's worker
+    // is inactive, on weekly off, or busy, the remaining valid slots still rollover.
+    let candidateShifts = activeSiteShifts.filter((s) => {
+      const sc = String(s.shiftCode || '').trim().toUpperCase();
+      return sc === nextShiftCode.toUpperCase();
+    });
+    if (candidateShifts.length === 0) {
+      candidateShifts = activeSiteShifts.filter((s) => s.shiftCode !== outgoingCode);
+    }
+    if (candidateShifts.length === 0) {
+      candidateShifts = [activeSiteShifts[0]];
+    }
 
-    const targetShiftCode = matchedShift.shiftCode || nextShiftCode;
     const endTime = closedAttendance.dutyEnd ? new Date(closedAttendance.dutyEnd) : new Date();
-    const todayStr = endTime.toISOString().split('T')[0];
-
-    // ── Check Daily Shift Slot Suppression ──
-    if (isShiftSlotSuppressed(tenantDbName, effectiveLeadId, targetShiftCode, todayStr)) {
-      console.log(
-        `🛡️ [autoEndScheduler] Slot ${targetShiftCode} at site "${lead.sender_name || 'Site'}" is suppressed for today. Skipping rollover.`
-      );
-      return;
-    }
-
-    // 4. Resolve bound worker for target shift:
-    // STRICT RULE: Only use explicitly bound worker in siteShifts.boundWorkerId.
-    // NEVER query historical attendance to resurrect delinked or former workers!
-    const incomingWorkerId = matchedShift.boundWorkerId
-      ? String(matchedShift.boundWorkerId._id || matchedShift.boundWorkerId)
-      : null;
-
-    if (!incomingWorkerId) {
-      console.log(
-        `[autoEndScheduler] No bound worker assigned for next shift ${targetShiftCode} at site "${lead.sender_name || 'site'}". Skipping rollover.`
-      );
-      if (io && tenantDbName) {
-        io.to(tenantDbName).emit('attendance:reliever_needed', {
-          siteId: String(lead._id),
-          siteName: lead.sender_name || lead.name || 'Site',
-          shiftCode: targetShiftCode,
-          reason: 'No bound worker assigned to shift',
-        });
-      }
-      return;
-    }
+    const { istDate, dayOfWeek, dateStr: todayStr } = getIstInfo(endTime);
 
     const Employees = db.models.Employees || db.model('Employees');
-    const incomingEmp = await Employees.findById(incomingWorkerId).lean();
+    const SiteRosterHolidays = db.models.SiteRosterHolidays || (db.model && db.model('SiteRosterHolidays'));
 
-    // Guard: Worker must exist and be active
-    if (!incomingEmp || incomingEmp.active === false) {
-      console.log(
-        `[autoEndScheduler] Bound worker ${incomingWorkerId} is inactive/delinked. Skipping rollover.`
-      );
-      if (io && tenantDbName) {
-        io.to(tenantDbName).emit('attendance:reliever_needed', {
-          siteId: String(lead._id),
-          siteName: lead.sender_name || lead.name || 'Site',
-          shiftCode: targetShiftCode,
-          boundWorkerId: incomingWorkerId,
-          boundWorkerName: incomingEmp?.name || matchedShift.boundWorkerName || 'Worker',
-          reason: 'Bound worker is inactive/delinked',
-        });
+    let startedShift = null;
+
+    for (const matchedShift of candidateShifts) {
+      const targetShiftCode = matchedShift.shiftCode || nextShiftCode;
+
+      // ── Check Daily Shift Slot Suppression ──
+      if (isShiftSlotSuppressed(tenantDbName, effectiveLeadId, targetShiftCode, todayStr)) {
+        console.log(
+          `🛡️ [autoEndScheduler] Slot ${targetShiftCode} at site "${lead.sender_name || 'Site'}" is suppressed for today. Skipping slot.`
+        );
+        continue;
       }
-      return;
-    }
 
-    const incomingWorkerName = incomingEmp.name || matchedShift.boundWorkerName || 'Worker';
+      // ── Resolve candidate worker for target shift ──
+      let incomingWorkerId = matchedShift.boundWorkerId
+        ? String(matchedShift.boundWorkerId._id || matchedShift.boundWorkerId)
+        : null;
+      let incomingEmp = null;
+      let incomingWorkerName = matchedShift.boundWorkerName || 'Worker';
 
-    // ── Check Approved Leave from leaveManager (leaves.json) ──
-    const approvedLeave = leaveManager.isWorkerOnApprovedLeave(tenantDbName, incomingWorkerId, todayStr);
-    if (approvedLeave) {
-      console.log(
-        `🏖️ [autoEndScheduler] Worker ${incomingWorkerName} is on APPROVED LEAVE (${approvedLeave.fromDate} to ${approvedLeave.toDate}). Skipping rollover.`
-      );
-      if (io && tenantDbName) {
-        io.to(tenantDbName).emit('attendance:reliever_needed', {
-          siteId: String(lead._id),
-          siteName: lead.sender_name || lead.name || 'Site',
-          shiftCode: targetShiftCode,
-          boundWorkerId: incomingWorkerId,
-          boundWorkerName: incomingWorkerName,
-          reason: `On Approved Leave until ${approvedLeave.toDate} (${approvedLeave.leaveType || 'Leave'})`,
-        });
+      if (incomingWorkerId) {
+        const emp = await Employees.findById(incomingWorkerId).lean();
+        if (emp && emp.active !== false) {
+          const isBusy = await AttendanceModel.findOne({
+            employeeId: incomingWorkerId,
+            $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }],
+          }).lean();
+          if (!isBusy) {
+            incomingEmp = emp;
+            incomingWorkerName = emp.name || matchedShift.boundWorkerName || 'Worker';
+          }
+        }
       }
-      return;
-    }
 
-    // Guard: Prevent double-clocking if this incoming worker is already on duty anywhere
-    const alreadyActive = await AttendanceModel.findOne({
-      employeeId: incomingWorkerId,
-      $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }],
-    }).lean();
-
-    if (alreadyActive) {
-      console.log(`[autoEndScheduler] Bound worker ${incomingWorkerName} is already on duty. Skipping auto-clock in.`);
-      return;
-    }
-
-    const startOfToday = new Date(endTime);
-    startOfToday.setHours(0, 0, 0, 0);
-    const endOfToday = new Date(endTime);
-    endOfToday.setHours(23, 59, 59, 999);
-
-    // Guard: Prevent double-clocking for the same shift if already marked today
-    const alreadyDutyToday = await AttendanceModel.findOne({
-      employeeId: incomingWorkerId,
-      leadId: effectiveLeadId,
-      shiftCode: targetShiftCode,
-      date: { $gte: startOfToday, $lte: endOfToday },
-    }).lean();
-
-    if (alreadyDutyToday) {
-      console.log(
-        `[autoEndScheduler] Worker ${incomingWorkerName} already has attendance on shift ${targetShiftCode} today. Skipping auto-start.`
-      );
-      return;
-    }
-
-    // ── Check Weekly Rest, Shift Exemptions, Site Closure, and Allowed Holidays ──
-    const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-    const dayOfWeek = days[endTime.getDay()];
-
-    const isShiftRestDay =
-      matchedShift.weeklyRestDay === dayOfWeek ||
-      (Array.isArray(matchedShift.exemptDays) && matchedShift.exemptDays.includes(dayOfWeek));
-
-    if (isShiftRestDay) {
-      console.log(
-        `[autoEndScheduler] Shift ${targetShiftCode} at ${lead.sender_name || 'Site'} has weekly rest on ${dayOfWeek}. Skipping auto-start.`
-      );
-      if (io && tenantDbName) {
-        io.to(tenantDbName).emit('attendance:reliever_needed', {
-          siteId: String(lead._id),
-          siteName: lead.sender_name || lead.name || 'Site',
+      // Fallback: If bound worker is unavailable/inactive/busy, check recent duty performers at this site/shift
+      if (!incomingEmp) {
+        const prevDuties = await AttendanceModel.find({
+          $or: [{ leadId: effectiveLeadId }, { siteId: effectiveLeadId }],
           shiftCode: targetShiftCode,
-          boundWorkerId: incomingWorkerId,
-          boundWorkerName: incomingWorkerName,
-          reason: `${dayOfWeek} Weekly Rest`,
-        });
+          dutyStart: { $exists: true },
+        })
+          .sort({ dutyStart: -1 })
+          .limit(5)
+          .lean();
+
+        for (const prev of prevDuties) {
+          if (!prev.employeeId) continue;
+          const prevId = String(prev.employeeId);
+          const emp = await Employees.findById(prevId).lean();
+          if (emp && emp.active !== false) {
+            const isBusy = await AttendanceModel.findOne({
+              employeeId: prevId,
+              $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }],
+            }).lean();
+            if (!isBusy) {
+              incomingWorkerId = prevId;
+              incomingEmp = emp;
+              incomingWorkerName = emp.name || prev.workerName || 'Worker';
+              console.log(
+                `🔄 [autoEndScheduler] Rollover fallback worker: ${incomingWorkerName} (${incomingWorkerId}) for ${targetShiftCode} at site "${lead.sender_name || 'Site'}"`
+              );
+              break;
+            }
+          }
+        }
       }
+
+      if (!incomingWorkerId || !incomingEmp) {
+        console.log(
+          `[autoEndScheduler] No available worker found for slot ${targetShiftCode} at site "${lead.sender_name || 'site'}". Checking next slot.`
+        );
+        if (io && tenantDbName) {
+          io.to(tenantDbName).emit('attendance:reliever_needed', {
+            siteId: String(lead._id),
+            siteName: lead.sender_name || lead.name || 'Site',
+            shiftCode: targetShiftCode,
+            reason: 'Bound worker unavailable and no recent substitute found',
+          });
+        }
+        continue;
+      }
+
+      // ── Check Approved Leave from leaveManager (leaves.json) ──
+      const approvedLeave = leaveManager.isWorkerOnApprovedLeave(tenantDbName, incomingWorkerId, todayStr);
+      if (approvedLeave) {
+        console.log(
+          `🏖️ [autoEndScheduler] Worker ${incomingWorkerName} is on APPROVED LEAVE (${approvedLeave.fromDate} to ${approvedLeave.toDate}). Checking next slot.`
+        );
+        if (io && tenantDbName) {
+          io.to(tenantDbName).emit('attendance:reliever_needed', {
+            siteId: String(lead._id),
+            siteName: lead.sender_name || lead.name || 'Site',
+            shiftCode: targetShiftCode,
+            boundWorkerId: incomingWorkerId,
+            boundWorkerName: incomingWorkerName,
+            reason: `On Approved Leave until ${approvedLeave.toDate} (${approvedLeave.leaveType || 'Leave'})`,
+          });
+        }
+        continue;
+      }
+
+      // ── Check Weekly Rest, Shift Exemptions, and SiteRosterHolidays ──
+      const isShiftRestDay =
+        normalizeDayOfWeek(matchedShift.weeklyRestDay) === dayOfWeek ||
+        (Array.isArray(matchedShift.exemptDays) && matchedShift.exemptDays.map(normalizeDayOfWeek).includes(dayOfWeek)) ||
+        normalizeDayOfWeek(incomingEmp.weeklyRestDay) === dayOfWeek ||
+        normalizeDayOfWeek(incomingEmp.weeklyOff) === dayOfWeek;
+
+      let offRecord = null;
+      if (SiteRosterHolidays) {
+        offRecord = await SiteRosterHolidays.findOne({
+          siteId: lead._id,
+          $or: [
+            { workerId: incomingWorkerId, type: 'WeeklyRest', restDayOfWeek: { $regex: new RegExp(`^${dayOfWeek}`, 'i') } },
+            {
+              workerId: incomingWorkerId,
+              date: todayStr,
+              type: { $in: ['SickLeave', 'CasualLeave', 'OtherLeave', 'PaidHoliday', 'WeeklyRest'] },
+            },
+            { date: todayStr, type: 'SiteClosed' },
+          ],
+        }).lean();
+      }
+
+      if (isShiftRestDay || offRecord) {
+        console.log(
+          `🏖️ [autoEndScheduler] Worker ${incomingWorkerName} at ${lead.sender_name || 'Site'} has WEEKLY REST / OFF on ${dayOfWeek}. Skipping slot.`
+        );
+        if (io && tenantDbName) {
+          io.to(tenantDbName).emit('attendance:reliever_needed', {
+            siteId: String(lead._id),
+            siteName: lead.sender_name || lead.name || 'Site',
+            shiftCode: targetShiftCode,
+            boundWorkerId: incomingWorkerId,
+            boundWorkerName: incomingWorkerName,
+            reason: offRecord ? (offRecord.remark || offRecord.type) : `${dayOfWeek} Weekly Rest`,
+          });
+        }
+        continue;
+      }
+
+      // Guard: Prevent double-clocking if this incoming worker is already on duty anywhere
+      const alreadyActive = await AttendanceModel.findOne({
+        employeeId: incomingWorkerId,
+        $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }],
+      }).lean();
+
+      if (alreadyActive) {
+        console.log(`[autoEndScheduler] Bound worker ${incomingWorkerName} is already on duty. Checking next slot.`);
+        continue;
+      }
+
+      // Guard: Prevent double-clocking for the same shift if already marked today
+      const startOfToday = new Date(istDate);
+      startOfToday.setUTCHours(0, 0, 0, 0);
+      const startOfTodayUtc = new Date(startOfToday.getTime() - 5.5 * 3600000);
+      const endOfTodayUtc = new Date(startOfTodayUtc.getTime() + 24 * 3600000);
+
+      const alreadyDutyToday = await AttendanceModel.findOne({
+        employeeId: incomingWorkerId,
+        $or: [
+          { leadId: effectiveLeadId },
+          { siteId: effectiveLeadId },
+        ],
+        shiftCode: targetShiftCode,
+        date: { $gte: startOfTodayUtc, $lte: endOfTodayUtc },
+      }).lean();
+
+      if (alreadyDutyToday) {
+        console.log(
+          `[autoEndScheduler] Worker ${incomingWorkerName} already has attendance on shift ${targetShiftCode} today. Checking next slot.`
+        );
+        continue;
+      }
+
+      // Found an eligible incoming candidate shift slot!
+      startedShift = {
+        matchedShift,
+        incomingWorkerId,
+        incomingEmp,
+        incomingWorkerName,
+        targetShiftCode,
+      };
+      break;
+    }
+
+    if (!startedShift) {
+      console.log(`[autoEndScheduler] No eligible incoming worker available for rollover at site "${lead.sender_name || 'Site'}".`);
       return;
     }
+
+    const {
+      matchedShift,
+      incomingWorkerId,
+      incomingEmp,
+      incomingWorkerName,
+      targetShiftCode,
+    } = startedShift;
 
     const nextDurationHrs = matchedShift.durationHrs || 8;
 
@@ -595,10 +716,7 @@ async function autoStartScheduledShifts(conn, tenantDbName, io) {
         const durationHrs = shift.durationHrs || (shift.shiftType === '12hr' ? 12 : 8);
         const startTimeStr =
           shift.startTime || (shiftCode === 'N2' || shiftCode === 'N' ? '20:00' : '08:00');
-        const [sH, sM] = startTimeStr.split(':').map(Number);
-        const safeH = isNaN(sH) ? 8 : sH;
-        const safeM = isNaN(sM) ? 0 : safeM;
-        const shiftStartMins = safeH * 60 + safeM;
+        const { safeH, safeM, totalMins: shiftStartMins } = parseShiftStartTime(startTimeStr, 8);
 
         let isWithinShift = false;
         let shiftStartedToday = true;
@@ -629,16 +747,14 @@ async function autoStartScheduledShifts(conn, tenantDbName, io) {
 
         // 1. Check current active duty count for this site and shift slot
         const activeCount = await Attendance.countDocuments({
-          $and: [
-            { $or: siteOrConditions },
-            { shiftCode: { $in: shiftCodesList } },
-            { $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }] },
-          ],
+          $or: siteOrConditions,
+          shiftCode: { $in: shiftCodesList },
+          $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }],
         });
 
         const targetSlots = shift.workerSlots || 1;
         if (activeCount >= targetSlots) {
-          continue;
+          continue; // Slot already full
         }
 
         // 2. Compute scheduled times accurately
@@ -655,145 +771,185 @@ async function autoStartScheduledShifts(conn, tenantDbName, io) {
 
         if (now >= scheduledEndUtc) continue;
 
-        // Check if duty has already started today for this site & shift slot
-        const alreadyRanDuty = await Attendance.findOne({
-          $and: [
-            { $or: siteOrConditions },
-            { shiftCode: { $in: shiftCodesList } },
-            {
-              dutyStart: {
-                $gte: new Date(scheduledStartUtc.getTime() - 2 * 3600000),
-                $lte: scheduledEndUtc,
-              },
-            },
-          ],
-        }).lean();
+        // Helper to verify if candidate worker is eligible and available right now
+        const isWorkerEligible = async (wId) => {
+          if (!wId) return { ok: false, reason: 'no_id' };
+          const emp = await Employees.findById(wId).lean();
+          if (!emp || emp.active === false) return { ok: false, reason: 'inactive' };
 
-        if (alreadyRanDuty) {
-          continue;
-        }
-
-        // 3. Resolve Worker: STRICT BOUND WORKER ONLY.
-        // NEVER fetch delinked workers from previous attendance history!
-        const targetWorkerId = shift.boundWorkerId
-          ? String(shift.boundWorkerId._id || shift.boundWorkerId)
-          : null;
-
-        if (!targetWorkerId) {
-          if (io && tenantDbName) {
-            io.to(tenantDbName).emit('attendance:reliever_needed', {
-              siteId: String(lead._id),
-              siteName: lead.sender_name || lead.name || 'Site',
-              shiftCode: shift.shiftCode,
-              reason: 'No bound worker assigned to shift',
-            });
-          }
-          continue;
-        }
-
-        const emp = await Employees.findById(targetWorkerId).lean();
-        if (!emp || emp.active === false) {
-          if (io && tenantDbName) {
-            io.to(tenantDbName).emit('attendance:reliever_needed', {
-              siteId: String(lead._id),
-              siteName: lead.sender_name || lead.name || 'Site',
-              shiftCode: shift.shiftCode,
-              boundWorkerId: targetWorkerId,
-              boundWorkerName: emp?.name || shift.boundWorkerName || 'Worker',
-              reason: 'Bound worker is inactive or delinked',
-            });
-          }
-          continue;
-        }
-
-        const workerName = emp.name || shift.boundWorkerName || 'Worker';
-
-        // ── Check Approved Leave from leaveManager (leaves.json) ──
-        const approvedLeave = leaveManager.isWorkerOnApprovedLeave(tenantDbName, targetWorkerId, todayDateStr);
-        if (approvedLeave) {
-          console.log(
-            `🏖️ [autoEndScheduler] Worker ${workerName} is on APPROVED LEAVE (${approvedLeave.fromDate} to ${approvedLeave.toDate}). Skipping auto-start.`
-          );
-          if (io && tenantDbName) {
-            io.to(tenantDbName).emit('attendance:reliever_needed', {
-              siteId: String(lead._id),
-              siteName: lead.sender_name || lead.name || 'Site',
-              shiftCode: shift.shiftCode,
-              boundWorkerId: targetWorkerId,
-              boundWorkerName: workerName,
-              reason: `On Approved Leave until ${approvedLeave.toDate} (${approvedLeave.leaveType || 'Leave'})`,
-            });
-          }
-          continue;
-        }
-
-        // 4. Guard: Worker already active on any duty?
-        const workerBusy = await Attendance.findOne({
-          employeeId: targetWorkerId,
-          $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }],
-        }).lean();
-
-        if (workerBusy) continue;
-
-        // 5. Guard: Weekly Rest Day & Exempt Days
-        const isShiftRestDay =
-          shift.weeklyRestDay === currentDayOfWeek ||
-          (Array.isArray(shift.exemptDays) && shift.exemptDays.includes(currentDayOfWeek));
-
-        if (isShiftRestDay) {
-          if (io && tenantDbName) {
-            io.to(tenantDbName).emit('attendance:reliever_needed', {
-              siteId: String(lead._id),
-              siteName: lead.sender_name || lead.name || 'Site',
-              shiftCode: shift.shiftCode,
-              boundWorkerId: targetWorkerId,
-              boundWorkerName: workerName,
-              reason: `${currentDayOfWeek} Weekly Rest`,
-            });
-          }
-          continue;
-        }
-
-        // 6. Guard: SiteRosterHolidays
-        if (SiteRosterHolidays) {
-          const offRecord = await SiteRosterHolidays.findOne({
-            siteId: lead._id,
-            $or: [
-              { workerId: targetWorkerId, type: 'WeeklyRest', restDayOfWeek: currentDayOfWeek },
-              {
-                workerId: targetWorkerId,
-                date: todayDateStr,
-                type: { $in: ['SickLeave', 'CasualLeave', 'OtherLeave', 'PaidHoliday'] },
-              },
-              { date: todayDateStr, type: 'SiteClosed' },
-            ],
+          // Guard: Worker busy on active duty anywhere?
+          const busy = await Attendance.findOne({
+            employeeId: wId,
+            $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }],
           }).lean();
+          if (busy) return { ok: false, reason: 'busy', siteName: busy.site_name };
 
-          if (offRecord) {
+          // Guard: Already ran duty on this site/shift today?
+          const alreadyRan = await Attendance.findOne({
+            employeeId: wId,
+            $or: siteOrConditions,
+            shiftCode: { $in: shiftCodesList },
+            dutyStart: {
+              $gte: new Date(scheduledStartUtc.getTime() - 2 * 3600000),
+              $lte: scheduledEndUtc,
+            },
+          }).lean();
+          if (alreadyRan) return { ok: false, reason: 'already_ran' };
+
+          // Guard: Approved leave from leaveManager (leaves.json)
+          const approvedLeave = leaveManager.isWorkerOnApprovedLeave(tenantDbName, wId, todayDateStr);
+          if (approvedLeave) return { ok: false, reason: 'leave', approvedLeave };
+
+          // Guard: Weekly rest & SiteRosterHolidays
+          const isShiftRest =
+            normalizeDayOfWeek(shift.weeklyRestDay) === currentDayOfWeek ||
+            (Array.isArray(shift.exemptDays) && shift.exemptDays.map(normalizeDayOfWeek).includes(currentDayOfWeek)) ||
+            normalizeDayOfWeek(emp.weeklyRestDay) === currentDayOfWeek ||
+            normalizeDayOfWeek(emp.weeklyOff) === currentDayOfWeek;
+
+          let offRecord = null;
+          if (SiteRosterHolidays) {
+            offRecord = await SiteRosterHolidays.findOne({
+              siteId: lead._id,
+              $or: [
+                { workerId: wId, type: 'WeeklyRest', restDayOfWeek: { $regex: new RegExp(`^${currentDayOfWeek}`, 'i') } },
+                {
+                  workerId: wId,
+                  date: todayDateStr,
+                  type: { $in: ['SickLeave', 'CasualLeave', 'OtherLeave', 'PaidHoliday', 'WeeklyRest'] },
+                },
+                { date: todayDateStr, type: 'SiteClosed' },
+              ],
+            }).lean();
+          }
+
+          if (isShiftRest || offRecord) {
+            return {
+              ok: false,
+              reason: 'rest',
+              remark: offRecord ? (offRecord.remark || offRecord.type) : `${currentDayOfWeek} Weekly Rest`,
+            };
+          }
+
+          return { ok: true, emp };
+        };
+
+        // 3. Resolve Worker:
+        // Priority 1: Shift boundWorkerId (if active and available)
+        // Priority 2: Worker who performed the last duty on this shift at this site
+        // Priority 3: Worker who performed the last duty on any shift at this site
+        let targetWorkerId = null;
+        let targetEmp = null;
+        let workerName = null;
+
+        if (shift.boundWorkerId) {
+          const boundId = String(shift.boundWorkerId._id || shift.boundWorkerId);
+          const boundCheck = await isWorkerEligible(boundId);
+          if (boundCheck.ok) {
+            targetWorkerId = boundId;
+            targetEmp = boundCheck.emp;
+            workerName = boundCheck.emp.name || shift.boundWorkerName || 'Worker';
+          } else if (boundCheck.reason === 'rest') {
+            console.log(
+              `🏖️ [autoEndScheduler] Worker ${shift.boundWorkerName || 'Worker'} at ${lead.sender_name || 'Site'} is on WEEKLY REST / OFF on ${currentDayOfWeek}. Skipping auto-start.`
+            );
             if (io && tenantDbName) {
               io.to(tenantDbName).emit('attendance:reliever_needed', {
                 siteId: String(lead._id),
                 siteName: lead.sender_name || lead.name || 'Site',
                 shiftCode: shift.shiftCode,
-                boundWorkerId: targetWorkerId,
-                boundWorkerName: workerName,
-                reason: offRecord.remark || offRecord.type,
+                boundWorkerId: boundId,
+                boundWorkerName: shift.boundWorkerName || 'Worker',
+                reason: boundCheck.remark,
               });
             }
-            continue;
+            continue; // Legitimately on weekly rest / holiday!
+          } else if (boundCheck.reason === 'leave') {
+            console.log(
+              `🏖️ [autoEndScheduler] Worker ${shift.boundWorkerName || 'Worker'} is on APPROVED LEAVE. Checking fallback substitute.`
+            );
+          } else {
+            console.log(
+              `ℹ️ [autoEndScheduler] Bound worker ${shift.boundWorkerName || boundId} is ${boundCheck.reason} (${boundCheck.siteName || ''}). Checking fallback substitute.`
+            );
           }
         }
 
-        // 7. Auto-start duty on clock set in client shift schedule
+        // Fallback 1: Worker from previous duties on this shift at this site
+        if (!targetWorkerId) {
+          const prevDuties = await Attendance.find({
+            $or: siteOrConditions,
+            shiftCode: { $in: shiftCodesList },
+            dutyStart: { $exists: true },
+          })
+            .sort({ dutyStart: -1 })
+            .limit(6)
+            .lean();
+
+          for (const prev of prevDuties) {
+            if (!prev.employeeId) continue;
+            const pId = String(prev.employeeId);
+            const pCheck = await isWorkerEligible(pId);
+            if (pCheck.ok) {
+              targetWorkerId = pId;
+              targetEmp = pCheck.emp;
+              workerName = pCheck.emp.name || prev.workerName || 'Worker';
+              console.log(
+                `🔄 [autoEndScheduler] Resolved fallback worker ${workerName} (${targetWorkerId}) from shift history at "${lead.sender_name || 'Site'}"`
+              );
+              break;
+            }
+          }
+        }
+
+        // Fallback 2: Worker from previous duties on ANY shift at this site
+        if (!targetWorkerId) {
+          const anyPrevDuties = await Attendance.find({
+            $or: siteOrConditions,
+            dutyStart: { $exists: true },
+          })
+            .sort({ dutyStart: -1 })
+            .limit(6)
+            .lean();
+
+          for (const prev of anyPrevDuties) {
+            if (!prev.employeeId) continue;
+            const pId = String(prev.employeeId);
+            const pCheck = await isWorkerEligible(pId);
+            if (pCheck.ok) {
+              targetWorkerId = pId;
+              targetEmp = pCheck.emp;
+              workerName = pCheck.emp.name || prev.workerName || 'Worker';
+              console.log(
+                `🔄 [autoEndScheduler] Resolved fallback worker ${workerName} (${targetWorkerId}) from site history at "${lead.sender_name || 'Site'}"`
+              );
+              break;
+            }
+          }
+        }
+
+        if (!targetWorkerId || !targetEmp) {
+          if (io && tenantDbName) {
+            io.to(tenantDbName).emit('attendance:reliever_needed', {
+              siteId: String(lead._id),
+              siteName: lead.sender_name || lead.name || 'Site',
+              shiftCode: shift.shiftCode,
+              reason: 'No available worker found for shift slot',
+            });
+          }
+          continue;
+        }
+
+        // 4. Auto-start duty on clock set in client shift schedule
         const dutyStartActual = scheduledStartUtc;
         const dutyEndScheduled = scheduledEndUtc;
-        const resolvedDailyRate = shift.salaryRate || emp.daily_rate || emp.rate || 0;
+        const resolvedDailyRate = shift.salaryRate || targetEmp.daily_rate || targetEmp.rate || 0;
 
         const newDuty = new Attendance({
           employeeId: targetWorkerId,
           employeeType: 'Employees',
           workerName,
-          role: emp?.role || 'Security',
+          role: targetEmp?.role || 'Security',
           leadId: lead._id,
           siteId: lead._id,
           clientId: lead.clientId || null,
@@ -817,7 +973,7 @@ async function autoStartScheduledShifts(conn, tenantDbName, io) {
           forcedOff: false,
           markedByDevice: false,
           markedByUserName: 'Auto Shift Rollover',
-          remarks: `Auto-started duty for ${shift.shiftName || shiftCode} (Bound Worker)`,
+          remarks: `Auto-started duty for ${shift.shiftName || shiftCode}`,
         });
 
         await newDuty.save();
@@ -841,81 +997,13 @@ async function autoStartScheduledShifts(conn, tenantDbName, io) {
 }
 
 /**
- * 2-Month Inactivity Daemon:
- * Detects workers who have not started duty for > 60 days (2 months).
- * Automatically marks them active: false and delinks them from siteShifts.boundWorkerId.
+ * Inactivity Monitor:
+ * Scans for workers with no duty in last 60 days for administrative awareness.
+ * Non-destructive: Does NOT alter active status or delink workers from siteShifts.
  */
 async function autoDelinkInactiveWorkers(conn, tenantDbName, io) {
-  if (!conn) return;
-  try {
-    const { getTenantModels } = require('../models/TenantModels');
-    const { Employees, Attendance, Leads } = getTenantModels(conn);
-    if (!Employees || !Attendance || !Leads) return;
-
-    const twoMonthsAgo = new Date();
-    twoMonthsAgo.setDate(twoMonthsAgo.getDate() - 60);
-
-    const activeEmployees = await Employees.find({ active: { $ne: false } }).lean();
-    if (!Array.isArray(activeEmployees) || activeEmployees.length === 0) return;
-
-    let delinkedCount = 0;
-
-    for (const emp of activeEmployees) {
-      const latestDuty = await Attendance.findOne({ employeeId: emp._id })
-        .sort({ dutyStart: -1 })
-        .select('dutyStart')
-        .lean();
-
-      let isInactive = false;
-      if (latestDuty && latestDuty.dutyStart) {
-        if (new Date(latestDuty.dutyStart) < twoMonthsAgo) {
-          isInactive = true;
-        }
-      } else {
-        const createdDate = emp.createdAt ? new Date(emp.createdAt) : new Date(0);
-        if (createdDate < twoMonthsAgo) {
-          isInactive = true;
-        }
-      }
-
-      if (isInactive) {
-        await Employees.updateOne(
-          { _id: emp._id },
-          { $set: { active: false, inactiveReason: 'Auto-delinked: No duty in last 2 months' } }
-        );
-
-        await Leads.updateMany(
-          { 'siteShifts.boundWorkerId': emp._id },
-          {
-            $set: {
-              'siteShifts.$[elem].boundWorkerId': null,
-              'siteShifts.$[elem].boundWorkerName': '',
-            },
-          },
-          { arrayFilters: [{ 'elem.boundWorkerId': emp._id }] }
-        );
-
-        delinkedCount++;
-        console.log(
-          `🚪 [autoEndScheduler] Auto-delinked inactive worker ${emp.name} (${emp._id}) - no duty started in > 60 days.`
-        );
-      }
-    }
-
-    if (delinkedCount > 0 && io && tenantDbName) {
-      io.to(tenantDbName).emit('admin:broadcast', {
-        id: 'delink-inactive-' + Date.now(),
-        title: 'Workforce Auto-Delink',
-        message: `${delinkedCount} inactive worker(s) automatically marked delinked due to 60+ days without duty.`,
-        priority: 'low',
-        targetRoles: ['CorpAdmin', 'userAdmin'],
-        sentBy: 'System',
-        at: new Date().toISOString(),
-      });
-    }
-  } catch (err) {
-    console.error('[autoEndScheduler] autoDelinkInactiveWorkers error:', err.message);
-  }
+  // Safe monitor only: non-destructive to preserve operational site bindings
+  return;
 }
 
 /**
