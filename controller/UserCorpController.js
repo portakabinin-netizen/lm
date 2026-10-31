@@ -2981,6 +2981,7 @@ exports.manageEmployees = {
 
               return res.json({
                 success: true,
+                isPermissionRequest: true,
                 message: `Request to start duty late has been sent to Admin via chatroom.`,
               });
             }
@@ -4374,21 +4375,177 @@ exports.manageEmployees = {
 
   respondAttendancePermission: async (req, res) => {
     try {
-      const { requestId, employeeId, attendanceId, approved, note } = req.body;
+      const { requestId, employeeId, attendanceId, approved, note, reason } = req.body;
+      const isApproved = Boolean(approved);
+      const isLateStart = reason === 'late_start' || (!attendanceId && !reason);
+      const responderName = req.user?.userDisplayName || req.user?.name || 'Admin';
+      const { Attendance, Employees, Leads, Messages } = req.tenantModels || {};
+
+      let createdAttendance = null;
+      let targetAttendanceId = attendanceId;
+
+      if (isApproved && isLateStart) {
+        if (!Attendance) {
+          return res.status(500).json({ success: false, message: 'Tenant Attendance model not available' });
+        }
+        // 1. Check if user already has an active duty
+        const existingActive = await Attendance.findOne({
+          employeeId: employeeId,
+          dutyStart: { $ne: null },
+          dutyEnd: null,
+        }).lean();
+
+        if (existingActive) {
+          targetAttendanceId = existingActive._id;
+          createdAttendance = existingActive;
+        } else {
+          // 2. Resolve employee / userMaster
+          const userMaster = require('../models/userMaster');
+          let emp = Employees ? await Employees.findById(employeeId).lean() : null;
+          let isWorker = Boolean(emp);
+          if (!emp) {
+            emp = await userMaster.findById(employeeId).lean();
+            isWorker = false;
+          }
+
+          const now = new Date();
+          const empName = emp
+            ? (emp.name || emp.userDisplayName || `${emp.firstName || ''} ${emp.lastName || ''}`.trim() || 'Staff')
+            : 'Staff';
+          const empRole = emp?.role || emp?.userRole || 'project';
+          const shiftCode = req.body.shiftCode || emp?.dutyShift?.shiftName || emp?.selectedShift || 'G';
+          const shiftPeriod = req.body.shiftPeriod || emp?.dutyShift?.shiftPeriod || 'General';
+          const shiftHours = Number(emp?.dutyShift?.durationHrs) || 12;
+          const scheduledEnd = new Date(now.getTime() + shiftHours * 3600000);
+
+          let siteName = req.body.site_name || req.body.siteName;
+          if (!siteName && req.body.leadId && Leads) {
+            const siteDoc = await Leads.findById(req.body.leadId).lean();
+            if (siteDoc) siteName = siteDoc.sender_name || siteDoc.name;
+          }
+          if (!siteName) siteName = emp?.assignedSite || 'HQ/Remote';
+
+          const newDuty = new Attendance({
+            employeeId: emp?._id || employeeId,
+            employeeType: isWorker ? 'Employees' : 'userMaster',
+            workerName: empName,
+            role: empRole,
+            date: now,
+            dutyStart: now,
+            dutyStartScheduled: now,
+            dutyEndScheduled: scheduledEnd,
+            shiftCode: shiftCode,
+            shiftType: shiftHours === 12 ? '12hr' : '8hr',
+            shiftPeriod: shiftPeriod,
+            shiftHours: shiftHours,
+            shiftLockHours: shiftHours,
+            status: 'Present',
+            site_name: siteName,
+            siteId: req.body.siteId || null,
+            leadId: req.body.leadId || null,
+            markedByDevice: false,
+            markedByUserName: responderName,
+            isLate: true,
+            remarks: `Late start approved by ${responderName}`,
+          });
+          await newDuty.save();
+          createdAttendance = newDuty;
+          targetAttendanceId = newDuty._id;
+
+          try {
+            const autoEndScheduler = require('../utils/autoEndScheduler');
+            if (autoEndScheduler && newDuty.dutyEndScheduled) {
+              autoEndScheduler.scheduleAutoEnd(
+                newDuty._id,
+                newDuty.dutyEndScheduled,
+                Attendance,
+                req.tenantDbName,
+                req.io
+              );
+            }
+          } catch (schedErr) {
+            console.warn('[respondAttendancePermission] Auto-end schedule error:', schedErr.message);
+          }
+        }
+      } else if (isApproved && !isLateStart && attendanceId && Attendance) {
+        // Early duty end approved
+        const duty = await Attendance.findById(attendanceId);
+        if (duty && !duty.dutyEnd) {
+          duty.dutyEnd = new Date();
+          duty.status = 'Present';
+          duty.remarks = (duty.remarks ? `${duty.remarks} | ` : '') + `Early end approved by ${responderName}`;
+          await duty.save();
+          targetAttendanceId = duty._id;
+        }
+      }
+
+      // Update Message status in chatroom if requestId was passed
+      if (requestId && Messages && mongoose.Types.ObjectId.isValid(requestId)) {
+        try {
+          await Messages.findByIdAndUpdate(requestId, {
+            status: 'seen',
+            isActioned: true,
+            actionResult: isApproved ? 'approved' : 'rejected',
+          });
+        } catch {}
+      }
+
       const responsePayload = {
         requestId,
         employeeId,
-        attendanceId,
-        approved: Boolean(approved),
+        attendanceId: targetAttendanceId,
+        approved: isApproved,
+        reason: reason || (isLateStart ? 'late_start' : 'early_end'),
         note: note || '',
         respondedAt: new Date().toISOString(),
         respondedBy: req.user?._id,
-        responderName: req.user?.userDisplayName || req.user?.name || 'Admin',
+        responderName,
+        attendance: createdAttendance,
       };
+
       if (req.io && req.tenantDbName) {
+        if (isApproved) {
+          req.io.to(req.tenantDbName).emit('attendance:permission_approved', {
+            employeeId,
+            reason: reason || (isLateStart ? 'late_start' : 'early_end'),
+            attendanceId: targetAttendanceId,
+            attendance: createdAttendance,
+            message: isLateStart
+              ? `Admin ${responderName} allowed your late start request! Attendance has been added and duty is now ON.`
+              : `Admin ${responderName} approved your early duty end. Duty is OFF.`,
+          });
+          if (isLateStart && createdAttendance) {
+            req.io.to(req.tenantDbName).emit('attendance:duty_on', {
+              employeeId,
+              attendanceId: targetAttendanceId,
+              attendance: createdAttendance,
+              shiftCode: createdAttendance.shiftCode,
+              shiftPeriod: createdAttendance.shiftPeriod,
+            });
+          } else if (!isLateStart) {
+            req.io.to(req.tenantDbName).emit('attendance:duty_off', {
+              employeeId,
+              attendanceId: targetAttendanceId,
+            });
+          }
+        } else {
+          req.io.to(req.tenantDbName).emit('attendance:permission_denied', {
+            employeeId,
+            reason: reason || (isLateStart ? 'late_start' : 'early_end'),
+            message: note || `Permission request was rejected by ${responderName} (Request not allowed).`,
+          });
+        }
+        // Emit legacy event for existing listeners
         req.io.to(req.tenantDbName).emit('attendance:permission-responded', responsePayload);
       }
-      res.json({ success: true, message: 'Permission response recorded', data: responsePayload });
+
+      res.json({
+        success: true,
+        message: isApproved
+          ? (isLateStart ? 'Late start allowed! Attendance added & duty started.' : 'Early duty end approved.')
+          : 'Permission request rejected.',
+        data: responsePayload,
+      });
     } catch (err) {
       console.error('respondAttendancePermission error:', err.message);
       res.status(500).json({ success: false, message: err.message });
