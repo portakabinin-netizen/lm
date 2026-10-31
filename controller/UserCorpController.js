@@ -9,13 +9,10 @@
 const userMaster = require('../models/userMaster');
 const mongoose = require('mongoose');
 const ExcelJS = require('exceljs');
-const path = require('path');
-const fs = require('fs');
 const externalService = require('../utils/externalService');
 const { resolveDatePreset } = require('../utils/dateUtils');
 const autoEndScheduler = require('../utils/autoEndScheduler');
 const relieverRotation = require('../utils/relieverRotation');
-const { findActiveSession, resolveAllLinkedIds } = require('../utils/attendanceSessionResolver');
 
 // ── Phase 2a: Unique partial index — one active session per worker ─────────────
 // Track which tenant DBs already have the index so we only create it once.
@@ -905,42 +902,6 @@ exports.manageLeads = {
         { new: true }
       );
       if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
-
-      // Automatically sync SiteRosterHolidays for bound workers with weeklyRestDay
-      try {
-        const { SiteRosterHolidays, Employees } = req.tenantModels;
-        if (SiteRosterHolidays) {
-          for (const s of siteShifts) {
-            if (s.boundWorkerId && s.weeklyRestDay) {
-              let wName = s.boundWorkerName;
-              if (!wName && Employees) {
-                const emp = await Employees.findById(s.boundWorkerId).lean();
-                wName = emp?.name || 'Worker';
-              }
-              await SiteRosterHolidays.findOneAndUpdate(
-                { siteId: req.params.id, workerId: s.boundWorkerId, type: 'WeeklyRest' },
-                {
-                  $set: {
-                    siteName: lead.sender_name || lead.name || 'Site',
-                    clientId: lead.clientId || null,
-                    shiftCode: s.shiftCode || '',
-                    workerName: wName || 'Worker',
-                    year: new Date().getFullYear(),
-                    month: new Date().getMonth() + 1,
-                    restDayOfWeek: s.weeklyRestDay,
-                    remark: `${wName || 'Worker'} - ${s.weeklyRestDay} Weekly Rest at ${lead.sender_name || 'Site'}`,
-                    isPaid: true,
-                  },
-                },
-                { upsert: true, new: true }
-              );
-            }
-          }
-        }
-      } catch (syncErr) {
-        console.error('Failed to sync SiteRosterHolidays in updateSiteShifts:', syncErr.message);
-      }
-
       req.io.to(req.tenantDbName).emit('lead:updated', { data: lead });
       res.json({ success: true, data: lead });
     } catch (err) {
@@ -1057,6 +1018,110 @@ exports.manageProducts = {
 };
 
 /**
+ * Helper: Find a worker's latest work site from the Attendance collection in current month only.
+ * Checks attendance records for current calendar month matching the worker's ID, mobile, or enrollment number.
+ * Resolves to actual site name or the linked project/lead name.
+ */
+const getWorkerLatestMonthSite = async (tenantModels, workerId, workerMobile, enrollmentNo) => {
+  try {
+    const { Attendance, Leads, Employees } = tenantModels || {};
+    if (!Attendance || !workerId) return null;
+
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+    const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+
+    const targetIds = new Set();
+    if (workerId) targetIds.add(String(workerId));
+
+    // Try finding worker in Employees collection if mobile or enrollmentNo exists
+    if (Employees && (workerMobile || enrollmentNo || mongoose.Types.ObjectId.isValid(workerId))) {
+      const empQuery = [];
+      if (mongoose.Types.ObjectId.isValid(workerId)) {
+        empQuery.push({ _id: new mongoose.Types.ObjectId(workerId) });
+      }
+      if (enrollmentNo) {
+        const cleanEfn = String(enrollmentNo).replace(/^EFN#?\s*/i, '').trim();
+        empQuery.push({ enrollment_no: cleanEfn });
+        empQuery.push({ enrollment_no: String(enrollmentNo) });
+      }
+      if (workerMobile) {
+        const cleanMob = String(workerMobile).replace(/\D/g, '').slice(-10);
+        if (cleanMob.length >= 10) {
+          empQuery.push({ mobile: { $regex: cleanMob + '$' } });
+        }
+      }
+
+      if (empQuery.length > 0) {
+        const emp = await Employees.findOne({ $or: empQuery })
+          .select('_id enrollment_no mobile')
+          .lean()
+          .catch(() => null);
+        if (emp?._id) targetIds.add(String(emp._id));
+      }
+    }
+
+    const idConditions = [];
+    targetIds.forEach((id) => {
+      idConditions.push({ employeeId: id });
+      idConditions.push({ workerId: id });
+      if (mongoose.Types.ObjectId.isValid(id)) {
+        idConditions.push({ employeeId: new mongoose.Types.ObjectId(id) });
+      }
+    });
+
+    const attQuery = {
+      $and: [
+        { $or: idConditions },
+        { date: { $gte: startOfMonth, $lte: endOfMonth } },
+      ],
+    };
+
+    const records = await Attendance.find(attQuery)
+      .sort({ date: -1, dutyStart: -1, createdAt: -1 })
+      .limit(20)
+      .lean()
+      .catch(() => []);
+
+    if (!records || records.length === 0) return null;
+
+    // Prefer record with actual site name (non-generic)
+    let chosenAtt = records.find(
+      (r) =>
+        r.site_name &&
+        !/^(project site|site project|hq\/remote|general)$/i.test(String(r.site_name).trim())
+    );
+
+    if (!chosenAtt) {
+      chosenAtt = records.find((r) => r.leadId || r.siteId) || records[0];
+    }
+
+    let site = (chosenAtt?.site_name || '').trim();
+    const isGeneric = !site || /^(project site|site project|hq\/remote|general)$/i.test(site);
+
+    if (isGeneric && (chosenAtt?.leadId || chosenAtt?.siteId) && Leads) {
+      const lead = await Leads.findById(chosenAtt.leadId || chosenAtt.siteId).lean().catch(() => null);
+      if (lead) {
+        site = (lead.sender_name || lead.name || lead.company_name || '').trim();
+      }
+    }
+
+    if (site && !/^(project site|site project)$/i.test(site)) {
+      return {
+        siteName: site,
+        siteId: String(chosenAtt?.leadId || chosenAtt?.siteId || ''),
+        date: chosenAtt?.date,
+      };
+    }
+
+    return null;
+  } catch (err) {
+    console.warn('getWorkerLatestMonthSite error:', err.message);
+    return null;
+  }
+};
+
+/**
  * 👷 EMPLOYEES & STAFF (Identity Reverted to Standalone Users)
  */
 exports.manageEmployees = {
@@ -1075,12 +1140,9 @@ exports.manageEmployees = {
 
       const userMaster = require('../models/userMaster');
       const tenantDbName = req.tenantDbName || req.user?.dbName;
-      const uQuery = { userActive: { $ne: false } };
+      const uQuery = { userActive: true };
       if (tenantDbName) {
-        uQuery.$or = [
-          { accessCorporate: { $elemMatch: { dbName: { $regex: new RegExp(`^${tenantDbName}$`, 'i') }, isActive: { $ne: false } } } },
-          { 'accessCorporate.0': { $exists: false } }
-        ];
+        uQuery.accessCorporate = { $elemMatch: { dbName: tenantDbName, isActive: { $ne: false } } };
       }
       const userMasterList = await userMaster.find(uQuery).lean();
 
@@ -1110,9 +1172,6 @@ exports.manageEmployees = {
           employmentHistory: [],
           selectedShift: 'G',
           shiftGroupName: 'MANG',
-          location: u.location || null,
-          lat: u.location?.lat ?? null,
-          long: u.location?.long ?? null,
         };
         userMapById.set(String(u._id), mappedUser);
         if (mappedUser.mobile) {
@@ -1164,11 +1223,6 @@ exports.manageEmployees = {
           matchedUser.monthly_rate = emp.monthly_rate || matchedUser.monthly_rate;
           matchedUser.ledgerId = emp.ledgerId || matchedUser.ledgerId;
           if (emp.active !== undefined) matchedUser.active = emp.active;
-          if (!matchedUser.location && emp.location) {
-            matchedUser.location = emp.location;
-            matchedUser.lat = emp.location?.lat ?? null;
-            matchedUser.long = emp.location?.long ?? null;
-          }
           processedUserIds.add(String(matchedUser._id));
         } else {
           mergedList.push(emp);
@@ -1700,7 +1754,7 @@ exports.manageEmployees = {
   listAttendance: async (req, res) => {
     try {
       const { Attendance } = req.tenantModels;
-      const { from_date, to_date, date, employeeId, leadId, siteId } = req.query;
+      const { from_date, to_date, date, employeeId } = req.query;
       let q = {};
 
       if (employeeId) {
@@ -1773,17 +1827,9 @@ exports.manageEmployees = {
           $or: [{ date: { $gte: defaultStart } }, { dutyEnd: { $exists: false } }, { dutyEnd: null }],
         };
       }
-      const targetSite = leadId || siteId;
-      if (targetSite) {
-        const siteOr = [{ siteId: String(targetSite) }, { leadId: String(targetSite) }];
-        if (mongoose.Types.ObjectId.isValid(String(targetSite))) {
-          siteOr.push({ leadId: new mongoose.Types.ObjectId(String(targetSite)) });
-        }
-        q = Object.keys(q).length > 0 ? { $and: [q, { $or: siteOr }] } : { $or: siteOr };
-      }
       const limitVal = req.query.limit ? parseInt(req.query.limit, 10) : 5000;
       const data = await Attendance.find(q)
-        .select('_id employeeId employeeType leadId clientId siteId site_name workerName shiftCode shiftPeriod shiftGroupName date status dutyLevel rate dailyEarn hoursWorked lockStatus dutyStartScheduled dutyStart dutyEnd dutyEndScheduled startLat startLong siteLat siteLong markedByUserName forcedOff emergencyOff penaltyImposed penaltyDeducted penaltyWaivedOff penaltyReason violationType')
+        .select('_id employeeId employeeType leadId clientId siteId site_name shiftCode shiftPeriod shiftGroupName date status dutyLevel rate dutyStart dutyEnd markedByUserName')
         .sort({ date: -1 })
         .limit(limitVal)
         .lean();
@@ -1816,10 +1862,10 @@ exports.manageEmployees = {
           ? userMaster.find({ _id: { $in: uniqueUserMasterIds } }).select('_id name userDisplayName userProfileImage email mobile role').lean()
           : Promise.resolve([]),
         uniqueEmployeeIds.length > 0
-          ? Employees.find({ _id: { $in: uniqueEmployeeIds } }).select('_id name enrollment_no role mobile photo photo_url daily_rate monthly_rate rate employmentHistory').lean()
+          ? Employees.find({ _id: { $in: uniqueEmployeeIds } }).select('_id name enrollment_no role mobile photo photo_url daily_rate rate employmentHistory').lean()
           : Promise.resolve([]),
         uniqueLeadIds.length > 0
-          ? Leads.find({ _id: { $in: uniqueLeadIds } }).select('_id sender_name displayName client_name siteShifts status location sender_city').lean()
+          ? Leads.find({ _id: { $in: uniqueLeadIds } }).select('_id sender_name displayName client_name siteShifts status').lean()
           : Promise.resolve([]),
       ]);
 
@@ -1869,63 +1915,12 @@ exports.manageEmployees = {
         const lIdStr = item.leadId?.toString();
         if (lIdStr && leadsMap[lIdStr]) {
           item.leadId = leadsMap[lIdStr];
-          if (!item.site_name && leadsMap[lIdStr].sender_name) {
-            item.site_name = leadsMap[lIdStr].sender_name;
-          }
-        }
-
-        if (!item.workerName && item.employeeId?.name) {
-          item.workerName = item.employeeId.name;
         }
       }
 
       res.json({ success: true, data });
     } catch (err) {
       console.error('🔴 [Error] listAttendance Failed:', err);
-      res.status(500).json({ success: false, message: err.message });
-    }
-  },
-  getAvailableMonths: async (req, res) => {
-    try {
-      const { Attendance } = req.tenantModels;
-      const pipeline = [
-        {
-          $project: {
-            targetDate: { $ifNull: ["$date", "$dutyStart"] },
-          },
-        },
-        {
-          $match: {
-            targetDate: { $ne: null },
-          },
-        },
-        {
-          $group: {
-            _id: {
-              year: { $year: "$targetDate" },
-              month: { $month: "$targetDate" },
-            },
-            count: { $sum: 1 },
-          },
-        },
-        {
-          $sort: {
-            "_id.year": -1,
-            "_id.month": -1,
-          },
-        },
-      ];
-
-      const results = await Attendance.aggregate(pipeline);
-      const months = results.map((r) => ({
-        month: r._id.month - 1, // 0-indexed for JavaScript Date
-        year: r._id.year,
-        count: r.count,
-      }));
-
-      res.json({ success: true, data: months });
-    } catch (err) {
-      console.error('🔴 [Error] getAvailableMonths Failed:', err);
       res.status(500).json({ success: false, message: err.message });
     }
   },
@@ -1959,13 +1954,19 @@ exports.manageEmployees = {
 
       // ─── ONE WORKER · ONE SHIFT · ONE ATTENDANCE ──────────────────────────
       // Reject if this employee already has an open (active) duty session.
-      // Uses symmetrical resolver to check both Employees and userMaster identities.
+      // This prevents duplicate attendance records regardless of which site or
+      // which UI surface triggered the create request.
       if (employeeId && !dutyEnd) {
-        const { findActiveSession } = require('../utils/attendanceSessionResolver');
-        const openSession = await findActiveSession(Attendance, Employees, {
-          employeeId,
-          userId: req.user?._id || req.user?.userId,
-        });
+        const mongoose = require('mongoose');
+        const qId = mongoose.isValidObjectId(employeeId)
+          ? new mongoose.Types.ObjectId(employeeId)
+          : employeeId;
+        const openSession = await Attendance.findOne({
+          employeeId: qId,
+          $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }],
+        })
+          .select('shiftCode site_name leadId')
+          .lean();
         if (openSession) {
           const where = openSession.site_name || 'another site';
           const code = openSession.shiftCode || 'active shift';
@@ -1984,8 +1985,7 @@ exports.manageEmployees = {
       // Duty start is BLOCKED if the site has no active shifts configured.
       let siteShiftOverride = null;
       let siteShiftExcess = null;
-      const effectiveLeadId = leadId || req.body.siteId;
-      const targetLeadIdForShift = effectiveLeadId;
+      const targetLeadIdForShift = leadId;
       if (targetLeadIdForShift && !dutyEnd) {
         const siteDoc = await Leads.findById(targetLeadIdForShift)
           .select('siteShifts sender_name')
@@ -2202,9 +2202,10 @@ exports.manageEmployees = {
         else if (ds.shiftName) defaultShiftCode = ds.shiftName.substring(0, 1);
       }
 
-      // Exemption check for geoHistory: only admins are exempt (admins don't get tracked).
+      // Exemption check for geoHistory: admins and workers are exempt.
       const isAdminRole = ['corpadmin', 'useradmin', 'admin'].includes(role.toLowerCase());
-      const isExemptUser = isAdminRole;
+      const isEmployeeCollection = !!employeeDoc;
+      const isExemptUser = isAdminRole || isEmployeeCollection;
       const finalGeoHistory = isExemptUser ? [] : geoHistory || [];
 
       // Merge site-shift override on top of defaults (site always wins when available)
@@ -2217,22 +2218,19 @@ exports.manageEmployees = {
       const finalShiftLockHours =
         siteShiftOverride?.shiftLockHours || shiftLockHours || defaultShiftLockHours;
 
-      // Compute duty end scheduled strictly using shift schedule start + lock hours
-      const scheduledStart = req.body.dutyStartScheduled
-        ? new Date(req.body.dutyStartScheduled)
-        : (dutyStart ? new Date(dutyStart) : new Date());
+      // Compute duty end scheduled using final lock hours
+      const dutyStartMs = dutyStart ? new Date(dutyStart).getTime() : Date.now();
       const finalDutyEndScheduled =
-        req.body.dutyEndScheduled || new Date(scheduledStart.getTime() + finalShiftLockHours * 3600000);
+        req.body.dutyEndScheduled || new Date(dutyStartMs + finalShiftLockHours * 3600000);
 
-      // Fetch site coordinates if effectiveLeadId exists
+      // Fetch site coordinates if leadId exists
       let siteLat = undefined;
       let siteLong = undefined;
-      let siteDoc = null;
-      if (effectiveLeadId && Leads) {
-        siteDoc = await Leads.findById(effectiveLeadId).lean();
-        if (siteDoc && siteDoc.location && siteDoc.location.lat && siteDoc.location.long) {
-          siteLat = Number(siteDoc.location.lat);
-          siteLong = Number(siteDoc.location.long);
+      if (leadId) {
+        const site = await Leads.findById(leadId).lean();
+        if (site && site.location && site.location.lat && site.location.long) {
+          siteLat = Number(site.location.lat);
+          siteLong = Number(site.location.long);
         }
       }
 
@@ -2242,23 +2240,18 @@ exports.manageEmployees = {
       const record = new Attendance({
         employeeId,
         employeeType: employeeDoc ? 'Employees' : 'userMaster',
-        identityType: employeeDoc ? 'WORKER' : 'REGISTERED_USER',
-        userId: userDoc ? userDoc._id : null,
-        workerName: emp?.name || emp?.userDisplayName || '',
         role,
-        leadId: effectiveLeadId || null,
-        siteId: req.body.siteId || effectiveLeadId || null,
+        leadId,
         clientId: clientId || null,
         status: status || 'Present',
         customCreated: true, // Tag it so we know it was manually marked/handled
         dutyLevel: dutyLevel ?? 1,
         rate: rate || siteShiftOverride?.billRate || 0,
         date: date || new Date(),
-        site_name: site_name || siteDoc?.sender_name || siteDoc?.displayName || siteDoc?.client_name || 'HQ/Remote',
-        lockStatus: { isLocked: false },
-        leaveCoverage: req.body.leaveCoverage || { isCoveringForLeave: false },
+        site_name,
         remarks,
-        dutyStartScheduled: scheduledStart,
+        dutyStartScheduled:
+          req.body.dutyStartScheduled || (dutyStart ? new Date(dutyStart) : new Date()),
         dutyStart: dutyStart ? new Date(dutyStart) : new Date(),
         dutyEnd: dutyEnd ? new Date(dutyEnd) : undefined,
         dutyEndScheduled: finalDutyEndScheduled,
@@ -2279,39 +2272,6 @@ exports.manageEmployees = {
         siteLong,
       });
       await record.save();
-
-      // Auto-bind: once worker is posted on site, bound to that site shift until supervisor changes it
-      if (effectiveLeadId && Leads && employeeDoc && finalShiftCode) {
-        try {
-          await Leads.updateOne(
-            { _id: effectiveLeadId, 'siteShifts.shiftCode': finalShiftCode },
-            {
-              $set: {
-                'siteShifts.$.boundWorkerId': employeeId,
-                'siteShifts.$.boundWorkerName': emp?.name || '',
-              },
-            }
-          );
-        } catch (bindErr) {
-          console.error('Auto-binding site shift worker error:', bindErr.message);
-        }
-      }
-
-      // Schedule auto-end timer and automatic handover rollover at scheduled completion
-      if (finalDutyEndScheduled && autoEndScheduler) {
-        try {
-          autoEndScheduler.scheduleAutoEnd(
-            record._id,
-            finalDutyEndScheduled,
-            Attendance,
-            req.tenantDbName,
-            req.io
-          );
-        } catch (schedErr) {
-          console.error('scheduleAutoEnd error in markAttendance:', schedErr.message);
-        }
-      }
-
       const emit = require('../utils/socketEmitter');
       emit(req, 'attendance:created', { data: record });
       if (req.io && req.tenantDbName) {
@@ -2446,13 +2406,6 @@ exports.manageEmployees = {
       if (!record) {
         return res.status(404).json({ success: false, message: 'Attendance record not found' });
       }
-      if (autoEndScheduler) {
-        autoEndScheduler.cancelAutoEnd(record._id);
-        const effectiveSiteId = record.leadId || record.siteId;
-        if (effectiveSiteId && record.shiftCode) {
-          autoEndScheduler.suppressShiftSlot(req.tenantDbName, effectiveSiteId, record.shiftCode);
-        }
-      }
       const emit = require('../utils/socketEmitter');
       emit(req, 'attendance:deleted', { id: req.params.id });
       if (req.io && req.tenantDbName) {
@@ -2472,10 +2425,11 @@ exports.manageEmployees = {
         return res.status(404).json({ success: false, message: 'Attendance record not found' });
       }
 
-      // Exemption check: only admins are exempt from geo tracking.
+      // Exemption check: Admins and workers are exempt.
       const recordRole = (record.role || '').toLowerCase();
       const isAdminRole = ['corpadmin', 'useradmin', 'admin'].includes(recordRole);
-      const isExemptUser = isAdminRole;
+      const isWorker = record.employeeType === 'Employees';
+      const isExemptUser = isAdminRole || isWorker;
 
       const allowed = [
         'forcedOff',
@@ -2492,14 +2446,6 @@ exports.manageEmployees = {
         'dutyEnd',
         'dailyRate',
         'dailyEarn',
-        'penaltyImposed',
-        'penaltyDeducted',
-        'penaltyWaivedOff',
-        'penaltyReason',
-        'violationType',
-        'penaltyApprovedBy',
-        'penaltyMediaUrl',
-        'penaltyMedia',
       ];
       const update = {};
       allowed.forEach((k) => {
@@ -2576,19 +2522,11 @@ exports.manageEmployees = {
       }
 
       if (update.dutyEnd && newlyEnded) {
-        autoEndScheduler.cancelAutoEnd(record._id);
         req.io.to(req.tenantDbName).emit('attendance:duty_off', {
           employeeId: record.employeeId,
           attendanceId: record._id,
           hoursWorked: record.hoursWorked,
         });
-
-        // ── Trigger Auto Shift Rollover on manual attendance update ──
-        if (record.leadId || record.siteId) {
-          autoEndScheduler.handleAutoShiftRollover(record, Attendance, req.tenantDbName, req.io).catch((err) =>
-            console.error('[updateAttendance] Rollover error:', err.message)
-          );
-        }
       }
 
       const emit = require('../utils/socketEmitter');
@@ -2606,67 +2544,6 @@ exports.manageEmployees = {
     } catch (err) {
       console.error('🔴 [updateAttendance] Error:', err.message);
       res.status(500).json({ success: false, message: err.message });
-    }
-  },
-  updateCompactGps: async (req, res) => {
-    try {
-      const { Attendance } = req.tenantModels;
-      const { id } = req.params;
-      const record = await Attendance.findById(id);
-      if (!record) {
-        return res.status(404).json({ success: false, message: 'Attendance record not found' });
-      }
-
-      const recordRole = (record.role || '').toLowerCase();
-      const isAdminRole = ['corpadmin', 'useradmin', 'admin'].includes(recordRole);
-      if (isAdminRole && recordRole !== 'project') {
-        return res.json({ success: true, message: 'Admin is exempt from tracking' });
-      }
-
-      let payload = typeof req.body === 'string' ? req.body : (req.body.payload || req.body);
-      if (typeof payload === 'object' && payload !== null && typeof payload.data === 'string') {
-        payload = payload.data;
-      }
-
-      if (typeof payload === 'string' && payload.includes('|')) {
-        const segments = payload.split('|');
-        const base = parseInt(segments[0], 10);
-        const ticks = [];
-        for (let i = 1; i < segments.length; i++) {
-          const parts = segments[i].split(',');
-          if (parts.length >= 2) {
-            const lat = parseFloat(parts[0]);
-            const lng = parseFloat(parts[1]);
-            const off = (parseInt(parts[2], 10) || 0) * 1000;
-            const acc = parseInt(parts[3], 10);
-            if (!isNaN(lat) && !isNaN(lng)) {
-              ticks.push({
-                lat,
-                long: lng,
-                accuracy: isNaN(acc) || acc === -1 ? null : acc,
-                timestamp: new Date(base + off).toISOString(),
-                type: 'tick',
-              });
-            }
-          }
-        }
-        if (ticks.length > 0) {
-          record.geoHistory.push(...ticks);
-          await record.save();
-
-          if (req.io && req.tenantDbName) {
-            req.io.to(req.tenantDbName).emit('attendance:geo_update', {
-              attendanceId: record._id,
-              tick: ticks[ticks.length - 1],
-              allTicks: ticks,
-            });
-          }
-        }
-      }
-      return res.json({ success: true, count: record.geoHistory.length });
-    } catch (err) {
-      console.error('🔴 [updateCompactGps] Error:', err.message);
-      return res.status(500).json({ success: false, message: err.message });
     }
   },
   getRateLookup: async (req, res) => {
@@ -2692,11 +2569,49 @@ exports.manageEmployees = {
       if (!employeeId)
         return res.status(400).json({ success: false, message: 'employeeId required' });
 
-      const active = await findActiveSession(Attendance, Employees, {
-        employeeId,
-        userId: req.user?._id || req.user?.userId,
-        userDisplayName: req.user?.userDisplayName || req.user?.name,
-      });
+      const queryId = mongoose.isValidObjectId(employeeId)
+        ? new mongoose.Types.ObjectId(employeeId)
+        : employeeId;
+
+      const userMaster = require('../models/userMaster');
+      let userDoc = await userMaster.findById(queryId).lean();
+      let employeeDoc = await Employees.findById(queryId).lean();
+
+      if (userDoc && !employeeDoc) {
+        employeeDoc = await Employees.findOne({
+          $or: [
+            { user_id: userDoc._id },
+            { mobile: userDoc.mobile || userDoc.userMobile || userDoc.username },
+            { email: userDoc.email },
+          ].filter((q) => q.user_id || q.mobile || q.email),
+        }).lean();
+      } else if (employeeDoc && !userDoc) {
+        userDoc = await userMaster
+          .findOne({
+            $or: [
+              { _id: employeeDoc.user_id },
+              { mobile: employeeDoc.mobile },
+              { email: employeeDoc.email },
+            ].filter((q) => q._id || q.mobile || q.email),
+          })
+          .lean();
+      }
+
+      let emp = null;
+      if (employeeDoc) emp = { ...employeeDoc };
+      if (userDoc) emp = { ...emp, ...userDoc };
+
+      const linkedIds = [queryId];
+      if (emp?.user_id) linkedIds.push(new mongoose.Types.ObjectId(emp.user_id));
+      if (emp?._id && String(emp._id) !== String(queryId)) linkedIds.push(emp._id);
+
+      // Find an open session (dutyEnd not exists or null) using any linked IDs
+      const active = await Attendance.findOne({
+        employeeId: { $in: linkedIds },
+        $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }],
+      })
+        .sort({ dutyStart: -1 })
+        .lean();
 
       res.json({ success: true, data: active || null });
     } catch (err) {
@@ -2785,7 +2700,7 @@ exports.manageEmployees = {
         ''
       ).toLowerCase();
       const isAdminRole = ['corpadmin', 'useradmin', 'admin'].includes(checkRole);
-      const isExemptUser = isAdminRole;
+      const isExemptUser = isAdminRole || isWorker;
 
       if (type === 'ON' && emp && isWorker && !emp.shiftGroupName) {
         // Find employee document to update
@@ -2855,30 +2770,15 @@ exports.manageEmployees = {
         }
       }
 
-      const allLinkedIds = [];
-      const addLinkedId = (val) => {
-        if (!val) return;
-        const s = String(val._id || val);
-        if (s && !allLinkedIds.some(x => String(x) === s)) {
-          allLinkedIds.push(s);
-          if (mongoose.isValidObjectId(s)) {
-            try { allLinkedIds.push(new mongoose.Types.ObjectId(s)); } catch(e){}
-          }
-        }
-      };
-      addLinkedId(employeeId);
-      addLinkedId(queryId);
-      if (emp?.user_id) addLinkedId(emp.user_id);
-      if (emp?._id) addLinkedId(emp._id);
-      if (userDoc?._id) addLinkedId(userDoc._id);
-      if (employeeDoc?._id) addLinkedId(employeeDoc._id);
+      const linkedIds = [queryId];
+      if (emp?.user_id) linkedIds.push(new mongoose.Types.ObjectId(emp.user_id));
+      if (emp?._id && String(emp._id) !== String(queryId)) linkedIds.push(emp._id);
 
-      // 2. Find open session symmetrically using multi-field resolver
-      let record = await findActiveSession(Attendance, Employees, {
-        employeeId,
-        userId: req.user?._id || req.user?.userId,
-        userDisplayName: req.user?.userDisplayName || req.user?.name,
-      });
+      // 2. Find open session using any linked IDs
+      let record = await Attendance.findOne({
+        employeeId: { $in: linkedIds },
+        $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }],
+      }).sort({ dutyStart: -1 });
 
       if (type === 'ON') {
         if (record) {
@@ -3006,7 +2906,7 @@ exports.manageEmployees = {
           shiftStartTime = startTime;
         }
 
-        if (shiftStartTime) {
+        if (shiftStartTime && !isSpecialAction) {
           const [h, m] = shiftStartTime.split(':').map(Number);
 
           // Asia/Kolkata is always UTC+05:30 (offset of 5.5 hours = 19,800,000 ms)
@@ -3044,111 +2944,44 @@ exports.manageEmployees = {
 
           const displayName = emp.name || emp.userDisplayName || 'User';
 
-          if (!isSpecialAction) {
-            if (diffMins < -15) {
-              return res.status(403).json({
-                success: false,
-                tooEarly: true,
-                message: `Too early to start duty. Shift starts at ${shiftStartTime}. Attendance can only be marked starting 15 minutes before shift start.`,
-              });
-            }
+          if (diffMins < -15) {
+            return res.status(403).json({
+              success: false,
+              tooEarly: true,
+              message: `Too early to start duty. Shift starts at ${shiftStartTime}. Attendance can only be marked starting 15 minutes before shift start.`,
+            });
+          }
 
-          if (diffMins > 60 && !req.body.adminOverride && !req.body.force && !req.body.permissionGranted && !req.body.adminApprovedLate) {
+          if (diffMins > 60) {
             if (req.body.requestPermission) {
-              const reqId = new mongoose.Types.ObjectId().toString();
-              const permPayload = {
-                _id: reqId,
-                requestId: reqId,
-                employeeId: String(queryId),
-                employeeName: displayName,
-                userRole: emp?.role || emp?.userRole || req.user?.userRole || 'project',
-                reason: 'late_start',
-                message: req.body.message || `Request to start late duty from ${displayName}. Shift started at ${shiftStartTime} (${Math.round(diffMins)} min late).`,
-                shiftCode: shiftCode || req.body.shiftCode || 'G',
-                shiftType: req.body.shiftType || '8hr',
-                shiftPeriod: req.body.shiftPeriod || 'General',
-                shiftStartTime: shiftStartTime,
-                minutesLate: Math.round(diffMins),
-                site_name: req.body.site_name || 'HQ/Remote',
-                lat: req.body.lat ?? null,
-                long: req.body.long ?? null,
-                requestedAt: now.toISOString(),
-              };
-
-              if (req.io) {
-                if (req.tenantDbName) {
-                  req.io.to(req.tenantDbName).emit('attendance:permission_request', permPayload);
-                  req.io.to(req.tenantDbName).emit('admin:broadcast', {
-                    id: reqId,
-                    title: 'Late Start Permission Request',
-                    message: `${displayName} requested permission to start duty late (Shift started at ${shiftStartTime}, ${Math.round(diffMins)} min late).`,
-                    priority: 'high',
-                    targetRoles: ['CorpAdmin', 'Admin', 'userAdmin'],
-                    sentBy: displayName,
-                    sentByRole: emp?.role || emp?.userRole || req.user?.userRole || 'project',
-                    at: now.toISOString(),
-                    permissionPayload: permPayload,
-                  });
-                }
-                req.io.emit('attendance:permission_request', permPayload);
-              }
-
-              const { Messages, Employees } = req.tenantModels || {};
+              const { Messages } = req.tenantModels;
               if (Messages) {
-                try {
-                  const userMaster = require('../models/userMaster');
-                  const adminIds = new Set();
-                  if (mongoose.connection.readyState === 1) {
-                    const uAdmins = await userMaster.find({
-                      'accessCorporate.dbName': req.tenantDbName,
-                      userRole: { $in: ['CorpAdmin', 'userAdmin', 'Admin'] },
-                    }).select('_id').lean().catch(() => []);
-                    uAdmins.forEach((u) => adminIds.add(String(u._id)));
-                  }
-                  if (Employees) {
-                    const empAdmins = await Employees.find({
-                      role: { $in: ['CorpAdmin', 'userAdmin', 'Admin'] },
-                    }).select('_id user_id').lean().catch(() => []);
-                    empAdmins.forEach((e) => {
-                      if (e.user_id) adminIds.add(String(e.user_id));
-                      else adminIds.add(String(e._id));
-                    });
-                  }
-                  if (adminIds.size === 0 && mongoose.connection.readyState === 1) {
-                    const fallbackAdmins = await userMaster.find({
-                      userRole: { $in: ['CorpAdmin', 'userAdmin', 'Admin'] },
-                    }).select('_id').limit(5).lean().catch(() => []);
-                    fallbackAdmins.forEach((u) => adminIds.add(String(u._id)));
-                  }
-
-                  const reqText = `⚠️ Request to start late duty from ${displayName}. Shift started at ${shiftStartTime} (${Math.round(diffMins)} min late).`;
-
-                  // Strictly 1-to-1 chats only, no workforce chat messages
-                  if (adminIds.size > 0) {
-                    for (const adminId of adminIds) {
-                      const p2pMsg = new Messages({
-                        senderName: displayName,
-                        senderId: String(queryId),
-                        receiverId: String(adminId),
-                        text: reqText,
-                        type: 'text',
-                        isOneToOne: true,
-                        status: 'unseen',
-                      });
-                      await p2pMsg.save();
-                      if (req.tenantDbName && req.io) req.io.to(req.tenantDbName).emit('newMessage', p2pMsg);
-                    }
-                  }
-                } catch (chatErr) {
-                  console.error('Error sending P2P late start chat message:', chatErr);
-                }
+                const msg = new Messages({
+                  senderName: displayName,
+                  senderId: queryId,
+                  text: `⚠️ Request to start late duty from ${displayName}. Shift started at ${shiftStartTime}.`,
+                  type: 'text',
+                  isOneToOne: false,
+                  status: 'unseen',
+                });
+                await msg.save();
+                req.io.to(req.tenantDbName).emit('newMessage', msg);
               }
+
+              req.io.to(req.tenantDbName).emit('admin:broadcast', {
+                id: new mongoose.Types.ObjectId().toString(),
+                title: '⚠️ Late Start Request',
+                message: `Employee ${displayName} requested to start duty late. Shift started at ${shiftStartTime}.`,
+                priority: 'normal',
+                targetRoles: ['CorpAdmin'],
+                sentBy: displayName,
+                sentByRole: 'Employee',
+                at: now.toISOString(),
+              });
 
               return res.json({
                 success: true,
-                isPermissionRequest: true,
-                message: `Request to start duty late sent to Admin. Please wait for approval.`,
-                data: permPayload,
+                message: `Request to start duty late has been sent to Admin via chatroom.`,
               });
             }
             return res.status(403).json({
@@ -3158,7 +2991,6 @@ exports.manageEmployees = {
             });
           }
         }
-      }
 
         const activeShift =
           (emp.employmentHistory || []).find((h) => h.active) ||
@@ -3195,18 +3027,6 @@ exports.manageEmployees = {
         }
         if (!finalShiftGroupName) finalShiftGroupName = 'MANG';
 
-        const userRoleLower = String(
-          req.user?.userRole ||
-          req.user?.role ||
-          emp.userRole ||
-          emp.role ||
-          linkedRole ||
-          ''
-        ).trim().toLowerCase();
-
-        const isGeofenceExempt = ['corpadmin', 'useradmin', 'admin', 'project', 'projectuser'].includes(userRoleLower);
-        const isExemptUser = ['corpadmin', 'useradmin', 'admin'].includes(userRoleLower);
-
         let finalLat = lat;
         let finalLong = long;
         let finalSiteName = site_name || 'HQ/Remote';
@@ -3229,13 +3049,6 @@ exports.manageEmployees = {
               if (!startLong) startLong = siteLong;
               finalLat = siteLat;
               finalLong = siteLong;
-              finalSiteName = site.sender_name || finalSiteName;
-            } else if (isGeofenceExempt) {
-              // 🚀 Exclude Admin and Project users from geofence restrictions
-              finalLat = lat || siteLat;
-              finalLong = long || siteLong;
-              startLat = finalLat;
-              startLong = finalLong;
               finalSiteName = site.sender_name || finalSiteName;
             } else {
               if (!lat || !long) {
@@ -3311,9 +3124,6 @@ exports.manageEmployees = {
         record = new Attendance({
           employeeId: isWorker ? emp._id : queryId,
           employeeType: isWorker ? 'Employees' : 'userMaster',
-          identityType: isWorker ? 'WORKER' : 'REGISTERED_USER',
-          userId: !isWorker ? queryId : (emp?.user_id || null),
-          workerName: emp?.name || emp?.userDisplayName || (linkedUser?.userDisplayName || linkedUser?.name) || 'User',
           startLat,
           startLong,
           siteLat,
@@ -3344,8 +3154,6 @@ exports.manageEmployees = {
               : req.user?.userDisplayName || req.user?.name || req.user?.mobile || 'Supervisor',
           isLate: shiftStartTime ? diffMins > 15 : false,
           remarks: shiftStartTime && diffMins > 15 ? 'On Duty-Late Coming' : undefined,
-          lockStatus: { isLocked: false },
-          leaveCoverage: req.body.leaveCoverage || { isCoveringForLeave: false },
         });
         await record.save();
 
@@ -3451,9 +3259,8 @@ exports.manageEmployees = {
         const canOverride =
           ['corpadmin', 'project', 'useradmin'].includes(requesterRole) ||
           ['corpadmin', 'project', 'sales', 'finance', 'useradmin'].includes(employeeRole);
-        const isGracePeriod = (elapsedHrs * 60) <= 5.0; // 5m grace period for accidental check-in cancellation
 
-        if (isLocked && !canOverride && !(isGracePeriod && forcedOff)) {
+        if (isLocked && !forcedOff && !emergencyOff && !canOverride) {
           return res.status(403).json({
             success: false,
             locked: true,
@@ -3469,13 +3276,6 @@ exports.manageEmployees = {
         }
         record.hoursWorked = parseFloat(Math.max(0, elapsedHrs).toFixed(2));
         const standardHours = record.shiftHours || record.shiftLockHours || 8;
-        const overtimeHours = parseFloat(Math.max(0, record.hoursWorked - standardHours).toFixed(2));
-        const overtimeRate = 1.0; // Single rate (1.0x, not 1.5x)
-        const baseHourlyRate = (record.dailyRate || 0) / standardHours;
-        record.isOvertime = overtimeHours > 0;
-        record.overtimeHours = overtimeHours;
-        record.overtimeRate = overtimeRate;
-        record.overtimeEarn = parseFloat((overtimeHours * baseHourlyRate * overtimeRate).toFixed(2));
         record.dailyEarn = parseFloat(
           ((record.hoursWorked / standardHours) * (record.dailyRate || 0)).toFixed(2)
         );
@@ -3504,13 +3304,6 @@ exports.manageEmployees = {
         autoEndScheduler.cancelAutoEnd(record._id);
 
         await record.save();
-
-        // ── Trigger Auto Shift Rollover on manual clock-out ──
-        if (record.leadId || record.siteId) {
-          autoEndScheduler.handleAutoShiftRollover(record, Attendance, req.tenantDbName, req.io).catch((err) =>
-            console.error('[toggleAttendance] Rollover error:', err.message)
-          );
-        }
 
         // ── Async geocoding: patch end tick address after response ──────────
         if (!isExemptUser && lat && long) {
@@ -3724,7 +3517,7 @@ exports.manageEmployees = {
         ''
       ).toLowerCase();
       const isAdminRole = ['corpadmin', 'useradmin', 'admin'].includes(checkRole);
-      const isExemptUser = isAdminRole;
+      const isExemptUser = isAdminRole || isWorker;
 
       // 2. Close current shift
       current.dutyEnd = now;
@@ -3788,27 +3581,7 @@ exports.manageEmployees = {
           nextRate = nextShift.salaryRate || nextRate;
         }
       }
-
-      let nextScheduledStart = now;
-      if (nextShift && nextShift.startTime) {
-        const [mH, mM] = nextShift.startTime.split(':').map(Number);
-        const safeH = isNaN(mH) ? 8 : mH;
-        const safeM = isNaN(mM) ? 0 : mM;
-        const kolkataOffset = 5.5 * 3600000;
-        const nowKolkata = new Date(now.getTime() + kolkataOffset);
-        const targetToday = new Date(nowKolkata);
-        targetToday.setUTCHours(safeH, safeM, 0, 0);
-        const targetYesterday = new Date(targetToday.getTime() - 24 * 3600000);
-        const targetTomorrow = new Date(targetToday.getTime() + 24 * 3600000);
-        const diffs = [
-          { diff: Math.abs(nowKolkata.getTime() - targetToday.getTime()), target: targetToday },
-          { diff: Math.abs(nowKolkata.getTime() - targetYesterday.getTime()), target: targetYesterday },
-          { diff: Math.abs(nowKolkata.getTime() - targetTomorrow.getTime()), target: targetTomorrow },
-        ];
-        diffs.sort((a, b) => a.diff - b.diff);
-        nextScheduledStart = new Date(diffs[0].target.getTime() - kolkataOffset);
-      }
-      const nextScheduledEnd = new Date(nextScheduledStart.getTime() + nextLockHrs * 3600000);
+      const nextScheduledEnd = new Date(now.getTime() + nextLockHrs * 3600000);
 
       // 4. Create new attendance record for next shift (marked as double shift)
       const nextRecord = new Attendance({
@@ -3818,8 +3591,8 @@ exports.manageEmployees = {
         startLong: long || null,
         siteLat: current.siteLat || null,
         siteLong: current.siteLong || null,
-        date: nextScheduledStart,
-        dutyStartScheduled: nextScheduledStart,
+        date: now,
+        dutyStartScheduled: now,
         dutyStart: now,
         dutyEndScheduled: nextScheduledEnd,
         shiftCode: SHIFT_CODE_MAP[finalNextShiftCode] || finalNextShiftCode || 'G',
@@ -3963,6 +3736,7 @@ exports.manageEmployees = {
         active = await Attendance.find({
           $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }, { dutyEnd: '' }],
         })
+          .select({ geoHistory: { $slice: -1 } })
           .lean();
       } catch (dbErr) {
         console.error('❌ [STEP 1] FAILED — Attendance.find() threw:', dbErr.message);
@@ -3973,26 +3747,6 @@ exports.manageEmployees = {
 
       if (active.length === 0) {
         return res.json({ success: true, data: [] });
-      }
-
-      // Proactively sweep and close any open shifts that reached their scheduled end
-      autoEndScheduler.sweepExpiredShifts(Attendance, req.tenantDbName, req.io).catch(() => {});
-
-      // Batch resolve Leads coordinates for sites where workers are active
-      const { Leads } = req.tenantModels;
-      const siteMap = new Map();
-      if (Leads) {
-        try {
-          const leadIds = active
-            .map((a) => a.leadId || a.siteId)
-            .filter((id) => id && mongoose.Types.ObjectId.isValid(String(id)));
-          if (leadIds.length > 0) {
-            const sites = await Leads.find({ _id: { $in: leadIds } })
-              .select('location sender_name')
-              .lean();
-            sites.forEach((s) => siteMap.set(String(s._id), s));
-          }
-        } catch (_) {}
       }
 
       const employeeIds = active
@@ -4017,24 +3771,22 @@ exports.manageEmployees = {
       const foundEmpIds = emps.map((e) => String(e._id));
       const missingIds = employeeIds.filter((id) => !foundEmpIds.includes(String(id)));
 
-      // Query userMaster for both linked user_id and direct employeeId references
       let users = [];
       try {
         const userIds = emps
           .map((e) => e.user_id)
           .filter((id) => id && mongoose.Types.ObjectId.isValid(String(id)));
 
-        const queryIds = Array.from(
-          new Set([
-            ...userIds,
-            ...employeeIds.filter((id) => mongoose.Types.ObjectId.isValid(String(id))),
-          ])
-        );
+        // Add missing IDs to the query if they are valid ObjectIds
+        const queryIds = [
+          ...userIds,
+          ...missingIds.filter((id) => mongoose.Types.ObjectId.isValid(String(id))),
+        ];
 
         if (queryIds.length > 0) {
           users = await userMaster
             .find({ _id: { $in: queryIds } })
-            .select('userDisplayName userProfileImage userRole userMobile location')
+            .select('userDisplayName userProfileImage userRole userMobile')
             .lean()
             .maxTimeMS(5000);
         }
@@ -4042,8 +3794,8 @@ exports.manageEmployees = {
         // Non-fatal
       }
 
-      // ─── Employee & Registered Users Role Whitelist ─────────────────────────
-      // Only users saved in Employees or userMaster with a staff/registered user role
+      // ─── Employee-only role whitelist ───────────────────────────────────────
+      // Only users saved in Employees or userMaster with a real staff role
       // should appear in live tracking. Clients, Guests, and Vendors are excluded.
       const EMPLOYEE_ROLES = new Set([
         'corpadmin', 'useradmin', 'admin',
@@ -4069,31 +3821,19 @@ exports.manageEmployees = {
         const user = users.find(
           (u) => String(u._id) === String(emp?.user_id) || String(u._id) === targetId
         );
+        const displayName = emp?.name || user?.userDisplayName || 'User';
+        const resolvedRole = emp?.role || user?.userRole || 'Staff';
 
-        if (!currentLat || !currentLong) {
-          const siteDoc = siteMap.get(String(a.leadId || a.siteId));
-          currentLat = a.startLat ?? a.siteLat ?? siteDoc?.location?.lat ?? user?.location?.lat ?? emp?.location?.lat ?? null;
-          currentLong = a.startLong ?? a.siteLong ?? siteDoc?.location?.long ?? user?.location?.long ?? emp?.location?.long ?? null;
-        }
-        const displayName = user?.userDisplayName || emp?.name || a.workerName || a.markedByUserName || 'Staff';
-        const resolvedRole = a.role || user?.userRole || emp?.userRole || emp?.role || 'Staff';
-
-        // An attendance record is for a real employee/staff if:
+        // An attendance record is for a real employee if:
         //  (a) The employeeId was found in the Employees collection, OR
-        //  (b) The user was found in userMaster and not an excluded role, OR
-        //  (c) The attendance record itself has a valid non-excluded role
+        //  (b) The user was found in userMaster AND has a staff/admin role
         const isFromEmployees = !!emp;
         const roleLower = resolvedRole.toLowerCase();
-        const isFromUserMaster = !!user && !EXCLUDED_ROLES.has(roleLower);
-        const isAttendanceStaff = !EXCLUDED_ROLES.has(roleLower) && (EMPLOYEE_ROLES.has(roleLower) || !!a.role);
-        const isEmployee = isFromEmployees || isFromUserMaster || isAttendanceStaff;
+        const isFromUserMaster = !!user && !EXCLUDED_ROLES.has(roleLower) && EMPLOYEE_ROLES.has(roleLower);
+        const isEmployee = isFromEmployees || isFromUserMaster;
 
         return {
           ...a,
-          lat: currentLat,
-          long: currentLong,
-          startLat: a.startLat ?? currentLat,
-          startLong: a.startLong ?? currentLong,
           location: { lat: currentLat, long: currentLong },
           displayName,
           photo: emp?.photo_url || user?.userProfileImage || null,
@@ -4103,19 +3843,13 @@ exports.manageEmployees = {
         };
       });
 
-      // ─── Filter: only show actual employees & registered staff in live tracking ──
+
+      // ─── Filter: only show actual employees in live tracking ───────────────
       // Always exclude Clients, Guests, Vendors regardless of requester role.
-      let employeeData = data.filter((item) => item.isEmployee);
+      const employeeData = data.filter((item) => item.isEmployee);
 
-      // ─── Admin role filter: ALWAYS exclude CorpAdmin, userAdmin, and Admin from map markers ─
-      // Ensures that ONLY active workforce staff and non-admin registered users (Project, Sales, Finance, etc.)
-      // are rendered on the live map, keeping admin users hidden as requested.
-      const ADMIN_ROLES_FILTER = new Set(['corpadmin', 'useradmin', 'admin']);
-      employeeData = employeeData.filter((item) => {
-        const staffRole = (item.role || '').toLowerCase();
-        return !ADMIN_ROLES_FILTER.has(staffRole);
-      });
-
+      // Project managers only see non-admin staff (already handled in marquee),
+      // but the base exclusion of non-employees applies to everyone.
       res.json({ success: true, data: employeeData });
 
     } catch (err) {
@@ -4170,1395 +3904,38 @@ exports.manageEmployees = {
     }
   },
 
-  /**
-   * Request attendance permission (late start or early end)
-   * POST /service/hr/attendance/permission-request
-   */
-  requestAttendancePermission: async (req, res) => {
+  getWorkerCurrentMonthSite: async (req, res) => {
     try {
-      const { employeeId, attendanceId, reason, message, shiftCode, shiftStartTime, minutesLate, requestedAt } = req.body;
-      const targetEmpId = employeeId || req.user?.userId || req.user?._id;
-      const { Attendance, Employees, Messages } = req.tenantModels || {};
-      const userMaster = require('../models/userMaster');
-
-      let displayName = req.user?.userDisplayName || req.user?.name || 'Staff';
-      let userRole = req.user?.userRole || req.user?.role || 'Project';
-
-      if (targetEmpId) {
-        if (Employees && mongoose.isValidObjectId(targetEmpId)) {
-          const emp = await Employees.findById(targetEmpId).lean();
-          if (emp) {
-            displayName = emp.name || displayName;
-            userRole = emp.role || userRole;
-          }
-        }
-        if (mongoose.isValidObjectId(targetEmpId)) {
-          const u = await userMaster.findById(targetEmpId).lean();
-          if (u) {
-            displayName = u.userDisplayName || displayName;
-            userRole = u.userRole || userRole;
-          }
-        }
+      const { workerId, mobile, enrollment_no } = req.query;
+      if (!workerId) {
+        return res.status(400).json({ success: false, message: 'workerId is required' });
       }
-
-      const reqId = new mongoose.Types.ObjectId().toString();
-      const payload = {
-        _id: reqId,
-        requestId: reqId,
-        employeeId: String(targetEmpId),
-        employeeName: displayName,
-        userRole,
-        attendanceId: attendanceId ? String(attendanceId) : null,
-        reason: reason || 'late_start',
-        message: message || '',
-        shiftCode: shiftCode || 'G',
-        shiftType: req.body.shiftType || '8hr',
-        shiftPeriod: req.body.shiftPeriod || 'General',
-        shiftStartTime: shiftStartTime || '',
-        minutesLate: minutesLate || 0,
-        site_name: req.body.site_name || 'HQ/Remote',
-        lat: req.body.lat ?? null,
-        long: req.body.long ?? null,
-        requestedAt: requestedAt || new Date().toISOString(),
-      };
-
-      if (req.io) {
-        if (req.tenantDbName) {
-          req.io.to(req.tenantDbName).emit('attendance:permission_request', payload);
-          req.io.to(req.tenantDbName).emit('admin:broadcast', {
-            id: reqId,
-            title: reason === 'late_start' ? 'Late Start Permission Request' : 'Early End Duty Request',
-            message: message || `${displayName} requested ${reason === 'late_start' ? 'late duty start' : 'early end duty'}.`,
-            priority: 'high',
-            targetRoles: ['CorpAdmin', 'Admin', 'userAdmin'],
-            sentBy: displayName,
-            sentByRole: userRole,
-            at: new Date().toISOString(),
-            permissionPayload: payload,
-          });
-        }
-        req.io.emit('attendance:permission_request', payload);
-      }
-
-      if (Messages) {
-        try {
-          const adminIds = new Set();
-          if (mongoose.connection.readyState === 1) {
-            const uAdmins = await userMaster.find({
-              'accessCorporate.dbName': req.tenantDbName,
-              userRole: { $in: ['CorpAdmin', 'userAdmin', 'Admin'] },
-            }).select('_id').lean().catch(() => []);
-            uAdmins.forEach((u) => adminIds.add(String(u._id)));
-          }
-          if (Employees) {
-            const empAdmins = await Employees.find({
-              role: { $in: ['CorpAdmin', 'userAdmin', 'Admin'] },
-            }).select('_id user_id').lean().catch(() => []);
-            empAdmins.forEach((e) => {
-              if (e.user_id) adminIds.add(String(e.user_id));
-              else adminIds.add(String(e._id));
-            });
-          }
-          if (adminIds.size === 0 && mongoose.connection.readyState === 1) {
-            const fallbackAdmins = await userMaster.find({
-              userRole: { $in: ['CorpAdmin', 'userAdmin', 'Admin'] },
-            }).select('_id').limit(5).lean().catch(() => []);
-            fallbackAdmins.forEach((u) => adminIds.add(String(u._id)));
-          }
-
-          const reqText = reason === 'late_start'
-            ? `⚠️ Request to start late duty from ${displayName}. Shift started at ${shiftStartTime || 'N/A'}.`
-            : `⚠️ Request to end duty early from ${displayName}.`;
-
-          // Strictly 1-to-1 chats only, no workforce chat messages
-          if (adminIds.size > 0) {
-            for (const adminId of adminIds) {
-              const p2pMsg = new Messages({
-                senderName: displayName,
-                senderId: String(targetEmpId),
-                receiverId: String(adminId),
-                text: reqText,
-                type: 'text',
-                isOneToOne: true,
-                status: 'unseen',
-              });
-              await p2pMsg.save();
-              if (req.io && req.tenantDbName) req.io.to(req.tenantDbName).emit('newMessage', p2pMsg);
-            }
-          }
-        } catch (_) {}
-      }
-
-      return res.json({ success: true, message: 'Permission request sent to Admin successfully', data: payload });
-    } catch (err) {
-      console.error('requestAttendancePermission error:', err);
-      return res.status(500).json({ success: false, message: err.message });
-    }
-  },
-
-  /**
-   * Admin response to permission request
-   * POST /service/hr/attendance/permission-response
-   */
-  respondAttendancePermission: async (req, res) => {
-    try {
-      const { requestId, employeeId, attendanceId, approved, reason, message } = req.body;
-      const { Attendance, Employees, Messages } = req.tenantModels || {};
-      const userMaster = require('../models/userMaster');
-      const emit = require('../utils/socketEmitter');
-
-      const adminName = req.user?.userDisplayName || req.user?.name || 'Admin';
-      const tenantDbName = (req.tenantDbName || req.headers?.['x-tenant-id'] || req.body?.dbName || '').trim();
-      const empIdStr = String(employeeId || '').trim();
-
-      if (!approved) {
-        const deniedPayload = {
-          requestId,
-          employeeId: empIdStr,
-          attendanceId,
-          reason: reason || 'late_start',
-          approved: false,
-          dutyStatus: 'OFF',
-          status: 'OFF',
-          message: message || 'Request not allowed by Admin.',
-        };
-
-        if (req.io) {
-          if (tenantDbName) {
-            req.io.to(tenantDbName).emit('attendance:permission_denied', deniedPayload);
-            req.io.to(tenantDbName).emit('attendance:duty_off', {
-              employeeId: empIdStr,
-              attendanceId,
-              dutyStatus: 'OFF',
-              status: 'OFF',
-            });
-            req.io.to(tenantDbName).emit('attendance:active_updated');
-          }
-          if (empIdStr) {
-            req.io.to(empIdStr).emit('attendance:permission_denied', deniedPayload);
-            req.io.to(empIdStr).emit('attendance:duty_off', {
-              employeeId: empIdStr,
-              attendanceId,
-              dutyStatus: 'OFF',
-              status: 'OFF',
-            });
-          }
-          req.io.emit('attendance:permission_denied', deniedPayload);
-          req.io.emit('attendance:duty_off', {
-            employeeId: empIdStr,
-            attendanceId,
-            dutyStatus: 'OFF',
-            status: 'OFF',
-          });
-          req.io.emit('attendance:active_updated');
-        }
-
-        if (Messages && empIdStr) {
-          try {
-            const replyMsg = new Messages({
-              senderName: adminName,
-              senderId: String(req.user?.userId || req.user?._id || 'admin'),
-              receiverId: empIdStr,
-              text: `❌ Request not allowed by Admin (${adminName}). ${reason === 'early_end' ? 'Early duty end rejected' : 'Late start duty rejected'}.`,
-              type: 'text',
-              isOneToOne: true,
-              status: 'unseen',
-            });
-            await replyMsg.save();
-            if (tenantDbName && req.io) req.io.to(tenantDbName).emit('newMessage', replyMsg);
-            if (req.io) {
-              req.io.to(empIdStr).emit('newMessage', replyMsg);
-              req.io.emit('newMessage', replyMsg);
-            }
-          } catch (_) {}
-        }
-
-        return res.json({ success: true, message: 'Request denied and sender notified (Request not allowed)' });
-      }
-
-      if (reason === 'early_end') {
-        let attRecord = null;
-        if (Attendance) {
-          if (attendanceId && mongoose.isValidObjectId(attendanceId)) {
-            attRecord = await Attendance.findById(attendanceId);
-          }
-          if (!attRecord && employeeId) {
-            const qId = mongoose.isValidObjectId(employeeId) ? new mongoose.Types.ObjectId(employeeId) : employeeId;
-            attRecord = await Attendance.findOne({
-              $or: [
-                { employeeId: qId },
-                { employeeId: String(employeeId) },
-                { userId: qId },
-                { userId: String(employeeId) },
-              ],
-              $and: [{ $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }] }],
-            }).sort({ dutyStart: -1 });
-          }
-
-          if (attRecord) {
-            attRecord.dutyEnd = new Date();
-            attRecord.forcedOff = true;
-            attRecord.forcedOffReason = `Admin approved early end (${adminName})`;
-            if (attRecord.dutyStart) {
-              const diffMs = new Date(attRecord.dutyEnd).getTime() - new Date(attRecord.dutyStart).getTime();
-              attRecord.hoursWorked = parseFloat((diffMs / 3600000).toFixed(2));
-            }
-            await attRecord.save();
-
-            // Cancel any scheduled auto-end timer
-            autoEndScheduler.cancelAutoEnd(attRecord._id);
-
-            // Trigger shift rollover if single-worker slot / lead attached
-            if (attRecord.leadId || attRecord.siteId) {
-              autoEndScheduler.handleAutoShiftRollover(attRecord, Attendance, tenantDbName, req.io).catch((err) =>
-                console.error('[respondAttendancePermission] Rollover error:', err.message)
-              );
-            }
-          }
-        }
-
-        const resolvedEmpId = String(employeeId || attRecord?.employeeId || '').trim();
-        const userIdStr = attRecord?.userId ? String(attRecord.userId).trim() : resolvedEmpId;
-
-        const approvedPayload = {
-          requestId,
-          employeeId: resolvedEmpId,
-          userId: userIdStr,
-          attendanceId: attRecord?._id || attendanceId,
-          reason: 'early_end',
-          approved: true,
-          dutyStatus: 'OFF',
-          status: 'OFF',
-          hoursWorked: attRecord?.hoursWorked || 0,
-          message: `Early end duty approved by ${adminName}.`,
-        };
-
-        const dutyOffPayload = {
-          employeeId: resolvedEmpId,
-          userId: userIdStr,
-          attendanceId: attRecord?._id || attendanceId,
-          hoursWorked: attRecord?.hoursWorked || 0,
-          dutyStatus: 'OFF',
-          status: 'OFF',
-          forcedOff: true,
-          earlyEnd: true,
-        };
-
-        if (req.io) {
-          if (tenantDbName) {
-            req.io.to(tenantDbName).emit('attendance:duty_off', dutyOffPayload);
-            req.io.to(tenantDbName).emit('attendance:permission_approved', approvedPayload);
-            req.io.to(tenantDbName).emit('attendance:active_updated');
-          }
-          if (resolvedEmpId) {
-            req.io.to(resolvedEmpId).emit('attendance:duty_off', dutyOffPayload);
-            req.io.to(resolvedEmpId).emit('attendance:permission_approved', approvedPayload);
-          }
-          if (userIdStr && userIdStr !== resolvedEmpId) {
-            req.io.to(userIdStr).emit('attendance:duty_off', dutyOffPayload);
-            req.io.to(userIdStr).emit('attendance:permission_approved', approvedPayload);
-          }
-          req.io.emit('attendance:duty_off', dutyOffPayload);
-          req.io.emit('attendance:permission_approved', approvedPayload);
-          req.io.emit('attendance:active_updated');
-        }
-
-        if (attRecord) {
-          emit(req, 'attendance:updated', { data: attRecord });
-        }
-
-        if (Messages && resolvedEmpId) {
-          try {
-            const replyMsg = new Messages({
-              senderName: adminName,
-              senderId: String(req.user?.userId || req.user?._id || 'admin'),
-              receiverId: resolvedEmpId,
-              text: `✅ Early end duty approved by Admin (${adminName}). Duty is now ended (OFF).`,
-              type: 'text',
-              isOneToOne: true,
-              status: 'unseen',
-            });
-            await replyMsg.save();
-            if (tenantDbName && req.io) req.io.to(tenantDbName).emit('newMessage', replyMsg);
-            if (req.io) {
-              req.io.to(resolvedEmpId).emit('newMessage', replyMsg);
-              req.io.emit('newMessage', replyMsg);
-            }
-          } catch (_) {}
-        }
-
-        return res.json({ success: true, message: 'Early end duty approved successfully', data: attRecord });
-      } else {
-        // Late start approved
-        let attRecord = null;
-        if (Attendance && employeeId) {
-          const qId = mongoose.isValidObjectId(employeeId) ? new mongoose.Types.ObjectId(employeeId) : employeeId;
-          attRecord = await Attendance.findOne({
-            $or: [
-              { employeeId: qId },
-              { employeeId: String(employeeId) },
-              { userId: qId },
-              { userId: String(employeeId) },
-            ],
-            $and: [{ $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }] }],
-          }).sort({ dutyStart: -1 });
-
-          if (!attRecord) {
-            let emp = Employees && mongoose.isValidObjectId(qId) ? await Employees.findById(qId).lean().catch(() => null) : null;
-            let uDoc = null;
-            if (mongoose.isValidObjectId(qId) && mongoose.connection.readyState === 1) {
-              uDoc = await userMaster.findById(qId).lean().catch(() => null);
-            }
-            const now = new Date();
-            const displayName = req.body.employeeName || uDoc?.userDisplayName || emp?.name || 'Staff';
-            const role = req.body.userRole || uDoc?.userRole || emp?.role || 'project';
-            const isWorker = !uDoc && !!emp;
-
-            attRecord = new Attendance({
-              employeeId: qId,
-              employeeType: isWorker ? 'Employees' : 'userMaster',
-              identityType: isWorker ? 'WORKER' : 'REGISTERED_USER',
-              userId: isWorker ? null : qId,
-              workerName: displayName,
-              startLat: req.body.lat ?? uDoc?.location?.lat ?? emp?.location?.lat ?? null,
-              startLong: req.body.long ?? uDoc?.location?.long ?? emp?.location?.long ?? null,
-              role,
-              date: now,
-              dutyStartScheduled: now,
-              dutyStart: now,
-              dutyEndScheduled: new Date(now.getTime() + 8 * 3600000),
-              shiftCode: req.body.shiftCode || 'G',
-              shiftType: req.body.shiftType || '8hr',
-              shiftPeriod: req.body.shiftPeriod || 'General',
-              status: 'Present',
-              site_name: req.body.site_name || 'HQ/Remote',
-              markedByDevice: false,
-              markedByUserName: adminName,
-              remarks: `Late start approved by ${adminName}`,
-            });
-            await attRecord.save();
-          } else {
-            attRecord.dutyStart = attRecord.dutyStart || new Date();
-            attRecord.status = 'Present';
-            attRecord.remarks = (attRecord.remarks ? attRecord.remarks + '; ' : '') + `Late start approved by ${adminName}`;
-            await attRecord.save();
-          }
-
-          // Schedule auto-end timer
-          if (attRecord && attRecord.dutyEndScheduled) {
-            autoEndScheduler.scheduleAutoEnd(
-              attRecord._id,
-              attRecord.dutyEndScheduled,
-              Attendance,
-              tenantDbName,
-              req.io
-            );
-          }
-        }
-
-        const resolvedEmpId = String(employeeId || attRecord?.employeeId || '').trim();
-        const userIdStr = attRecord?.userId ? String(attRecord.userId).trim() : resolvedEmpId;
-
-        const approvedPayload = {
-          requestId,
-          employeeId: resolvedEmpId,
-          userId: userIdStr,
-          attendanceId: attRecord?._id,
-          reason: 'late_start',
-          approved: true,
-          activeDuty: attRecord,
-          canStart: true,
-          dutyStatus: 'ON',
-          status: 'ON',
-          shiftCode: attRecord?.shiftCode || req.body.shiftCode || 'G',
-          shiftPeriod: attRecord?.shiftPeriod || req.body.shiftPeriod || 'General',
-          message: `Late start allowed by ${adminName}. Attendance added and duty is now ON.`,
-        };
-
-        const dutyOnPayload = {
-          employeeId: resolvedEmpId,
-          userId: userIdStr,
-          attendanceId: attRecord?._id,
-          shiftCode: attRecord?.shiftCode || req.body.shiftCode || 'G',
-          shiftPeriod: attRecord?.shiftPeriod || req.body.shiftPeriod || 'General',
-          activeDuty: attRecord,
-          dutyStatus: 'ON',
-          status: 'ON',
-        };
-
-        if (req.io) {
-          if (tenantDbName) {
-            req.io.to(tenantDbName).emit('attendance:duty_on', dutyOnPayload);
-            req.io.to(tenantDbName).emit('attendance:permission_approved', approvedPayload);
-            req.io.to(tenantDbName).emit('attendance:active_updated');
-          }
-          if (resolvedEmpId) {
-            req.io.to(resolvedEmpId).emit('attendance:duty_on', dutyOnPayload);
-            req.io.to(resolvedEmpId).emit('attendance:permission_approved', approvedPayload);
-          }
-          if (userIdStr && userIdStr !== resolvedEmpId) {
-            req.io.to(userIdStr).emit('attendance:duty_on', dutyOnPayload);
-            req.io.to(userIdStr).emit('attendance:permission_approved', approvedPayload);
-          }
-          req.io.emit('attendance:duty_on', dutyOnPayload);
-          req.io.emit('attendance:permission_approved', approvedPayload);
-          req.io.emit('attendance:active_updated');
-        }
-
-        if (attRecord) {
-          emit(req, 'attendance:updated', { data: attRecord });
-        }
-
-        if (Messages && resolvedEmpId) {
-          try {
-            const replyMsg = new Messages({
-              senderName: adminName,
-              senderId: String(req.user?.userId || req.user?._id || 'admin'),
-              receiverId: resolvedEmpId,
-              text: `✅ Late start allowed by Admin (${adminName}). Attendance added to database and duty is now ON.`,
-              type: 'text',
-              isOneToOne: true,
-              status: 'unseen',
-            });
-            await replyMsg.save();
-            if (tenantDbName && req.io) req.io.to(tenantDbName).emit('newMessage', replyMsg);
-            if (req.io) {
-              req.io.to(resolvedEmpId).emit('newMessage', replyMsg);
-              req.io.emit('newMessage', replyMsg);
-            }
-          } catch (_) {}
-        }
-
-        return res.json({ success: true, message: 'Late start approved and attendance added to database successfully', data: attRecord });
-      }
-    } catch (err) {
-      console.error('respondAttendancePermission error:', err);
-      return res.status(500).json({ success: false, message: err.message });
-    }
-  },
-
-  lockBatchAttendance: async (req, res) => {
-    try {
-      const { Attendance } = req.tenantModels;
-      const userRole = (req.user?.userRole || req.user?.role || '').toLowerCase();
-      if (!['corpadmin', 'useradmin', 'project', 'admin'].includes(userRole)) {
-        return res.status(403).json({ success: false, message: 'Unauthorized to lock attendance' });
-      }
-
-      const { month, startDate, endDate, leadId, attendanceIds } = req.body;
-      const filter = { 'lockStatus.isLocked': { $ne: true } };
-
-      if (attendanceIds && Array.isArray(attendanceIds) && attendanceIds.length > 0) {
-        filter._id = { $in: attendanceIds.map(id => new mongoose.Types.ObjectId(id)) };
-      } else if (month) {
-        const [y, m] = month.split('-').map(Number);
-        const start = new Date(Date.UTC(y, m - 1, 1, 0, 0, 0));
-        const end = new Date(Date.UTC(y, m, 0, 23, 59, 59, 999));
-        filter.date = { $gte: start, $lte: end };
-      } else if (startDate && endDate) {
-        filter.date = { $gte: new Date(startDate), $lte: new Date(endDate) };
-      } else {
-        return res.status(400).json({ success: false, message: 'Please specify month or date range or attendance IDs.' });
-      }
-
-      if (leadId) {
-        filter.leadId = mongoose.isValidObjectId(leadId) ? new mongoose.Types.ObjectId(leadId) : leadId;
-      }
-
-      const lockBatchId = new mongoose.Types.ObjectId().toString();
-      const result = await Attendance.updateMany(filter, {
-        $set: {
-          'lockStatus.isLocked': true,
-          'lockStatus.lockedAt': new Date(),
-          'lockStatus.lockedBy': req.user?._id,
-          'lockStatus.lockedByName': req.user?.userDisplayName || req.user?.name || 'Admin',
-          'lockStatus.lockBatchId': lockBatchId,
-        },
-      });
-
-      if (req.io && req.tenantDbName) {
-        req.io.to(req.tenantDbName).emit('attendance:batch_locked', {
-          lockBatchId,
-          count: result.modifiedCount,
-        });
-      }
-
+      const siteInfo = await getWorkerLatestMonthSite(req.tenantModels, workerId, mobile, enrollment_no);
       res.json({
         success: true,
-        message: `Successfully locked ${result.modifiedCount} attendance records.`,
-        modifiedCount: result.modifiedCount,
-        lockBatchId,
+        data: siteInfo,
       });
     } catch (err) {
-      res.status(500).json({ success: false, message: err.message });
-    }
-  },
-
-  unlockBatchAttendance: async (req, res) => {
-    try {
-      const { Attendance } = req.tenantModels;
-      const userRole = (req.user?.userRole || req.user?.role || '').toLowerCase();
-      if (!['corpadmin', 'useradmin'].includes(userRole)) {
-        return res.status(403).json({
-          success: false,
-          message: 'Only CorpAdmin or userAdmin can unlock finalized attendance.',
-        });
-      }
-
-      const { month, startDate, endDate, leadId, attendanceIds, lockBatchId, reason } = req.body;
-      if (!reason || typeof reason !== 'string' || reason.trim().length < 5) {
-        return res.status(400).json({
-          success: false,
-          message: 'A mandatory justification reason (min 5 characters) is required to unlock attendance.',
-        });
-      }
-
-      const filter = { 'lockStatus.isLocked': true };
-
-      if (lockBatchId) {
-        filter['lockStatus.lockBatchId'] = lockBatchId;
-      } else if (attendanceIds && Array.isArray(attendanceIds) && attendanceIds.length > 0) {
-        filter._id = { $in: attendanceIds.map(id => new mongoose.Types.ObjectId(id)) };
-      } else if (month) {
-        const [y, m] = month.split('-').map(Number);
-        const start = new Date(Date.UTC(y, m - 1, 1, 0, 0, 0));
-        const end = new Date(Date.UTC(y, m, 0, 23, 59, 59, 999));
-        filter.date = { $gte: start, $lte: end };
-      } else if (startDate && endDate) {
-        filter.date = { $gte: new Date(startDate), $lte: new Date(endDate) };
-      } else {
-        return res.status(400).json({ success: false, message: 'Please specify month, date range, or lockBatchId.' });
-      }
-
-      if (leadId) {
-        filter.leadId = mongoose.isValidObjectId(leadId) ? new mongoose.Types.ObjectId(leadId) : leadId;
-      }
-
-      const unlockEntry = {
-        unlockedBy: req.user?._id,
-        unlockedByName: req.user?.userDisplayName || req.user?.name || 'Admin',
-        unlockedAt: new Date(),
-        reason: reason.trim(),
-      };
-
-      const result = await Attendance.updateMany(filter, {
-        $set: { 'lockStatus.isLocked': false },
-        $push: { 'lockStatus.unlockHistory': unlockEntry },
-      });
-
-      if (req.io && req.tenantDbName) {
-        req.io.to(req.tenantDbName).emit('attendance:batch_unlocked', {
-          count: result.modifiedCount,
-          reason,
-        });
-      }
-
-      res.json({
-        success: true,
-        message: `Successfully unlocked ${result.modifiedCount} attendance records for correction.`,
-        modifiedCount: result.modifiedCount,
-      });
-    } catch (err) {
-      res.status(500).json({ success: false, message: err.message });
-    }
-  },
-
-  relockBatchAttendance: async (req, res) => {
-    try {
-      const { Attendance } = req.tenantModels;
-      const userRole = (req.user?.userRole || req.user?.role || '').toLowerCase();
-      if (!['corpadmin', 'useradmin'].includes(userRole)) {
-        return res.status(403).json({ success: false, message: 'Unauthorized' });
-      }
-
-      const { month, startDate, endDate, leadId, attendanceIds } = req.body;
-      const filter = { 'lockStatus.isLocked': false };
-
-      if (attendanceIds && Array.isArray(attendanceIds) && attendanceIds.length > 0) {
-        filter._id = { $in: attendanceIds.map(id => new mongoose.Types.ObjectId(id)) };
-      } else if (month) {
-        const [y, m] = month.split('-').map(Number);
-        const start = new Date(Date.UTC(y, m - 1, 1, 0, 0, 0));
-        const end = new Date(Date.UTC(y, m, 0, 23, 59, 59, 999));
-        filter.date = { $gte: start, $lte: end };
-      } else if (startDate && endDate) {
-        filter.date = { $gte: new Date(startDate), $lte: new Date(endDate) };
-      }
-
-      if (leadId) {
-        filter.leadId = mongoose.isValidObjectId(leadId) ? new mongoose.Types.ObjectId(leadId) : leadId;
-      }
-
-      const result = await Attendance.updateMany(filter, {
-        $set: {
-          'lockStatus.isLocked': true,
-          'lockStatus.lockedAt': new Date(),
-          'lockStatus.lockedBy': req.user?._id,
-          'lockStatus.lockedByName': req.user?.userDisplayName || req.user?.name || 'Admin',
-        },
-      });
-
-      res.json({
-        success: true,
-        message: `Re-locked ${result.modifiedCount} records.`,
-        modifiedCount: result.modifiedCount,
-      });
-    } catch (err) {
-      res.status(500).json({ success: false, message: err.message });
-    }
-  },
-
-  backupAndPurgeAttendance: async (req, res) => {
-    try {
-      const { Attendance, AttendanceBackupLogs, Leads } = req.tenantModels;
-      const userRole = (req.user?.userRole || req.user?.role || '').toLowerCase();
-      if (!['corpadmin', 'useradmin'].includes(userRole)) {
-        return res.status(403).json({
-          success: false,
-          message: 'Only CorpAdmin or userAdmin can backup and clear attendance records.',
-        });
-      }
-
-      const { month, startDate, endDate, leadId, confirmPurge } = req.body;
-      if (!confirmPurge) {
-        return res.status(400).json({
-          success: false,
-          message: 'Explicit confirmation (confirmPurge: true) is required to clear attendance data.',
-        });
-      }
-
-      let start = null;
-      let end = null;
-      let periodLabel = '';
-
-      if (month) {
-        const [y, m] = month.split('-').map(Number);
-        start = new Date(Date.UTC(y, m - 1, 1, 0, 0, 0));
-        end = new Date(Date.UTC(y, m, 0, 23, 59, 59, 999));
-        periodLabel = month;
-      } else if (startDate && endDate) {
-        start = new Date(startDate);
-        end = new Date(endDate);
-        periodLabel = `${startDate}_to_${endDate}`;
-      } else {
-        return res.status(400).json({
-          success: false,
-          message: 'Provide month (YYYY-MM) or both startDate and endDate.',
-        });
-      }
-
-      const filter = {
-        date: { $gte: start, $lte: end },
-        'lockStatus.isLocked': true,
-      };
-      if (leadId) {
-        filter.leadId = mongoose.isValidObjectId(leadId)
-          ? new mongoose.Types.ObjectId(leadId)
-          : leadId;
-      }
-
-      const records = await Attendance.find(filter).lean();
-      if (!records || records.length === 0) {
-        return res.status(400).json({
-          success: false,
-          message: 'No locked attendance records found for this period to backup.',
-        });
-      }
-
-      const tenantDb = req.tenantDbName || 'default_tenant';
-      const backupDir = path.join(__dirname, '..', 'backups', 'attendance', tenantDb);
-      if (!fs.existsSync(backupDir)) {
-        fs.mkdirSync(backupDir, { recursive: true });
-      }
-
-      const timestamp = Date.now();
-      const fileName = `attendance_backup_${tenantDb}_${periodLabel}_${timestamp}.json`;
-      const filePath = path.join(backupDir, fileName);
-
-      const backupPayload = {
-        meta: {
-          tenantDb,
-          periodLabel,
-          startDate: start,
-          endDate: end,
-          backedUpAt: new Date(),
-          backedUpBy: req.user?._id,
-          backedUpByName: req.user?.userDisplayName || req.user?.name || 'Admin',
-          recordCount: records.length,
-        },
-        records,
-      };
-
-      fs.writeFileSync(filePath, JSON.stringify(backupPayload, null, 2), 'utf-8');
-      const stats = fs.statSync(filePath);
-
-      let siteName = 'All Sites';
-      if (leadId && Leads) {
-        const sDoc = await Leads.findById(leadId).select('sender_name').lean();
-        if (sDoc?.sender_name) siteName = sDoc.sender_name;
-      }
-
-      let backupLog = null;
-      if (AttendanceBackupLogs) {
-        backupLog = new AttendanceBackupLogs({
-          backupPeriod: periodLabel,
-          startDate: start,
-          endDate: end,
-          leadId: leadId || null,
-          siteName,
-          fileName,
-          filePath,
-          fileSizeBytes: stats.size,
-          recordCount: records.length,
-          backedUpBy: req.user?._id,
-          backedUpByName: req.user?.userDisplayName || req.user?.name || 'Admin',
-          purgedFromDb: true,
-          purgedAt: new Date(),
-        });
-        await backupLog.save();
-      }
-
-      // Clear the locked records from MongoDB
-      const recordIds = records.map((r) => r._id);
-      const deleteResult = await Attendance.deleteMany({ _id: { $in: recordIds } });
-
-      if (req.io && req.tenantDbName) {
-        req.io.to(req.tenantDbName).emit('attendance:purged', {
-          periodLabel,
-          purgedCount: deleteResult.deletedCount,
-        });
-      }
-
-      return res.json({
-        success: true,
-        message: `Successfully backed up to server and purged ${deleteResult.deletedCount} locked attendance records.`,
-        backupId: backupLog?._id,
-        fileName,
-        fileSizeBytes: stats.size,
-        purgedCount: deleteResult.deletedCount,
-      });
-    } catch (err) {
-      console.error('backupAndPurgeAttendance error:', err);
-      return res.status(500).json({ success: false, message: err.message });
-    }
-  },
-
-  getBackupLogs: async (req, res) => {
-    try {
-      const { AttendanceBackupLogs } = req.tenantModels;
-      if (!AttendanceBackupLogs) return res.json({ success: true, data: [] });
-      const logs = await AttendanceBackupLogs.find().sort({ createdAt: -1 }).lean();
-      res.json({ success: true, data: logs });
-    } catch (err) {
-      res.status(500).json({ success: false, message: err.message });
-    }
-  },
-
-  downloadBackupArchive: async (req, res) => {
-    try {
-      const { AttendanceBackupLogs } = req.tenantModels;
-      const userRole = (req.user?.userRole || req.user?.role || '').toLowerCase();
-      if (!['corpadmin', 'useradmin'].includes(userRole)) {
-        return res.status(403).json({ success: false, message: 'Forbidden' });
-      }
-
-      const { backupId } = req.params;
-      const log = await AttendanceBackupLogs.findById(backupId);
-      if (!log || !fs.existsSync(log.filePath)) {
-        return res.status(404).json({ success: false, message: 'Backup file not found on server' });
-      }
-
-      res.download(log.filePath, log.fileName);
-    } catch (err) {
-      return res.status(500).json({ success: false, message: err.message });
-    }
-  },
-
-  coverShiftForLeave: async (req, res) => {
-    try {
-      const { Attendance, Employees, Leads } = req.tenantModels;
-      const {
-        coveringWorkerId,
-        scheduledWorkerId,
-        shiftCode,
-        shiftPeriod,
-        leadId,
-        site_name,
-        leaveType,
-        overtimeRate,
-        notes,
-      } = req.body;
-
-      if (!coveringWorkerId || !scheduledWorkerId) {
-        return res.status(400).json({
-          success: false,
-          message: 'coveringWorkerId and scheduledWorkerId are required',
-        });
-      }
-
-      const [coveringWorker, scheduledWorker] = await Promise.all([
-        Employees.findById(coveringWorkerId).lean(),
-        Employees.findById(scheduledWorkerId).lean(),
-      ]);
-
-      if (!coveringWorker) {
-        return res.status(404).json({ success: false, message: 'Covering worker not found' });
-      }
-
-      const now = new Date();
-      let siteName = site_name || 'Site';
-      if (leadId && Leads) {
-        const lDoc = await Leads.findById(leadId).select('sender_name').lean();
-        if (lDoc?.sender_name) siteName = lDoc.sender_name;
-      }
-
-      const coveringAttendance = new Attendance({
-        employeeId: coveringWorker._id,
-        employeeType: 'Employees',
-        identityType: 'WORKER',
-        workerName: coveringWorker.name || 'Worker',
-        role: coveringWorker.role || 'worker',
-        date: now,
-        dutyStart: now,
-        dutyStartScheduled: now,
-        shiftCode: shiftCode || 'G',
-        shiftPeriod: shiftPeriod || 'General',
-        site_name: siteName,
-        leadId: leadId || null,
-        status: 'Present',
-        customCreated: true,
-        rate: overtimeRate || coveringWorker.daily_rate || 0,
-        remarks: notes || `Covering for ${scheduledWorker?.name || 'Staff'} on ${leaveType || 'Leave'}`,
-        lockStatus: { isLocked: false },
-        leaveCoverage: {
-          isCoveringForLeave: true,
-          originalWorkerId: scheduledWorker?._id || scheduledWorkerId,
-          originalWorkerName: scheduledWorker?.name || '',
-          leaveType: leaveType || 'LONG_LEAVE',
-          handoverType: 'LAST_WORKER_COVER',
-          overtimeRate: overtimeRate || 1.5,
-        },
-      });
-
-      await coveringAttendance.save();
-
-      if (req.io && req.tenantDbName) {
-        req.io.to(req.tenantDbName).emit('attendance:leave_covered', {
-          attendanceId: coveringAttendance._id,
-          coveringWorkerId: coveringWorker._id,
-          originalWorkerId: scheduledWorker?._id,
-        });
-      }
-
-      res.status(201).json({
-        success: true,
-        message: `Shift successfully covered for ${scheduledWorker?.name || 'scheduled staff'}.`,
-        data: coveringAttendance,
-      });
-    } catch (err) {
-      console.error('coverShiftForLeave error:', err);
-      res.status(500).json({ success: false, message: err.message });
-    }
-  },
-
-  listSiteRosterHolidays: async (req, res) => {
-    try {
-      const { SiteRosterHolidays } = req.tenantModels;
-      const { siteId, year, month, workerId } = req.query;
-      const filter = {};
-      if (siteId) filter.siteId = siteId;
-      if (workerId) filter.workerId = workerId;
-
-      if (year && month) {
-        filter.$or = [
-          { year: parseInt(year, 10), month: parseInt(month, 10) },
-          { type: 'WeeklyRest', restDayOfWeek: { $ne: null } },
-        ];
-      } else if (year) {
-        filter.$or = [
-          { year: parseInt(year, 10) },
-          { type: 'WeeklyRest', restDayOfWeek: { $ne: null } },
-        ];
-      }
-
-      const records = await SiteRosterHolidays.find(filter).sort({ date: 1, restDayOfWeek: 1 }).lean();
-      res.json({ success: true, data: records });
-    } catch (err) {
-      console.error('listSiteRosterHolidays error:', err);
-      res.status(500).json({ success: false, message: err.message });
-    }
-  },
-
-  saveSiteRosterHoliday: async (req, res) => {
-    try {
-      const { SiteRosterHolidays, Leads, Employees } = req.tenantModels;
-      const {
-        siteId,
-        workerId,
-        date,
-        type,
-        restDayOfWeek,
-        remark,
-        isPaid,
-        shiftCode,
-      } = req.body;
-
-      if (!siteId) {
-        return res.status(400).json({ success: false, message: 'siteId is required' });
-      }
-
-      const site = await Leads.findById(siteId).lean();
-      const siteName = site?.sender_name || site?.name || 'Site';
-      const clientId = site?.clientId || null;
-
-      let workerName = req.body.workerName || '';
-      if (workerId && !workerName) {
-        const emp = await Employees.findById(workerId).lean();
-        workerName = emp?.name || '';
-      }
-
-      let year = req.body.year;
-      let month = req.body.month;
-      let dayName = req.body.dayName;
-      if (date) {
-        const dt = new Date(date);
-        if (!isNaN(dt.getTime())) {
-          year = year || dt.getFullYear();
-          month = month || (dt.getMonth() + 1);
-          const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-          dayName = dayName || days[dt.getDay()];
-        }
-      }
-
-      const doc = new SiteRosterHolidays({
-        siteId,
-        clientId,
-        siteName,
-        shiftCode: shiftCode || '',
-        workerId: workerId || req.user?._id,
-        workerName: workerName || 'Worker',
-        year: year || new Date().getFullYear(),
-        month: month || (new Date().getMonth() + 1),
-        date: date || '',
-        dayName: dayName || restDayOfWeek || '',
-        type: type || 'WeeklyRest',
-        restDayOfWeek: restDayOfWeek || null,
-        remark: remark || 'Site Rest / Holiday',
-        isPaid: isPaid !== false,
-        createdBy: req.user?._id || null,
-      });
-
-      await doc.save();
-      res.status(201).json({ success: true, message: 'Site roster holiday saved', data: doc });
-    } catch (err) {
-      console.error('saveSiteRosterHoliday error:', err);
-      res.status(500).json({ success: false, message: err.message });
-    }
-  },
-
-  setupSiteWeeklyRest: async (req, res) => {
-    try {
-      const { SiteRosterHolidays, Leads, Employees } = req.tenantModels;
-      const { siteId, shiftCode, workerId, restDayOfWeek } = req.body;
-
-      if (!siteId || !workerId || !restDayOfWeek) {
-        return res.status(400).json({
-          success: false,
-          message: 'siteId, workerId, and restDayOfWeek are required',
-        });
-      }
-
-      const site = await Leads.findById(siteId);
-      if (!site) {
-        return res.status(404).json({ success: false, message: 'Site not found' });
-      }
-
-      const emp = await Employees.findById(workerId).lean();
-      const workerName = emp?.name || 'Worker';
-      const siteName = site.sender_name || site.name || 'Site';
-
-      // 1. Update siteShifts subdocument in Lead
-      if (shiftCode && Array.isArray(site.siteShifts)) {
-        const targetShift = site.siteShifts.find(
-          (s) => s.shiftCode === shiftCode && s.active !== false
-        );
-        if (targetShift) {
-          targetShift.boundWorkerId = workerId;
-          targetShift.boundWorkerName = workerName;
-          targetShift.weeklyRestDay = restDayOfWeek;
-          await site.save();
-        }
-      }
-
-      // 2. Upsert in SiteRosterHolidays collection
-      const now = new Date();
-      const existing = await SiteRosterHolidays.findOne({
-        siteId,
-        workerId,
-        type: 'WeeklyRest',
-      });
-
-      if (existing) {
-        existing.restDayOfWeek = restDayOfWeek;
-        existing.shiftCode = shiftCode || existing.shiftCode || '';
-        existing.remark = `${workerName} - ${restDayOfWeek} Weekly Rest at ${siteName}`;
-        await existing.save();
-        return res.json({ success: true, message: 'Weekly rest updated', data: existing });
-      } else {
-        const newRecord = new SiteRosterHolidays({
-          siteId,
-          clientId: site.clientId || null,
-          siteName,
-          shiftCode: shiftCode || '',
-          workerId,
-          workerName,
-          year: now.getFullYear(),
-          month: now.getMonth() + 1,
-          type: 'WeeklyRest',
-          restDayOfWeek,
-          remark: `${workerName} - ${restDayOfWeek} Weekly Rest at ${siteName}`,
-          isPaid: true,
-          createdBy: req.user?._id || null,
-        });
-        await newRecord.save();
-        return res.status(201).json({ success: true, message: 'Weekly rest created', data: newRecord });
-      }
-    } catch (err) {
-      console.error('setupSiteWeeklyRest error:', err);
-      res.status(500).json({ success: false, message: err.message });
-    }
-  },
-
-  generateYearHolidays: async (req, res) => {
-    try {
-      const { SiteRosterHolidays, Leads } = req.tenantModels;
-      const { siteId, year, holidays } = req.body;
-      const targetYear = parseInt(year, 10) || new Date().getFullYear();
-
-      if (!siteId) {
-        return res.status(400).json({ success: false, message: 'siteId is required' });
-      }
-
-      // Standard Gazette & Major Festival Holidays template
-      const standardHolidays = [
-        { date: `${targetYear}-01-26`, remark: 'Republic Day', type: 'NationalHoliday' },
-        { date: `${targetYear}-03-14`, remark: 'Holi', type: 'FestivalHoliday' },
-        { date: `${targetYear}-05-01`, remark: 'Maharashtra / Labour Day', type: 'NationalHoliday' },
-        { date: `${targetYear}-08-15`, remark: 'Independence Day', type: 'NationalHoliday' },
-        { date: `${targetYear}-10-02`, remark: 'Gandhi Jayanti', type: 'NationalHoliday' },
-        { date: `${targetYear}-10-20`, remark: 'Dussehra', type: 'FestivalHoliday' },
-        { date: `${targetYear}-11-08`, remark: 'Diwali', type: 'FestivalHoliday' },
-        { date: `${targetYear}-12-25`, remark: 'Christmas', type: 'FestivalHoliday' },
-      ];
-
-      const rawHolidays = Array.isArray(holidays) && holidays.length > 0 ? holidays : standardHolidays;
-      const now = new Date();
-      const currentYearNum = now.getFullYear();
-      const todayStr = `${currentYearNum}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-
-      // Only schedule upcoming holidays (past holidays like Oct 2 and Oct 20 are omitted once passed)
-      const holidaysToProcess = rawHolidays.filter((h) => {
-        const dStr = (h.date || '').split('T')[0].trim();
-        return !dStr || dStr >= todayStr || targetYear > currentYearNum;
-      });
-
-      let sitesToProcess = [];
-      if (siteId === '__all__') {
-        sitesToProcess = await Leads.find({
-          status: { $in: ['Accepted', 'Engaged', 'Tax Invoice'] },
-        }).lean();
-      } else {
-        const singleSite = await Leads.findById(siteId).lean();
-        if (singleSite) sitesToProcess.push(singleSite);
-      }
-
-      if (sitesToProcess.length === 0) {
-        return res.status(404).json({ success: false, message: 'No sites found for holiday setup' });
-      }
-
-      let createdCount = 0;
-      for (const site of sitesToProcess) {
-        const curSiteId = site._id;
-        const siteName = site?.sender_name || site?.name || 'Site';
-        const clientId = site?.clientId || null;
-
-        for (const h of holidaysToProcess) {
-          const dt = new Date(h.date);
-          const month = dt.getMonth() + 1;
-          const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-          const dayName = days[dt.getDay()];
-
-          const exists = await SiteRosterHolidays.findOne({
-            siteId: curSiteId,
-            date: h.date,
-          });
-
-          if (!exists) {
-            await new SiteRosterHolidays({
-              siteId: curSiteId,
-              clientId,
-              siteName,
-              workerId: req.user?._id || new mongoose.Types.ObjectId(),
-              workerName: 'ALL_POST_WORKERS',
-              year: targetYear,
-              month,
-              date: h.date,
-              dayName,
-              type: h.type || 'FestivalHoliday',
-              remark: h.remark || 'Site Holiday',
-              isPaid: h.isPaid !== false,
-              createdBy: req.user?._id || null,
-            }).save();
-            createdCount++;
-          }
-        }
-      }
-
-      res.json({
-        success: true,
-        message: `Applied ${holidaysToProcess.length} holiday(s) across ${sitesToProcess.length} site(s) (${createdCount} new records created)`,
-      });
-    } catch (err) {
-      console.error('generateYearHolidays error:', err);
-      res.status(500).json({ success: false, message: err.message });
-    }
-  },
-
-  deleteSiteRosterHoliday: async (req, res) => {
-    try {
-      const { SiteRosterHolidays } = req.tenantModels;
-      const { id } = req.params;
-      const deleted = await SiteRosterHolidays.findByIdAndDelete(id);
-      if (!deleted) {
-        return res.status(404).json({ success: false, message: 'Record not found' });
-      }
-      res.json({ success: true, message: 'Record removed successfully' });
-    } catch (err) {
-      console.error('deleteSiteRosterHoliday error:', err);
-      res.status(500).json({ success: false, message: err.message });
-    }
-  },
-
-  listWorkerPenalties: async (req, res) => {
-    try {
-      const { Attendance } = req.tenantModels;
-      const { month, year, siteId, workerId } = req.query;
-
-      const targetYear = year ? parseInt(year, 10) : new Date().getFullYear();
-      const targetMonth =
-        month !== undefined && month !== '' ? parseInt(month, 10) : new Date().getMonth();
-
-      const fromDate = new Date(targetYear, targetMonth, 1, 0, 0, 0, 0);
-      const toDate = new Date(targetYear, targetMonth + 1, 0, 23, 59, 59, 999);
-
-      const query = {
-        date: { $gte: fromDate, $lte: toDate },
-        $or: [
-          { penaltyImposed: { $gt: 0 } },
-          { penaltyDeducted: { $gt: 0 } },
-          { penaltyWaivedOff: { $gt: 0 } },
-          { violationType: { $ne: null } },
-        ],
-      };
-
-      if (workerId) query.employeeId = workerId;
-      if (siteId && siteId !== '__all__') query.leadId = siteId;
-
-      const attRecords = await Attendance.find(query)
-        .populate('employeeId', 'name role enrollment_no')
-        .sort({ date: -1 })
-        .lean();
-
-      const records = attRecords.map((att) => {
-        const emp = att.employeeId || {};
-        const imposed = att.penaltyImposed || 0;
-        const deducted = att.penaltyDeducted || 0;
-        const waived = att.penaltyWaivedOff || 0;
-
-        let status = 'Imposed';
-        if (waived >= imposed && imposed > 0) {
-          status = 'Waived Off';
-        } else if (deducted >= imposed && imposed > 0) {
-          status = 'Deducted';
-        } else if (deducted > 0 && deducted < imposed) {
-          status = 'Partially Deducted';
-        }
-
-        return {
-          _id: att._id,
-          id: att._id,
-          attendanceId: att._id,
-          workerId: String(emp._id || att.employeeId || ''),
-          workerName: emp.name || att.workerName || 'Worker',
-          role: emp.role || att.role || 'Worker',
-          enrollmentNo: emp.enrollment_no || '',
-          siteId: att.leadId ? String(att.leadId) : att.siteId || null,
-          siteName: att.site_name || 'Site',
-          shiftName: att.shiftPeriod || att.shiftCode || 'General',
-          month: targetMonth,
-          year: targetYear,
-          date: att.date ? new Date(att.date).toISOString().split('T')[0] : '',
-          violationType: att.violationType || 'Late Arrival',
-          imposedAmount: imposed,
-          deductedAmount: deducted,
-          waivedOffAmount: waived,
-          reason: att.penaltyReason || att.remarks || '',
-          status,
-          approvedBy: att.penaltyApprovedBy || '',
-          penaltyMediaUrl: att.penaltyMediaUrl || (att.penaltyMedia && att.penaltyMedia[0]?.url) || '',
-          penaltyMedia: att.penaltyMedia || [],
-        };
-      });
-
-      res.json({ success: true, data: records });
-    } catch (err) {
-      console.error('listWorkerPenalties error:', err);
-      res.status(500).json({ success: false, message: err.message });
-    }
-  },
-
-  saveWorkerPenalty: async (req, res) => {
-    try {
-      const { Attendance, Employees, Leads } = req.tenantModels;
-      const {
-        id,
-        _id,
-        attendanceId,
-        workerId,
-        siteId,
-        shiftName,
-        date,
-        violationType,
-        imposedAmount,
-        deductedAmount,
-        waivedOffAmount,
-        reason,
-        approvedBy,
-        penaltyMediaUrl,
-        penaltyMedia,
-      } = req.body;
-
-      const targetId = req.params?.id || attendanceId || id || _id;
-      const imposed = Number(imposedAmount) || 0;
-      const deducted = Number(deductedAmount) || 0;
-      const waived = Number(waivedOffAmount) || 0;
-
-      let emp = null;
-      if (workerId) {
-        emp = await Employees.findById(workerId).lean();
-      }
-
-      let site = null;
-      if (siteId && siteId !== '__all__') {
-        site = await Leads.findById(siteId).lean();
-      }
-
-      const siteName = req.body.siteName || site?.sender_name || site?.name || 'All Sites';
-      let record = null;
-
-      if (targetId) {
-        record = await Attendance.findById(targetId);
-      }
-
-      if (!record && workerId && date) {
-        const startOfDay = new Date(date);
-        startOfDay.setHours(0, 0, 0, 0);
-        const endOfDay = new Date(date);
-        endOfDay.setHours(23, 59, 59, 999);
-
-        record = await Attendance.findOne({
-          employeeId: workerId,
-          date: { $gte: startOfDay, $lte: endOfDay },
-        });
-      }
-
-      if (record) {
-        // Update penalty on existing duty attendance record
-        record.penaltyImposed = imposed;
-        record.penaltyDeducted = deducted;
-        record.penaltyWaivedOff = waived;
-        record.penaltyReason = reason || record.penaltyReason || '';
-        record.violationType = violationType || record.violationType || 'Late Arrival';
-        record.penaltyApprovedBy = approvedBy || req.user?.name || '';
-        if (penaltyMediaUrl !== undefined) record.penaltyMediaUrl = penaltyMediaUrl;
-        if (penaltyMedia !== undefined) record.penaltyMedia = penaltyMedia;
-        if (siteId && siteId !== '__all__') record.leadId = siteId;
-        if (siteName && siteName !== 'All Sites') record.site_name = siteName;
-        if (shiftName && shiftName !== 'All Shifts') record.shiftPeriod = shiftName;
-        await record.save();
-      } else {
-        // Create duty date attendance record with lapse penalty
-        record = new Attendance({
-          employeeId: workerId,
-          workerName: req.body.workerName || emp?.name || 'Worker',
-          role: req.body.role || emp?.role || 'Worker',
-          date: new Date(date || Date.now()),
-          status: violationType === 'Absenteeism' ? 'Absent' : 'Present',
-          site_name: siteName,
-          leadId: siteId && siteId !== '__all__' ? siteId : undefined,
-          shiftPeriod: shiftName || 'General',
-          shiftHours: 8,
-          hoursWorked: 0,
-          penaltyImposed: imposed,
-          penaltyDeducted: deducted,
-          penaltyWaivedOff: waived,
-          penaltyReason: reason || '',
-          violationType: violationType || 'Late Arrival',
-          penaltyApprovedBy: approvedBy || req.user?.name || '',
-          penaltyMediaUrl: penaltyMediaUrl || '',
-          penaltyMedia: penaltyMedia || (penaltyMediaUrl ? [{ url: penaltyMediaUrl, type: penaltyMediaUrl.match(/\.(mp4|mov|avi|mkv|webm)$/i) ? 'video' : 'image' }] : []),
-          markedByDevice: false,
-          markedByUserName: req.user?.name || 'HR Admin',
-        });
-        await record.save();
-      }
-
-      res.status(200).json({
-        success: true,
-        message: 'Penalty recorded in attendance on duty date successfully',
-        data: record,
-      });
-    } catch (err) {
-      console.error('saveWorkerPenalty error:', err);
-      res.status(500).json({ success: false, message: err.message });
-    }
-  },
-
-  deleteWorkerPenalty: async (req, res) => {
-    try {
-      const { Attendance } = req.tenantModels;
-      const { id } = req.params;
-
-      const record = await Attendance.findById(id);
-      if (!record) {
-        return res.status(404).json({ success: false, message: 'Attendance record not found' });
-      }
-
-      record.penaltyImposed = 0;
-      record.penaltyDeducted = 0;
-      record.penaltyWaivedOff = 0;
-      record.penaltyReason = '';
-      record.violationType = null;
-      record.penaltyApprovedBy = '';
-      record.penaltyMediaUrl = '';
-      record.penaltyMedia = [];
-      await record.save();
-
-      res.json({ success: true, message: 'Penalty reset on duty attendance record successfully' });
-    } catch (err) {
-      console.error('deleteWorkerPenalty error:', err);
+      console.error('getWorkerCurrentMonthSite error:', err.message);
       res.status(500).json({ success: false, message: err.message });
     }
   },
 
   applyLeave: async (req, res) => {
     try {
-      const leaveManager = require('../utils/leaveManager');
+      const { LeaveRequests } = req.tenantModels || {};
+      if (!LeaveRequests) {
+        return res.status(500).json({ success: false, message: 'Tenant Leave model not available' });
+      }
       const {
         workerId,
         workerName,
         workerRole,
         workerMobile,
+        enrollment_no,
+        efn,
+        salaryLedgerBalance,
+        duesSummary,
         projectId,
         projectName,
         shiftCode,
@@ -5574,6 +3951,48 @@ exports.manageEmployees = {
         isWorkerOnBehalf,
       } = req.body;
 
+      if (!workerId) {
+        return res.status(400).json({ success: false, message: 'workerId is required' });
+      }
+
+      // ── Resolve Worker's Actual Site from Attendance in Current Month Only ──
+      let resolvedProjectName = (projectName || '').trim();
+      let resolvedProjectId = (projectId || '').trim();
+
+      const latestMonthSite = await getWorkerLatestMonthSite(
+        req.tenantModels,
+        workerId,
+        workerMobile,
+        enrollment_no || efn
+      );
+      if (latestMonthSite?.siteName) {
+        resolvedProjectName = latestMonthSite.siteName;
+        resolvedProjectId = latestMonthSite.siteId || resolvedProjectId;
+      } else if (!resolvedProjectName || /^(project site|site project)$/i.test(resolvedProjectName)) {
+        resolvedProjectName = 'Project Site';
+      }
+
+      const todayStr = new Date().toISOString().split('T')[0];
+      const effFrom = fromDate || todayStr;
+      const effTo = toDate || effFrom;
+
+      const types = Array.isArray(requestTypes) && requestTypes.length > 0 ? requestTypes : ['leave'];
+
+      // Generate dates array for leave
+      const dates = [];
+      if (types.includes('leave')) {
+        const curr = new Date(effFrom);
+        const end = new Date(effTo);
+        if (!isNaN(curr.getTime()) && !isNaN(end.getTime())) {
+          while (curr <= end) {
+            dates.push(curr.toISOString().split('T')[0]);
+            curr.setDate(curr.getDate() + 1);
+          }
+        } else {
+          dates.push(effFrom);
+        }
+      }
+
       const appliedBy = {
         userId: String(req.user?._id || ''),
         userName: req.user?.userDisplayName || req.user?.name || workerName || 'User',
@@ -5581,33 +4000,45 @@ exports.manageEmployees = {
         isSelf: !isWorkerOnBehalf,
       };
 
-      const newRecord = leaveManager.applyLeave(req.tenantDbName, {
-        workerId,
-        workerName,
-        workerRole,
-        workerMobile,
-        projectId,
-        projectName,
-        shiftCode,
-        requestTypes,
-        fromDate,
-        toDate,
-        leaveType,
-        reason,
-        advanceAmount,
-        advanceDetails,
-        articleItems,
-        articlesDetails,
+      const doc = await LeaveRequests.create({
+        workerId: String(workerId),
+        workerName: workerName || 'Worker',
+        workerRole: workerRole || 'Security',
+        workerMobile: workerMobile || '',
+        enrollment_no: enrollment_no || efn || '',
+        efn: enrollment_no || efn || '',
+        salaryLedgerBalance: salaryLedgerBalance || null,
+        duesSummary: duesSummary || null,
+        userType: !isWorkerOnBehalf ? 'SELF' : 'WORKER',
+        projectId: resolvedProjectId || '',
+        projectName: resolvedProjectName || 'Project Site',
+        shiftCode: shiftCode || '',
+        requestTypes: types,
+        fromDate: effFrom,
+        toDate: effTo,
+        noOfDays: dates.length,
+        dates,
+        leaveType: leaveType || 'Casual',
+        reason: reason || 'Request submitted via mobile app',
+        advanceAmount: Number(advanceAmount) || 0,
+        advanceDetails: advanceDetails || null,
+        articleItems: Array.isArray(articleItems) ? articleItems : [],
+        articlesDetails: articlesDetails || null,
+        status: 'Pending',
         appliedBy,
+        appliedAt: new Date(),
       });
 
+      const newRecord = doc.toObject();
+      newRecord.id = String(newRecord._id);
+
       if (req.io && req.tenantDbName) {
-        const typesStr = (newRecord.requestTypes || ['leave']).map((t) => t.toUpperCase()).join(' & ');
+        const typesStr = types.map((t) => t.toUpperCase()).join(' & ');
         req.io.to(req.tenantDbName).emit('leave:applied', { data: newRecord });
         req.io.to(req.tenantDbName).emit('admin:broadcast', {
           id: 'leave-req-' + newRecord.id,
-          title: `New ${typesStr} Request`,
-          message: `${newRecord.workerName} submitted ${typesStr} request (${newRecord.projectName || 'Site'})`,
+          title: 'New ' + typesStr + ' Request',
+          message: newRecord.workerName + ' submitted ' + typesStr + ' request (' + (newRecord.projectName || 'Site') + ')',
           priority: 'normal',
           targetRoles: ['CorpAdmin', 'userAdmin', 'HR'],
           sentBy: newRecord.workerName,
@@ -5624,14 +4055,32 @@ exports.manageEmployees = {
 
   cancelLeave: async (req, res) => {
     try {
-      const leaveManager = require('../utils/leaveManager');
-      const { id } = req.params;
-      const userName = req.user?.userDisplayName || req.user?.name || req.user?.mobile || 'User';
-      const result = leaveManager.cancelLeave(req.tenantDbName, id, userName);
-      if (req.io && req.tenantDbName) {
-        req.io.to(req.tenantDbName).emit('leave:cancelled', { id, record: result.data });
+      const { LeaveRequests } = req.tenantModels || {};
+      if (!LeaveRequests) {
+        return res.status(500).json({ success: false, message: 'Tenant Leave model not available' });
       }
-      res.json(result);
+      const { id } = req.params;
+      if (!id || id === 'undefined' || !mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({ success: false, message: 'Valid Request ID is required' });
+      }
+      const record = await LeaveRequests.findById(id);
+      if (!record) {
+        return res.status(404).json({ success: false, message: 'Request record ' + id + ' not found' });
+      }
+
+      if (record.status !== 'Pending') {
+        return res.status(400).json({
+          success: false,
+          message: 'Only pending requests can be deleted. This request is already ' + record.status + '.',
+        });
+      }
+
+      await LeaveRequests.findByIdAndDelete(id);
+
+      if (req.io && req.tenantDbName) {
+        req.io.to(req.tenantDbName).emit('leave:cancelled', { id, record });
+      }
+      res.json({ success: true, message: 'Request deleted successfully', data: record });
     } catch (err) {
       console.error('cancelLeave error:', err.message);
       res.status(400).json({ success: false, message: err.message });
@@ -5656,13 +4105,14 @@ exports.manageEmployees = {
       let advance = 0;
       let penalty = 0;
 
-      // 1. Attendance & penalty records for worker
-      if (req.models?.Attendance) {
+      const { Attendance, Vouchers, Employees } = req.tenantModels || {};
+
+      if (Attendance) {
         const query = {
           $or: [{ workerId: String(workerId) }, { employeeId: String(workerId) }],
           date: { $gte: startOfMonth, $lte: endOfMonth },
         };
-        const attRecords = await req.models.Attendance.find(query).lean().catch(() => []);
+        const attRecords = await Attendance.find(query).lean().catch(() => []);
         for (const rec of attRecords) {
           const rate = Number(rec.dailyRate || rec.rate || 0);
           if (rec.status === 'Present' || rec.status === 'Double Duty' || rec.status === 'Paid Leave') {
@@ -5678,8 +4128,7 @@ exports.manageEmployees = {
         }
       }
 
-      // 2. Vouchers for advances
-      if (req.models?.Voucher) {
+      if (Vouchers) {
         const vQuery = {
           date: { $gte: startOfMonth, $lte: endOfMonth },
           $or: [
@@ -5687,7 +4136,7 @@ exports.manageEmployees = {
             { narration: { $regex: new RegExp(String(workerId), 'i') } },
           ],
         };
-        const vouchers = await req.models.Voucher.find(vQuery).lean().catch(() => []);
+        const vouchers = await Vouchers.find(vQuery).lean().catch(() => []);
         for (const v of vouchers) {
           if (v.voucherType === 'Payment' || /advance|salary/i.test(v.narration || '')) {
             const entry = (v.entries || []).find((e) => String(e.accountId) === String(workerId));
@@ -5698,9 +4147,8 @@ exports.manageEmployees = {
         }
       }
 
-      // 3. Fallback to employee master rate if no attendance records yet
-      if (earnedDues === 0 && req.models?.Employees) {
-        const emp = await req.models.Employees.findById(workerId).lean().catch(() => null);
+      if (earnedDues === 0 && Employees) {
+        const emp = await Employees.findById(workerId).lean().catch(() => null);
         if (emp) {
           const rate = Number(emp.rate || emp.dailyRate || 0);
           const monthly = Number(emp.monthlyRate || emp.salary || 0);
@@ -5733,8 +4181,60 @@ exports.manageEmployees = {
 
   listLeaves: async (req, res) => {
     try {
-      const leaveManager = require('../utils/leaveManager');
-      const records = leaveManager.listLeaves(req.tenantDbName, req.query);
+      const { LeaveRequests } = req.tenantModels || {};
+      if (!LeaveRequests) {
+        return res.status(500).json({ success: false, message: 'Tenant Leave model not available' });
+      }
+      const { status, workerId, projectId, date } = req.query;
+      const query = {};
+      if (status) {
+        query.status = new RegExp('^' + status + '$', 'i');
+      }
+      if (workerId) {
+        query.workerId = String(workerId);
+      }
+      if (projectId) {
+        query.projectId = String(projectId);
+      }
+      if (date) {
+        query.dates = String(date).split('T')[0];
+      }
+
+      const docs = await LeaveRequests.find(query).sort({ appliedAt: -1 }).lean();
+      const records = await Promise.all(
+        docs.map(async (doc) => {
+          let pName = (doc.projectName || '').trim();
+          let pId = doc.projectId;
+
+          // Replace generic 'Project Site' with worker's actual work site from Attendance in current month only
+          const isGeneric = !pName || /^(project site|site project|hq\/remote|general)$/i.test(pName);
+          if (doc.workerId) {
+            const siteInfo = await getWorkerLatestMonthSite(
+              req.tenantModels,
+              doc.workerId,
+              doc.workerMobile,
+              doc.enrollment_no || doc.efn
+            );
+            if (siteInfo?.siteName) {
+              pName = siteInfo.siteName;
+              pId = siteInfo.siteId || pId;
+              if (isGeneric) {
+                // Permanently persist the resolved actual site to database
+                LeaveRequests.updateOne({ _id: doc._id }, { $set: { projectName: pName, projectId: pId } }).catch(() => {});
+              }
+            }
+          }
+
+          return {
+            ...doc,
+            id: String(doc._id),
+            _id: String(doc._id),
+            projectName: pName || 'Project Site',
+            projectId: pId,
+          };
+        })
+      );
+
       res.json({ success: true, data: records });
     } catch (err) {
       console.error('listLeaves error:', err.message);
@@ -5744,41 +4244,697 @@ exports.manageEmployees = {
 
   reviewLeave: async (req, res) => {
     try {
-      const leaveManager = require('../utils/leaveManager');
+      const { LeaveRequests } = req.tenantModels || {};
+      if (!LeaveRequests) {
+        return res.status(500).json({ success: false, message: 'Tenant Leave model not available' });
+      }
       const { id } = req.params;
       const { status, reason } = req.body; // 'Approved' | 'Disapproved'
-      const adminInfo = {
-        id: req.user?._id,
-        name: req.user?.userDisplayName || req.user?.name || req.user?.mobile || 'Admin',
-        reason,
-      };
-      const updated = leaveManager.reviewLeave(req.tenantDbName, id, status, adminInfo);
+
+      if (!id || id === 'undefined' || !mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({ success: false, message: 'Valid Request ID is required' });
+      }
+
+      const record = await LeaveRequests.findById(id);
+      if (!record) {
+        return res.status(404).json({ success: false, message: 'Request record ' + id + ' not found' });
+      }
+
+      const isApproval = String(status).toLowerCase() === 'approved';
+      const adminIdStr = String(req.user?._id || '').trim();
+      const workerIdStr = String(record.workerId || '').trim();
+      const appliedByIdStr = String(record.appliedBy?.userId || '').trim();
+
+      if (isApproval && adminIdStr && (adminIdStr === workerIdStr || adminIdStr === appliedByIdStr)) {
+        return res.status(403).json({
+          success: false,
+          message: 'Self-approval restricted: Admin cannot approve their own leave request.',
+        });
+      }
+
+      record.status = isApproval ? 'Approved' : 'Disapproved';
+      record.approvedBy = req.user?.userDisplayName || req.user?.name || 'Admin';
+      record.approvedById = adminIdStr || null;
+      record.approvedAt = new Date();
+      if (!isApproval && reason) {
+        record.rejectionReason = reason;
+      }
+
+      await record.save();
+
+      const updated = record.toObject();
+      updated.id = String(updated._id);
 
       if (req.io && req.tenantDbName) {
         req.io.to(req.tenantDbName).emit('leave:reviewed', { data: updated });
         req.io.to(req.tenantDbName).emit('admin:broadcast', {
           id: 'leave-rev-' + updated.id,
-          title: `Leave Request ${status}`,
-          message: `Leave for ${updated.workerName} (${updated.fromDate} to ${updated.toDate}) was ${status.toLowerCase()} by ${adminInfo.name}.`,
+          title: 'Leave Request ' + record.status,
+          message: 'Request for ' + updated.workerName + ' was ' + record.status.toLowerCase() + ' by ' + record.approvedBy + '.',
           priority: 'normal',
           targetRoles: ['CorpAdmin', 'userAdmin', 'Project', 'HR'],
-          sentBy: adminInfo.name,
+          sentBy: record.approvedBy,
           at: new Date().toISOString(),
         });
       }
 
-      res.json({ success: true, message: `Leave ${status} successfully`, data: updated });
+      res.json({ success: true, message: 'Request ' + record.status + ' successfully', data: updated });
     } catch (err) {
       console.error('reviewLeave error:', err.message);
-      const statusCode = err.message.includes('Self-approval') ? 403 : 400;
-      res.status(statusCode).json({ success: false, message: err.message });
+      res.status(400).json({ success: false, message: err.message });
     }
   },
+
+  getAvailableMonths: async (req, res) => {
+    try {
+      const { Attendance } = req.tenantModels || {};
+      if (!Attendance) {
+        return res.status(500).json({ success: false, message: 'Tenant Attendance model not available' });
+      }
+      const dates = await Attendance.distinct('date');
+      const monthSet = new Set();
+      (dates || []).forEach((d) => {
+        if (d) {
+          const str = d instanceof Date ? d.toISOString().slice(0, 7) : String(d).slice(0, 7);
+          if (/^\d{4}-\d{2}$/.test(str)) monthSet.add(str);
+        }
+      });
+      if (monthSet.size === 0) {
+        const now = new Date();
+        for (let i = 0; i < 12; i++) {
+          const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+          monthSet.add(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+        }
+      }
+      const months = Array.from(monthSet).sort().reverse();
+      res.json({ success: true, data: months });
+    } catch (err) {
+      console.error('getAvailableMonths error:', err.message);
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  requestAttendancePermission: async (req, res) => {
+    try {
+      const { employeeId, attendanceId, reason, dbName, details } = req.body;
+      const reqId = 'perm_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6);
+      const payload = {
+        requestId: reqId,
+        employeeId,
+        attendanceId,
+        reason,
+        details: details || {},
+        status: 'Pending',
+        requestedAt: new Date().toISOString(),
+        requestedBy: req.user?._id || employeeId,
+        userName: req.user?.userDisplayName || req.user?.name || 'Worker',
+      };
+      if (req.io && req.tenantDbName) {
+        req.io.to(req.tenantDbName).emit('attendance:permission-requested', payload);
+        req.io.to(req.tenantDbName).emit('admin:broadcast', {
+          id: 'perm-req-' + reqId,
+          title: 'Attendance Permission Request',
+          message: `${payload.userName} requested attendance permission (${reason || 'Standard'})`,
+          priority: 'high',
+          targetRoles: ['CorpAdmin', 'userAdmin', 'Project', 'HR'],
+          sentBy: payload.userName,
+          at: new Date().toISOString(),
+        });
+      }
+      res.json({ success: true, message: 'Permission requested successfully', data: payload });
+    } catch (err) {
+      console.error('requestAttendancePermission error:', err.message);
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  respondAttendancePermission: async (req, res) => {
+    try {
+      const { requestId, employeeId, attendanceId, approved, note } = req.body;
+      const responsePayload = {
+        requestId,
+        employeeId,
+        attendanceId,
+        approved: Boolean(approved),
+        note: note || '',
+        respondedAt: new Date().toISOString(),
+        respondedBy: req.user?._id,
+        responderName: req.user?.userDisplayName || req.user?.name || 'Admin',
+      };
+      if (req.io && req.tenantDbName) {
+        req.io.to(req.tenantDbName).emit('attendance:permission-responded', responsePayload);
+      }
+      res.json({ success: true, message: 'Permission response recorded', data: responsePayload });
+    } catch (err) {
+      console.error('respondAttendancePermission error:', err.message);
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  lockBatchAttendance: async (req, res) => {
+    try {
+      const { Attendance } = req.tenantModels || {};
+      if (!Attendance) {
+        return res.status(500).json({ success: false, message: 'Tenant Attendance model not available' });
+      }
+      const { month, leadId } = req.body;
+      if (!month) {
+        return res.status(400).json({ success: false, message: 'month (YYYY-MM) is required' });
+      }
+      const [yearStr, monthStr] = month.split('-');
+      const startOfMonth = new Date(Number(yearStr), Number(monthStr) - 1, 1);
+      const endOfMonth = new Date(Number(yearStr), Number(monthStr), 0, 23, 59, 59, 999);
+
+      const query = {
+        date: { $gte: startOfMonth, $lte: endOfMonth },
+      };
+      if (leadId && mongoose.Types.ObjectId.isValid(leadId)) {
+        query.leadId = leadId;
+      }
+
+      const batchId = 'lock_' + month + '_' + Date.now();
+      const result = await Attendance.updateMany(query, {
+        $set: {
+          'lockStatus.isLocked': true,
+          'lockStatus.lockedAt': new Date(),
+          'lockStatus.lockedBy': req.user?._id || null,
+          'lockStatus.lockedByName': req.user?.userDisplayName || req.user?.name || 'Admin',
+          'lockStatus.lockBatchId': batchId,
+        },
+      });
+
+      res.json({
+        success: true,
+        message: `Finalized and locked ${result.modifiedCount || 0} attendance records for ${month}`,
+        modifiedCount: result.modifiedCount || 0,
+        batchId,
+      });
+    } catch (err) {
+      console.error('lockBatchAttendance error:', err.message);
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  unlockBatchAttendance: async (req, res) => {
+    try {
+      const { Attendance } = req.tenantModels || {};
+      if (!Attendance) {
+        return res.status(500).json({ success: false, message: 'Tenant Attendance model not available' });
+      }
+      const { month, leadId, reason } = req.body;
+      if (!month) {
+        return res.status(400).json({ success: false, message: 'month (YYYY-MM) is required' });
+      }
+      const [yearStr, monthStr] = month.split('-');
+      const startOfMonth = new Date(Number(yearStr), Number(monthStr) - 1, 1);
+      const endOfMonth = new Date(Number(yearStr), Number(monthStr), 0, 23, 59, 59, 999);
+
+      const query = {
+        date: { $gte: startOfMonth, $lte: endOfMonth },
+      };
+      if (leadId && mongoose.Types.ObjectId.isValid(leadId)) {
+        query.leadId = leadId;
+      }
+
+      const unlockEntry = {
+        unlockedBy: req.user?._id || null,
+        unlockedByName: req.user?.userDisplayName || req.user?.name || 'Admin',
+        unlockedAt: new Date(),
+        reason: reason || 'Unlocked for administrative correction',
+      };
+
+      const result = await Attendance.updateMany(query, {
+        $set: { 'lockStatus.isLocked': false },
+        $push: { 'lockStatus.unlockHistory': unlockEntry },
+      });
+
+      res.json({
+        success: true,
+        message: `Unlocked ${result.modifiedCount || 0} attendance records for correction`,
+        modifiedCount: result.modifiedCount || 0,
+      });
+    } catch (err) {
+      console.error('unlockBatchAttendance error:', err.message);
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  relockBatchAttendance: async (req, res) => {
+    return exports.manageEmployees.lockBatchAttendance(req, res);
+  },
+
+  backupAndPurgeAttendance: async (req, res) => {
+    try {
+      const { Attendance, AttendanceBackupLogs } = req.tenantModels || {};
+      if (!Attendance) {
+        return res.status(500).json({ success: false, message: 'Tenant Attendance model not available' });
+      }
+      const { month, leadId, confirmPurge } = req.body;
+      if (!month) {
+        return res.status(400).json({ success: false, message: 'month (YYYY-MM) is required' });
+      }
+      const [yearStr, monthStr] = month.split('-');
+      const startOfMonth = new Date(Number(yearStr), Number(monthStr) - 1, 1);
+      const endOfMonth = new Date(Number(yearStr), Number(monthStr), 0, 23, 59, 59, 999);
+
+      const query = {
+        date: { $gte: startOfMonth, $lte: endOfMonth },
+      };
+      if (leadId && mongoose.Types.ObjectId.isValid(leadId)) {
+        query.leadId = leadId;
+      }
+
+      const count = await Attendance.countDocuments(query);
+      const batchId = 'backup_' + month + '_' + Date.now();
+
+      if (AttendanceBackupLogs) {
+        await AttendanceBackupLogs.create({
+          tenantDb: req.tenantDbName || 'main',
+          backupBatchId: batchId,
+          period: { month: Number(monthStr), year: Number(yearStr) },
+          recordCount: count,
+          archiveFileName: `attendance_${month}_${batchId}.json`,
+          archiveFilePath: `/backups/attendance_${month}_${batchId}.json`,
+          fileSizeBytes: count * 512,
+          backedUpBy: req.user?._id || null,
+          backedUpByName: req.user?.userDisplayName || req.user?.name || 'Admin',
+          purgedFromDatabase: Boolean(confirmPurge),
+        });
+      }
+
+      let purgedCount = 0;
+      if (confirmPurge) {
+        const delRes = await Attendance.deleteMany(query);
+        purgedCount = delRes.deletedCount || 0;
+      }
+
+      res.json({
+        success: true,
+        message: `Archived ${count} attendance records${confirmPurge ? ` and purged ${purgedCount} from database` : ''}`,
+        recordCount: count,
+        purgedCount,
+        backupBatchId: batchId,
+      });
+    } catch (err) {
+      console.error('backupAndPurgeAttendance error:', err.message);
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  getBackupLogs: async (req, res) => {
+    try {
+      const { AttendanceBackupLogs } = req.tenantModels || {};
+      if (!AttendanceBackupLogs) {
+        return res.json({ success: true, data: [] });
+      }
+      const logs = await AttendanceBackupLogs.find().sort({ createdAt: -1 }).lean();
+      res.json({ success: true, data: logs });
+    } catch (err) {
+      console.error('getBackupLogs error:', err.message);
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  downloadBackupArchive: async (req, res) => {
+    try {
+      const { AttendanceBackupLogs } = req.tenantModels || {};
+      const { backupId } = req.params;
+      let log = null;
+      if (AttendanceBackupLogs) {
+        log = await AttendanceBackupLogs.findOne({
+          $or: [{ backupBatchId: backupId }, { _id: mongoose.Types.ObjectId.isValid(backupId) ? backupId : null }],
+        }).lean();
+      }
+      if (!log) {
+        return res.status(404).json({ success: false, message: 'Backup archive record not found' });
+      }
+      res.json({ success: true, data: log });
+    } catch (err) {
+      console.error('downloadBackupArchive error:', err.message);
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  coverShiftForLeave: async (req, res) => {
+    try {
+      const { Attendance } = req.tenantModels || {};
+      if (!Attendance) {
+        return res.status(500).json({ success: false, message: 'Tenant Attendance model not available' });
+      }
+      const {
+        coveringWorkerId,
+        scheduledWorkerId,
+        shiftCode,
+        date,
+        leadId,
+        leaveType,
+        handoverType,
+        overtimeRate,
+      } = req.body;
+
+      const query = {
+        employeeId: coveringWorkerId,
+        date: date ? new Date(date) : new Date(new Date().toISOString().slice(0, 10)),
+      };
+      if (shiftCode) query.shiftCode = shiftCode;
+
+      const doc = await Attendance.findOneAndUpdate(
+        query,
+        {
+          $set: {
+            'leaveCoverage.isCoveringForLeave': true,
+            'leaveCoverage.originalWorkerId': scheduledWorkerId,
+            'leaveCoverage.leaveType': leaveType || 'ShortLeave',
+            'leaveCoverage.handoverType': handoverType || 'Reliever',
+            'leaveCoverage.overtimeRate': Number(overtimeRate) || 1.0,
+          },
+        },
+        { new: true, upsert: false }
+      );
+
+      res.json({ success: true, message: 'Shift cover recorded successfully', data: doc });
+    } catch (err) {
+      console.error('coverShiftForLeave error:', err.message);
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  updateCompactGps: async (req, res) => {
+    try {
+      const { Attendance } = req.tenantModels || {};
+      if (!Attendance) {
+        return res.status(500).json({ success: false, message: 'Tenant Attendance model not available' });
+      }
+      const { id } = req.params;
+      const { lat, long, address, accuracy, speed, type } = req.body;
+
+      const updateDoc = await Attendance.findByIdAndUpdate(
+        id,
+        {
+          $push: {
+            geoHistory: {
+              lat: Number(lat),
+              long: Number(long),
+              address: address || '',
+              accuracy: Number(accuracy) || 0,
+              speed: Number(speed) || 0,
+              type: type || 'tick',
+              timestamp: new Date(),
+            },
+          },
+        },
+        { new: true }
+      );
+
+      res.json({ success: true, message: 'Compact GPS logged', data: updateDoc });
+    } catch (err) {
+      console.error('updateCompactGps error:', err.message);
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  listSiteRosterHolidays: async (req, res) => {
+    try {
+      const { SiteRosterHolidays } = req.tenantModels || {};
+      if (!SiteRosterHolidays) {
+        return res.status(500).json({ success: false, message: 'Tenant SiteRosterHolidays model not available' });
+      }
+      const { year, month, siteId, workerId, type } = req.query;
+      const filter = {};
+      if (year) filter.year = Number(year);
+      if (month) filter.month = Number(month);
+      if (siteId && mongoose.Types.ObjectId.isValid(siteId)) filter.siteId = siteId;
+      if (workerId && mongoose.Types.ObjectId.isValid(workerId)) filter.workerId = workerId;
+      if (type) filter.type = type;
+
+      const data = await SiteRosterHolidays.find(filter)
+        .populate('siteId', 'project_name name')
+        .populate('workerId', 'name mobile enrollment_no')
+        .sort({ date: 1, createdAt: 1 })
+        .lean();
+
+      res.json({ success: true, data });
+    } catch (err) {
+      console.error('listSiteRosterHolidays error:', err.message);
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  saveSiteRosterHoliday: async (req, res) => {
+    try {
+      const { SiteRosterHolidays } = req.tenantModels || {};
+      if (!SiteRosterHolidays) {
+        return res.status(500).json({ success: false, message: 'Tenant SiteRosterHolidays model not available' });
+      }
+      const {
+        year,
+        month,
+        date,
+        dayName,
+        siteId,
+        clientId,
+        siteName,
+        shiftCode,
+        workerId,
+        workerName,
+        type,
+        restDayOfWeek,
+        remark,
+        isPaid,
+      } = req.body;
+
+      const dateObj = date ? new Date(date) : new Date();
+      const effYear = year || dateObj.getFullYear();
+      const effMonth = month || (dateObj.getMonth() + 1);
+
+      const doc = await SiteRosterHolidays.create({
+        year: Number(effYear),
+        month: Number(effMonth),
+        date: typeof date === 'string' ? date : dateObj.toISOString().slice(0, 10),
+        dayName: dayName || dateObj.toLocaleDateString('en-US', { weekday: 'short' }),
+        siteId,
+        clientId: clientId || null,
+        siteName: siteName || 'Site',
+        shiftCode: shiftCode || 'G',
+        workerId,
+        workerName: workerName || 'Worker',
+        type: type || 'WeeklyRest',
+        restDayOfWeek: restDayOfWeek || null,
+        remark: remark || 'Site Roster Holiday / Rest',
+        isPaid: isPaid !== undefined ? Boolean(isPaid) : true,
+        createdBy: req.user?._id || null,
+      });
+
+      res.status(201).json({ success: true, message: 'Site roster holiday saved', data: doc });
+    } catch (err) {
+      console.error('saveSiteRosterHoliday error:', err.message);
+      res.status(400).json({ success: false, message: err.message });
+    }
+  },
+
+  setupSiteWeeklyRest: async (req, res) => {
+    try {
+      const { SiteRosterHolidays } = req.tenantModels || {};
+      if (!SiteRosterHolidays) {
+        return res.status(500).json({ success: false, message: 'Tenant SiteRosterHolidays model not available' });
+      }
+      const { siteId, workerId, siteName, workerName, restDayOfWeek, year } = req.body;
+      if (!siteId || !workerId || !restDayOfWeek) {
+        return res.status(400).json({ success: false, message: 'siteId, workerId and restDayOfWeek are required' });
+      }
+      const effYear = Number(year) || new Date().getFullYear();
+
+      const existing = await SiteRosterHolidays.findOneAndUpdate(
+        { siteId, workerId, restDayOfWeek },
+        {
+          $set: {
+            siteName: siteName || 'Site',
+            workerName: workerName || 'Worker',
+            year: effYear,
+            month: new Date().getMonth() + 1,
+            type: 'WeeklyRest',
+            remark: `Weekly Rest (${restDayOfWeek})`,
+            isPaid: true,
+            createdBy: req.user?._id || null,
+          },
+        },
+        { new: true, upsert: true }
+      );
+
+      res.json({ success: true, message: 'Weekly rest setup saved', data: existing });
+    } catch (err) {
+      console.error('setupSiteWeeklyRest error:', err.message);
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  generateYearHolidays: async (req, res) => {
+    try {
+      const { SiteRosterHolidays, Leads } = req.tenantModels || {};
+      if (!SiteRosterHolidays) {
+        return res.status(500).json({ success: false, message: 'Tenant SiteRosterHolidays model not available' });
+      }
+      const { siteId, year, holidays } = req.body;
+      if (!siteId || !year || !Array.isArray(holidays)) {
+        return res.status(400).json({ success: false, message: 'siteId, year, and holidays array are required' });
+      }
+
+      let siteName = 'Site';
+      if (Leads) {
+        const siteDoc = await Leads.findById(siteId).lean();
+        if (siteDoc) siteName = siteDoc.project_name || siteDoc.name || siteName;
+      }
+
+      const docs = holidays.map((h) => {
+        const d = new Date(h.date);
+        return {
+          year: Number(year),
+          month: !isNaN(d.getMonth()) ? d.getMonth() + 1 : 1,
+          date: h.date,
+          dayName: h.dayName || (!isNaN(d.getDay()) ? d.toLocaleDateString('en-US', { weekday: 'short' }) : ''),
+          siteId,
+          siteName,
+          workerId: h.workerId || siteId,
+          workerName: h.workerName || 'Site All Workers',
+          type: h.type || 'NationalHoliday',
+          remark: h.remark || h.name || 'Holiday',
+          isPaid: h.isPaid !== undefined ? Boolean(h.isPaid) : true,
+          createdBy: req.user?._id || null,
+        };
+      });
+
+      const result = await SiteRosterHolidays.insertMany(docs, { ordered: false });
+      res.json({ success: true, message: `Generated ${result.length} holidays for ${year}`, count: result.length });
+    } catch (err) {
+      console.error('generateYearHolidays error:', err.message);
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  deleteSiteRosterHoliday: async (req, res) => {
+    try {
+      const { SiteRosterHolidays } = req.tenantModels || {};
+      if (!SiteRosterHolidays) {
+        return res.status(500).json({ success: false, message: 'Tenant SiteRosterHolidays model not available' });
+      }
+      const { id } = req.params;
+      await SiteRosterHolidays.findByIdAndDelete(id);
+      res.json({ success: true, message: 'Site roster holiday deleted successfully' });
+    } catch (err) {
+      console.error('deleteSiteRosterHoliday error:', err.message);
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  listWorkerPenalties: async (req, res) => {
+    try {
+      const { Attendance } = req.tenantModels || {};
+      if (!Attendance) {
+        return res.status(500).json({ success: false, message: 'Tenant Attendance model not available' });
+      }
+      const { month, year, workerId } = req.query;
+      const filter = {
+        $or: [
+          { penaltyImposed: { $gt: 0 } },
+          { penaltyDeducted: { $gt: 0 } },
+        ],
+      };
+
+      if (workerId && mongoose.Types.ObjectId.isValid(workerId)) {
+        filter.employeeId = workerId;
+      }
+      if (year && month) {
+        const startOfMonth = new Date(Number(year), Number(month) - 1, 1);
+        const endOfMonth = new Date(Number(year), Number(month), 0, 23, 59, 59, 999);
+        filter.date = { $gte: startOfMonth, $lte: endOfMonth };
+      }
+
+      const records = await Attendance.find(filter)
+        .populate('employeeId', 'name mobile enrollment_no')
+        .sort({ date: -1 })
+        .lean();
+
+      const formatted = records.map((r) => ({
+        _id: r._id,
+        id: r.employeeId?._id || r.employeeId,
+        workerId: r.employeeId?._id || r.employeeId,
+        workerName: r.employeeId?.name || r.workerName || 'Worker',
+        penaltyImposed: r.penaltyImposed || 0,
+        penaltyDeducted: r.penaltyDeducted || 0,
+        penaltyWaivedOff: r.penaltyWaivedOff || 0,
+        penaltyReason: r.penaltyReason || '',
+        date: r.date,
+      }));
+
+      res.json({ success: true, data: formatted });
+    } catch (err) {
+      console.error('listWorkerPenalties error:', err.message);
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  saveWorkerPenalty: async (req, res) => {
+    try {
+      const { Attendance } = req.tenantModels || {};
+      if (!Attendance) {
+        return res.status(500).json({ success: false, message: 'Tenant Attendance model not available' });
+      }
+      const { id } = req.params;
+      const { workerId, deductedAmount, penaltyImposed, penaltyReason, violationType, date } = req.body;
+
+      const targetEmpId = workerId || id;
+      let query = {};
+      if (id && mongoose.Types.ObjectId.isValid(id)) {
+        query._id = id;
+      } else if (targetEmpId) {
+        query.employeeId = targetEmpId;
+        if (date) {
+          query.date = new Date(date);
+        }
+      }
+
+      const updateFields = {
+        penaltyReason: penaltyReason || 'Administrative penalty deduction',
+        penaltyApprovedBy: req.user?.userDisplayName || req.user?.name || 'Admin',
+      };
+      if (deductedAmount !== undefined) updateFields.penaltyDeducted = Number(deductedAmount);
+      if (penaltyImposed !== undefined) updateFields.penaltyImposed = Number(penaltyImposed);
+      if (violationType) updateFields.violationType = violationType;
+
+      const updated = await Attendance.findOneAndUpdate(query, { $set: updateFields }, { new: true });
+
+      res.json({ success: true, message: 'Worker penalty recorded', data: updated });
+    } catch (err) {
+      console.error('saveWorkerPenalty error:', err.message);
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  deleteWorkerPenalty: async (req, res) => {
+    try {
+      const { Attendance } = req.tenantModels || {};
+      if (!Attendance) {
+        return res.status(500).json({ success: false, message: 'Tenant Attendance model not available' });
+      }
+      const { id } = req.params;
+      await Attendance.findByIdAndUpdate(id, {
+        $set: {
+          penaltyImposed: 0,
+          penaltyDeducted: 0,
+          penaltyWaivedOff: 0,
+          penaltyReason: '',
+        },
+      });
+      res.json({ success: true, message: 'Worker penalty removed' });
+    } catch (err) {
+      console.error('deleteWorkerPenalty error:', err.message);
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+
 };
 
-/**
- * TEAM ACCESS MANAGEMENT (Standalone Users collection)
- */
 exports.manageStaff = {
   list: async (req, res) => {
     try {
@@ -5813,30 +4969,35 @@ exports.manageStaff = {
         .findByIdAndUpdate(req.params.id, req.body, { new: true })
         .select('-userPassword');
 
-      // 💸 Create Petty Cash Book for all registered staff users
-      try {
-        const dbConnector = require('../utils/dbConnector');
-        const { getTenantModels } = require('../models/TenantModels');
-        const financeCtrl = require('./FinanceController');
-        const targetDbName = staff.accessCorporate?.[0]?.dbName;
+      // 💸 Create Petty Cash Book if allowed cash flow or is Project/Admin/Finance role
+      if (
+        staff.allowCashFlow ||
+        ['CorpAdmin', 'userAdmin', 'Project', 'Finance'].includes(staff.userRole)
+      ) {
+        try {
+          const dbConnector = require('../utils/dbConnector');
+          const { getTenantModels } = require('../models/TenantModels');
+          const financeCtrl = require('./FinanceController');
+          const targetDbName = staff.accessCorporate?.[0]?.dbName;
 
-        if (targetDbName) {
-          const tenantConnection = await dbConnector.getTenantConnection(targetDbName);
-          const models = getTenantModels(tenantConnection);
+          if (targetDbName) {
+            const tenantConnection = await dbConnector.getTenantConnection(targetDbName);
+            const models = getTenantModels(tenantConnection);
 
-          await financeCtrl.ensureLedgerFolioInternal(models, {
-            name: `Petty Cash - ${staff.userDisplayName}`,
-            group: 'Cash-in-hand',
-            nature: 'Dr',
-            refId: staff._id,
-            refType: 'User',
-          });
-          console.log(
-            `Auto-created Petty Cash Book for ${staff.userDisplayName} in ${targetDbName}`
-          );
+            await financeCtrl.ensureLedgerFolioInternal(models, {
+              name: `Petty Cash - ${staff.userDisplayName}`,
+              group: 'Cash-in-hand',
+              nature: 'Dr',
+              refId: staff._id,
+              refType: 'User',
+            });
+            console.log(
+              `Auto-created Petty Cash Book for ${staff.userDisplayName} in ${targetDbName}`
+            );
+          }
+        } catch (pcErr) {
+          console.error('Failed to auto-create Petty Cash Book:', pcErr.message);
         }
-      } catch (pcErr) {
-        console.error('Failed to auto-create Petty Cash Book:', pcErr.message);
       }
 
       // 👷 Sync with Employee Collection for specific roles

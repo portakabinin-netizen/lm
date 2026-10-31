@@ -110,12 +110,13 @@ router.post("/hr/worker-penalties", ctrl.manageEmployees.saveWorkerPenalty);
 router.put("/hr/worker-penalties/:id", ctrl.manageEmployees.saveWorkerPenalty);
 router.delete("/hr/worker-penalties/:id", ctrl.manageEmployees.deleteWorkerPenalty);
 
-// --- 🏖️ WORKER & STAFF LEAVE MANAGEMENT (leave.json) ---
+// --- 🏖️ WORKER & STAFF LEAVE MANAGEMENT (Tenant LeaveRequests) ---
 router.post("/hr/leave/apply", ctrl.manageEmployees.applyLeave);
 router.get("/hr/leave/list", ctrl.manageEmployees.listLeaves);
 router.put("/hr/leave/review/:id", ctrl.manageEmployees.reviewLeave);
 router.delete("/hr/leave/cancel/:id", ctrl.manageEmployees.cancelLeave);
 router.get("/hr/worker-dues-summary", ctrl.manageEmployees.getWorkerDuesSummary);
+router.get("/hr/worker-current-site", ctrl.manageEmployees.getWorkerCurrentMonthSite);
 
 
 // --- 👥 PARTIES (Clients & Suppliers) ---

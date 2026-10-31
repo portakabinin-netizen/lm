@@ -676,6 +676,57 @@ const siteRosterHolidaySchema = new mongoose.Schema(
 siteRosterHolidaySchema.index({ siteId: 1, workerId: 1, restDayOfWeek: 1 });
 siteRosterHolidaySchema.index({ siteId: 1, date: 1 });
 
+// 21. Leave, Advance, and Articles Requests (Tenant-Isolated Schema)
+const leaveRequestSchema = new mongoose.Schema(
+  {
+    workerId: { type: String, required: true, index: true },
+    workerName: { type: String, required: true, trim: true },
+    workerRole: { type: String, trim: true, default: 'Worker' },
+    workerMobile: { type: String, trim: true },
+    enrollment_no: { type: String, trim: true },
+    efn: { type: String, trim: true },
+    salaryLedgerBalance: { type: mongoose.Schema.Types.Mixed, default: null },
+    duesSummary: { type: mongoose.Schema.Types.Mixed, default: null },
+    userType: { type: String, default: 'WORKER' },
+    projectId: { type: String, trim: true, index: true },
+    projectName: { type: String, trim: true },
+    shiftCode: { type: String, trim: true },
+    requestTypes: { type: [String], default: ['leave'], index: true },
+    fromDate: { type: String, trim: true },
+    toDate: { type: String, trim: true },
+    noOfDays: { type: Number, default: 0 },
+    dates: { type: [String], default: [] },
+    leaveType: { type: String, default: 'Casual' },
+    reason: { type: String, trim: true },
+    advanceAmount: { type: Number, default: 0 },
+    advanceDetails: { type: mongoose.Schema.Types.Mixed, default: null },
+    articleItems: { type: [String], default: [] },
+    articlesDetails: { type: mongoose.Schema.Types.Mixed, default: null },
+    status: {
+      type: String,
+      enum: ['Pending', 'Approved', 'Disapproved', 'Rejected', 'Cancelled'],
+      default: 'Pending',
+      index: true,
+    },
+    appliedAt: { type: Date, default: Date.now, index: true },
+    appliedBy: {
+      userId: { type: String, trim: true },
+      userName: { type: String, trim: true },
+      userRole: { type: String, trim: true },
+      isSelf: { type: Boolean, default: false },
+    },
+    approvedBy: { type: String, trim: true },
+    approvedById: { type: String, trim: true },
+    approvedAt: { type: Date },
+    rejectionReason: { type: String, trim: true },
+  },
+  { timestamps: true }
+);
+
+leaveRequestSchema.index({ status: 1, appliedAt: -1 });
+leaveRequestSchema.index({ workerId: 1, appliedAt: -1 });
+leaveRequestSchema.index({ projectId: 1, status: 1 });
+
 /**
  * Factory function to bind models to a tenant connection
  */
@@ -711,6 +762,9 @@ const getTenantModels = (connection) => {
     SiteRosterHolidays:
       connection.models.SiteRosterHolidays ||
       connection.model('SiteRosterHolidays', siteRosterHolidaySchema),
+    LeaveRequests:
+      connection.models.LeaveRequests ||
+      connection.model('LeaveRequests', leaveRequestSchema),
   };
 };
 

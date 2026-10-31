@@ -5,7 +5,7 @@
  * Provides both in-memory real-time timers and resilient database sweepers.
  *
  * Integrated Capabilities:
- * 1. File-backed leave engine (leaveManager.js / leaves.json) - workers on approved leave ignored.
+ * 1. Tenant Leave Engine (leaveManager.js / LeaveRequests) - workers on approved leave ignored.
  * 2. Gap-aware shift rollover - prevents early starts (e.g., M ends 11 AM, A starts 2 PM).
  * 3. Strict bound worker validation - never resurrects delinked workers from historical attendance.
  * 4. Slot suppression registry - prevents 60s sweeper from force-restarting removed/deleted shifts.
@@ -221,7 +221,7 @@ function scheduleAutoEnd(attendanceId, scheduledEndAt, AttendanceModel, tenantDb
  * 1. Next shift is contiguous (gap <= 30 mins). If next shift starts hours later (e.g. 11 AM vs 2 PM),
  *    rollover strictly DEFERS starting until the scheduled start time via autoStartScheduledShifts.
  * 2. Shift has an explicitly bound, active worker in siteShifts.boundWorkerId. Never guesses delinked workers.
- * 3. Worker is not on approved leave in leave.json.
+ * 3. Worker is not on approved leave in LeaveRequests.
  * 4. Slot has not been suppressed/cancelled for today.
  */
 async function handleAutoShiftRollover(closedAttendance, AttendanceModel, tenantDbName, io) {
@@ -377,7 +377,7 @@ async function handleAutoShiftRollover(closedAttendance, AttendanceModel, tenant
         continue;
       }
 
-      // ── Check Approved Leave from leaveManager (leaves.json) ──
+      // ── Check Approved Leave from leaveManager (LeaveRequests) ──
       const approvedLeave = leaveManager.isWorkerOnApprovedLeave(tenantDbName, incomingWorkerId, todayStr);
       if (approvedLeave) {
         console.log(
@@ -671,7 +671,7 @@ let _lastInactivitySweepDate = '';
 /**
  * Auto-Starts scheduled shifts across all sites for a tenant.
  * - Strictly respects shift.boundWorkerId. Never falls back to historical records of delinked workers.
- * - Ignores workers on approved leave in leaveManager (leaves.json).
+ * - Ignores workers on approved leave in leaveManager (LeaveRequests).
  * - Honors slot suppression so deleted shifts are not resurrected every 60s.
  */
 async function autoStartScheduledShifts(conn, tenantDbName, io) {
@@ -796,7 +796,7 @@ async function autoStartScheduledShifts(conn, tenantDbName, io) {
           }).lean();
           if (alreadyRan) return { ok: false, reason: 'already_ran' };
 
-          // Guard: Approved leave from leaveManager (leaves.json)
+          // Guard: Approved leave from leaveManager (LeaveRequests)
           const approvedLeave = leaveManager.isWorkerOnApprovedLeave(tenantDbName, wId, todayDateStr);
           if (approvedLeave) return { ok: false, reason: 'leave', approvedLeave };
 
