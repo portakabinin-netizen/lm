@@ -215,15 +215,6 @@ const leadSchema = new mongoose.Schema(
           billRate: { type: Number, default: 0 }, // Amount charged to client per worker per shift
           salaryRate: { type: Number, default: 0 }, // Amount paid to worker per shift
           active: { type: Boolean, default: true },
-          exemptDays: [{ type: String }],
-          allowedHolidays: [{ type: String }],
-          boundWorkerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Employees', default: null },
-          boundWorkerName: { type: String, trim: true },
-          weeklyRestDay: {
-            type: String,
-            enum: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', null],
-            default: null,
-          },
         },
         { _id: true }
       ),
@@ -263,26 +254,11 @@ const attendanceSchema = new mongoose.Schema(
     siteLong: { type: Number },
     role: { type: String, trim: true },
     date: { type: Date, required: true },
-    status: { type: String, enum: ['Present', 'Absent', 'Leave', 'Paid Leave', 'Weekly Off', 'NR', 'Half Day'], default: 'Present' },
+    status: { type: String, enum: ['Present', 'Absent', 'Leave'], default: 'Present' },
     dutyLevel: { type: Number, default: 1 },
     rate: { type: Number, default: 0 },
     site_name: { type: String, trim: true },
     remarks: { type: String, trim: true },
-    // ── ⚖️ Penalty & Lapse Fields on Duty Date ──
-    penaltyImposed: { type: Number, default: 0 },
-    penaltyDeducted: { type: Number, default: 0 },
-    penaltyWaivedOff: { type: Number, default: 0 },
-    penaltyReason: { type: String, trim: true },
-    violationType: { type: String, trim: true },
-    penaltyApprovedBy: { type: String, trim: true },
-    penaltyMediaUrl: { type: String, trim: true },
-    penaltyMedia: [
-      {
-        url: { type: String },
-        type: { type: String, default: 'image' }, // image or video
-        uploadedAt: { type: Date, default: Date.now },
-      },
-    ],
     siteId: { type: String },
     leadId: { type: mongoose.Schema.Types.ObjectId },
     clientId: { type: mongoose.Schema.Types.ObjectId },
@@ -306,11 +282,6 @@ const attendanceSchema = new mongoose.Schema(
     dailyRate: { type: Number, default: 0 },
     dailyEarn: { type: Number, default: 0 },
     dutyCount: { type: Number, default: 1 },
-    // ── ⏱️ Overtime (OT) Tracking (Single Rate 1.0x) ──
-    isOvertime: { type: Boolean, default: false },
-    overtimeHours: { type: Number, default: 0 },
-    overtimeRate: { type: Number, default: 1.0 }, // Single rate (1.0x, not 1.5x)
-    overtimeEarn: { type: Number, default: 0 },
     // ── Double / Consecutive Shift ──
     isDoubleShift: { type: Boolean, default: false }, // true if worker continued into next shift
     previousShiftId: { type: mongoose.Schema.Types.ObjectId, ref: 'Attendance', default: null }, // links to prior shift record
@@ -328,8 +299,6 @@ const attendanceSchema = new mongoose.Schema(
     hoursWorked: { type: Number, default: 0 },
     forcedOff: { type: Boolean, default: false },
     forcedOffReason: { type: String, trim: true },
-    autoCompleted: { type: Boolean, default: false },
-    autoCompletedAt: { type: Date },
     // ── Emergency Control ──
     emergencyOff: { type: Boolean, default: false }, // true = ended via emergency override
     emergencyReason: { type: String, trim: true }, // Reason for emergency end
@@ -348,40 +317,6 @@ const attendanceSchema = new mongoose.Schema(
     ],
     isPosted: { type: Boolean, default: false },
     voucherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Vouchers' },
-
-    // ── Explicit Identity & Link ──
-    identityType: { type: String, enum: ['WORKER', 'REGISTERED_USER'], default: 'WORKER' },
-    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'userMaster', default: null },
-    workerName: { type: String, trim: true },
-
-    // ── 🔒 Lock Status (Finalized Periods) ──
-    lockStatus: {
-      isLocked: { type: Boolean, default: false },
-      lockedAt: { type: Date },
-      lockedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'userMaster' },
-      lockedByName: { type: String },
-      lockBatchId: { type: String },
-      unlockHistory: [
-        {
-          unlockedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'userMaster' },
-          unlockedByName: { type: String },
-          unlockedAt: { type: Date, default: Date.now },
-          reason: { type: String },
-          reLockedAt: { type: Date },
-          reLockedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'userMaster' },
-        },
-      ],
-    },
-
-    // ── 🔄 Long Leave Handover & Coverage ──
-    leaveCoverage: {
-      isCoveringForLeave: { type: Boolean, default: false },
-      originalWorkerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Employees' },
-      originalWorkerName: { type: String },
-      leaveType: { type: String, enum: ['ShortLeave', 'LongLeave', 'UnannouncedAbsent', null], default: null },
-      handoverType: { type: String, enum: ['DoubleShift', 'Reliever', 'Overtime', null], default: null },
-      overtimeRate: { type: Number, default: 0 },
-    },
   },
   { timestamps: true }
 );
@@ -397,8 +332,7 @@ attendanceSchema.index({ leadId: 1 });
 attendanceSchema.index({ clientId: 1 });
 attendanceSchema.index({ status: 1 });
 attendanceSchema.index({ employeeType: 1 });
-attendanceSchema.index({ 'lockStatus.isLocked': 1, date: -1 });
-attendanceSchema.index({ 'leaveCoverage.isCoveringForLeave': 1, date: -1 });
+
 
 // ── 💾 Attendance Backup Logs Schema ──
 const attendanceBackupLogSchema = new mongoose.Schema(
@@ -437,7 +371,6 @@ const groupSchema = new mongoose.Schema(
 const ledgerSchema = new mongoose.Schema(
   {
     ledgerName: { type: String, required: true, trim: true },
-    legalName: { type: String, trim: true },
     ledgerGroupId: { type: mongoose.Schema.Types.ObjectId, ref: 'Groups', required: true },
 
     // Balances
@@ -454,16 +387,10 @@ const ledgerSchema = new mongoose.Schema(
     // Compliance & Contact Info
     contactDetails: {
       address: { type: String, trim: true },
-      deliveryAddress: { type: String, trim: true },
-      sameAsBilling: { type: Boolean, default: false },
       state: { type: String, trim: true },
       pin: { type: String, trim: true },
       pan: { type: String, uppercase: true, trim: true },
       gstn: { type: String, uppercase: true, trim: true },
-      contactPerson: { type: String, trim: true },
-      mobile: { type: String, trim: true },
-      email: { type: String, trim: true },
-      notes: { type: String, trim: true },
     },
     isActive: { type: Boolean, default: true },
   },
@@ -629,6 +556,7 @@ const siteClientCheckSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+
 // 11. Site Roster & Holiday Master
 const siteRosterHolidaySchema = new mongoose.Schema(
   {
@@ -676,8 +604,8 @@ const siteRosterHolidaySchema = new mongoose.Schema(
 siteRosterHolidaySchema.index({ siteId: 1, workerId: 1, restDayOfWeek: 1 });
 siteRosterHolidaySchema.index({ siteId: 1, date: 1 });
 
-// 21. Leave, Advance, and Articles Requests (Tenant-Isolated Schema)
-const leaveRequestSchema = new mongoose.Schema(
+// 21. Request Master: Leave, Advance, and Articles Requests (Tenant-Isolated Schema)
+const requestMasterSchema = new mongoose.Schema(
   {
     workerId: { type: String, required: true, index: true },
     workerName: { type: String, required: true, trim: true },
@@ -720,12 +648,12 @@ const leaveRequestSchema = new mongoose.Schema(
     approvedAt: { type: Date },
     rejectionReason: { type: String, trim: true },
   },
-  { timestamps: true }
+  { timestamps: true, collection: 'requestMaster' }
 );
 
-leaveRequestSchema.index({ status: 1, appliedAt: -1 });
-leaveRequestSchema.index({ workerId: 1, appliedAt: -1 });
-leaveRequestSchema.index({ projectId: 1, status: 1 });
+requestMasterSchema.index({ status: 1, appliedAt: -1 });
+requestMasterSchema.index({ workerId: 1, appliedAt: -1 });
+requestMasterSchema.index({ projectId: 1, status: 1 });
 
 /**
  * Factory function to bind models to a tenant connection
@@ -762,9 +690,12 @@ const getTenantModels = (connection) => {
     SiteRosterHolidays:
       connection.models.SiteRosterHolidays ||
       connection.model('SiteRosterHolidays', siteRosterHolidaySchema),
+    RequestMaster:
+      connection.models.RequestMaster ||
+      connection.model('RequestMaster', requestMasterSchema, 'requestMaster'),
     LeaveRequests:
-      connection.models.LeaveRequests ||
-      connection.model('LeaveRequests', leaveRequestSchema),
+      connection.models.RequestMaster ||
+      connection.model('RequestMaster', requestMasterSchema, 'requestMaster'),
   };
 };
 

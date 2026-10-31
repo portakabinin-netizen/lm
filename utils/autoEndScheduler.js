@@ -5,7 +5,7 @@
  * Provides both in-memory real-time timers and resilient database sweepers.
  *
  * Integrated Capabilities:
- * 1. Tenant Leave Engine (leaveManager.js / LeaveRequests) - workers on approved leave ignored.
+ * 1. Tenant Leave Engine (leaveManager.js / RequestMaster) - workers on approved leave ignored.
  * 2. Gap-aware shift rollover - prevents early starts (e.g., M ends 11 AM, A starts 2 PM).
  * 3. Strict bound worker validation - never resurrects delinked workers from historical attendance.
  * 4. Slot suppression registry - prevents 60s sweeper from force-restarting removed/deleted shifts.
@@ -221,7 +221,7 @@ function scheduleAutoEnd(attendanceId, scheduledEndAt, AttendanceModel, tenantDb
  * 1. Next shift is contiguous (gap <= 30 mins). If next shift starts hours later (e.g. 11 AM vs 2 PM),
  *    rollover strictly DEFERS starting until the scheduled start time via autoStartScheduledShifts.
  * 2. Shift has an explicitly bound, active worker in siteShifts.boundWorkerId. Never guesses delinked workers.
- * 3. Worker is not on approved leave in LeaveRequests.
+ * 3. Worker is not on approved leave in RequestMaster.
  * 4. Slot has not been suppressed/cancelled for today.
  */
 async function handleAutoShiftRollover(closedAttendance, AttendanceModel, tenantDbName, io) {
@@ -377,7 +377,7 @@ async function handleAutoShiftRollover(closedAttendance, AttendanceModel, tenant
         continue;
       }
 
-      // ── Check Approved Leave from leaveManager (LeaveRequests) ──
+      // ── Check Approved Leave from leaveManager (RequestMaster) ──
       const approvedLeave = leaveManager.isWorkerOnApprovedLeave(tenantDbName, incomingWorkerId, todayStr);
       if (approvedLeave) {
         console.log(
@@ -447,25 +447,40 @@ async function handleAutoShiftRollover(closedAttendance, AttendanceModel, tenant
         continue;
       }
 
-      // Guard: Prevent double-clocking for the same shift if already marked today
-      const startOfToday = new Date(istDate);
-      startOfToday.setUTCHours(0, 0, 0, 0);
-      const startOfTodayUtc = new Date(startOfToday.getTime() - 5.5 * 3600000);
-      const endOfTodayUtc = new Date(startOfTodayUtc.getTime() + 24 * 3600000);
+      // Guard 1: Prevent double-clocking if this shift is ALREADY active on this site
+      const siteShiftAlreadyActive = await AttendanceModel.findOne({
+        $or: [
+          { leadId: effectiveLeadId },
+          { siteId: effectiveLeadId },
+        ],
+        shiftCode: targetShiftCode,
+        $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }],
+      }).lean();
 
-      const alreadyDutyToday = await AttendanceModel.findOne({
+      if (siteShiftAlreadyActive) {
+        console.log(
+          `[autoEndScheduler] Site "${lead.sender_name || 'Site'}" already has an active duty on shift ${targetShiftCode}. Checking next slot.`
+        );
+        continue;
+      }
+
+      // Guard 2: Prevent double-clocking if this incoming worker already ran or started this shift in this handover window (+/- 2h)
+      const alreadyRanInWindow = await AttendanceModel.findOne({
         employeeId: incomingWorkerId,
         $or: [
           { leadId: effectiveLeadId },
           { siteId: effectiveLeadId },
         ],
         shiftCode: targetShiftCode,
-        date: { $gte: startOfTodayUtc, $lte: endOfTodayUtc },
+        dutyStart: {
+          $gte: new Date(endTime.getTime() - 2 * 3600000),
+          $lte: new Date(endTime.getTime() + 2 * 3600000),
+        },
       }).lean();
 
-      if (alreadyDutyToday) {
+      if (alreadyRanInWindow) {
         console.log(
-          `[autoEndScheduler] Worker ${incomingWorkerName} already has attendance on shift ${targetShiftCode} today. Checking next slot.`
+          `[autoEndScheduler] Worker ${incomingWorkerName} already ran shift ${targetShiftCode} in this handover window. Checking next slot.`
         );
         continue;
       }
@@ -671,7 +686,7 @@ let _lastInactivitySweepDate = '';
 /**
  * Auto-Starts scheduled shifts across all sites for a tenant.
  * - Strictly respects shift.boundWorkerId. Never falls back to historical records of delinked workers.
- * - Ignores workers on approved leave in leaveManager (LeaveRequests).
+ * - Ignores workers on approved leave in leaveManager (RequestMaster).
  * - Honors slot suppression so deleted shifts are not resurrected every 60s.
  */
 async function autoStartScheduledShifts(conn, tenantDbName, io) {
@@ -747,9 +762,11 @@ async function autoStartScheduledShifts(conn, tenantDbName, io) {
 
         // 1. Check current active duty count for this site and shift slot
         const activeCount = await Attendance.countDocuments({
-          $or: siteOrConditions,
-          shiftCode: { $in: shiftCodesList },
-          $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }],
+          $and: [
+            { $or: siteOrConditions },
+            { shiftCode: { $in: shiftCodesList } },
+            { $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }] },
+          ],
         });
 
         const targetSlots = shift.workerSlots || 1;
@@ -786,17 +803,21 @@ async function autoStartScheduledShifts(conn, tenantDbName, io) {
 
           // Guard: Already ran duty on this site/shift today?
           const alreadyRan = await Attendance.findOne({
-            employeeId: wId,
-            $or: siteOrConditions,
-            shiftCode: { $in: shiftCodesList },
-            dutyStart: {
-              $gte: new Date(scheduledStartUtc.getTime() - 2 * 3600000),
-              $lte: scheduledEndUtc,
-            },
+            $and: [
+              { employeeId: wId },
+              { $or: siteOrConditions },
+              { shiftCode: { $in: shiftCodesList } },
+              {
+                dutyStart: {
+                  $gte: new Date(scheduledStartUtc.getTime() - 2 * 3600000),
+                  $lte: scheduledEndUtc,
+                },
+              },
+            ],
           }).lean();
           if (alreadyRan) return { ok: false, reason: 'already_ran' };
 
-          // Guard: Approved leave from leaveManager (LeaveRequests)
+          // Guard: Approved leave from leaveManager (RequestMaster)
           const approvedLeave = leaveManager.isWorkerOnApprovedLeave(tenantDbName, wId, todayDateStr);
           if (approvedLeave) return { ok: false, reason: 'leave', approvedLeave };
 

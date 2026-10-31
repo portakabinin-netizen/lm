@@ -2,7 +2,7 @@
  * leaveManager.js
  * ─────────────────────────────────────────────────────────────────────────────
  * Tenant-isolated in-memory cache and helper service for leave management.
- * Integrates directly with Tenant MongoDB (LeaveRequests model).
+ * Integrates directly with Tenant MongoDB (RequestMaster model (requestMaster collection)).
  * Does NOT read or write to disk JSON files.
  */
 
@@ -40,10 +40,11 @@ async function refreshTenantLeaveCache(tenantDbName, connection) {
       conn = await dbConnector.getTenantConnection(tenantDbName);
     }
     const { getTenantModels } = require('../models/TenantModels');
-    const { LeaveRequests } = getTenantModels(conn);
-    if (!LeaveRequests) return [];
+    const { RequestMaster, LeaveRequests } = getTenantModels(conn);
+    const RequestMasterModel = RequestMaster || LeaveRequests;
+    if (!RequestMasterModel) return [];
 
-    const docs = await LeaveRequests.find({
+    const docs = await RequestMasterModel.find({
       status: 'Approved',
       requestTypes: 'leave',
     }).lean();

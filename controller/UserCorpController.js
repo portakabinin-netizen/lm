@@ -3923,9 +3923,10 @@ exports.manageEmployees = {
 
   applyLeave: async (req, res) => {
     try {
-      const { LeaveRequests } = req.tenantModels || {};
-      if (!LeaveRequests) {
-        return res.status(500).json({ success: false, message: 'Tenant Leave model not available' });
+      const { RequestMaster, LeaveRequests } = req.tenantModels || {};
+      const RequestMasterModel = RequestMaster || LeaveRequests;
+      if (!RequestMasterModel) {
+        return res.status(500).json({ success: false, message: 'Tenant RequestMaster model not available' });
       }
       const {
         workerId,
@@ -4000,7 +4001,7 @@ exports.manageEmployees = {
         isSelf: !isWorkerOnBehalf,
       };
 
-      const doc = await LeaveRequests.create({
+      const doc = await RequestMasterModel.create({
         workerId: String(workerId),
         workerName: workerName || 'Worker',
         workerRole: workerRole || 'Security',
@@ -4055,15 +4056,16 @@ exports.manageEmployees = {
 
   cancelLeave: async (req, res) => {
     try {
-      const { LeaveRequests } = req.tenantModels || {};
-      if (!LeaveRequests) {
-        return res.status(500).json({ success: false, message: 'Tenant Leave model not available' });
+      const { RequestMaster, LeaveRequests } = req.tenantModels || {};
+      const RequestMasterModel = RequestMaster || LeaveRequests;
+      if (!RequestMasterModel) {
+        return res.status(500).json({ success: false, message: 'Tenant RequestMaster model not available' });
       }
       const { id } = req.params;
       if (!id || id === 'undefined' || !mongoose.Types.ObjectId.isValid(id)) {
         return res.status(400).json({ success: false, message: 'Valid Request ID is required' });
       }
-      const record = await LeaveRequests.findById(id);
+      const record = await RequestMasterModel.findById(id);
       if (!record) {
         return res.status(404).json({ success: false, message: 'Request record ' + id + ' not found' });
       }
@@ -4075,7 +4077,7 @@ exports.manageEmployees = {
         });
       }
 
-      await LeaveRequests.findByIdAndDelete(id);
+      await RequestMasterModel.findByIdAndDelete(id);
 
       if (req.io && req.tenantDbName) {
         req.io.to(req.tenantDbName).emit('leave:cancelled', { id, record });
@@ -4181,9 +4183,10 @@ exports.manageEmployees = {
 
   listLeaves: async (req, res) => {
     try {
-      const { LeaveRequests } = req.tenantModels || {};
-      if (!LeaveRequests) {
-        return res.status(500).json({ success: false, message: 'Tenant Leave model not available' });
+      const { RequestMaster, LeaveRequests } = req.tenantModels || {};
+      const RequestMasterModel = RequestMaster || LeaveRequests;
+      if (!RequestMasterModel) {
+        return res.status(500).json({ success: false, message: 'Tenant RequestMaster model not available' });
       }
       const { status, workerId, projectId, date } = req.query;
       const query = {};
@@ -4200,7 +4203,7 @@ exports.manageEmployees = {
         query.dates = String(date).split('T')[0];
       }
 
-      const docs = await LeaveRequests.find(query).sort({ appliedAt: -1 }).lean();
+      const docs = await RequestMasterModel.find(query).sort({ appliedAt: -1 }).lean();
       const records = await Promise.all(
         docs.map(async (doc) => {
           let pName = (doc.projectName || '').trim();
@@ -4220,7 +4223,7 @@ exports.manageEmployees = {
               pId = siteInfo.siteId || pId;
               if (isGeneric) {
                 // Permanently persist the resolved actual site to database
-                LeaveRequests.updateOne({ _id: doc._id }, { $set: { projectName: pName, projectId: pId } }).catch(() => {});
+                RequestMasterModel.updateOne({ _id: doc._id }, { $set: { projectName: pName, projectId: pId } }).catch(() => {});
               }
             }
           }
@@ -4244,9 +4247,10 @@ exports.manageEmployees = {
 
   reviewLeave: async (req, res) => {
     try {
-      const { LeaveRequests } = req.tenantModels || {};
-      if (!LeaveRequests) {
-        return res.status(500).json({ success: false, message: 'Tenant Leave model not available' });
+      const { RequestMaster, LeaveRequests } = req.tenantModels || {};
+      const RequestMasterModel = RequestMaster || LeaveRequests;
+      if (!RequestMasterModel) {
+        return res.status(500).json({ success: false, message: 'Tenant RequestMaster model not available' });
       }
       const { id } = req.params;
       const { status, reason } = req.body; // 'Approved' | 'Disapproved'
@@ -4255,7 +4259,7 @@ exports.manageEmployees = {
         return res.status(400).json({ success: false, message: 'Valid Request ID is required' });
       }
 
-      const record = await LeaveRequests.findById(id);
+      const record = await RequestMasterModel.findById(id);
       if (!record) {
         return res.status(404).json({ success: false, message: 'Request record ' + id + ' not found' });
       }
