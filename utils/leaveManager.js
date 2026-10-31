@@ -76,14 +76,22 @@ function loadLeaves(tenantDbName) {
     }
   }
 
-  // Rolling 2-month pruning: discard records where endDate is older than 60 days
+  // Rolling 2-month pruning: discard approved/disapproved records older than 60 days
   const cutoff = new Date();
   cutoff.setMonth(cutoff.getMonth() - MAX_HISTORY_MONTHS);
   const cutoffDateStr = cutoff.toISOString().split('T')[0];
 
   const originalCount = data.records.length;
   data.records = data.records.filter((rec) => {
-    const end = rec.toDate || rec.endDate || rec.fromDate || '';
+    // Never prune pending requests that require review
+    if (rec.status === 'Pending') return true;
+
+    const end =
+      rec.toDate ||
+      rec.endDate ||
+      rec.fromDate ||
+      (rec.appliedAt ? String(rec.appliedAt).split('T')[0] : '') ||
+      '';
     return end >= cutoffDateStr;
   });
 
@@ -256,6 +264,27 @@ function reviewLeave(tenantDbName, leaveId, action, adminInfo = {}) {
 }
 
 /**
+ * Cancels / Deletes a leave request if it is still Pending.
+ */
+function cancelLeave(tenantDbName, leaveId, userName = 'User') {
+  const data = loadLeaves(tenantDbName);
+  const idx = data.records.findIndex((r) => String(r.id) === String(leaveId));
+
+  if (idx === -1) {
+    throw new Error(`Request record ${leaveId} not found`);
+  }
+
+  const record = data.records[idx];
+  if (record.status !== 'Pending') {
+    throw new Error(`Only pending requests can be deleted. This request is already ${record.status}.`);
+  }
+
+  const removed = data.records.splice(idx, 1)[0];
+  saveLeaves(tenantDbName, data);
+  return { success: true, message: 'Request deleted successfully', data: removed };
+}
+
+/**
  * Lists leave records with optional status, project, worker, or date filtering.
  */
 function listLeaves(tenantDbName, filter = {}) {
@@ -285,6 +314,7 @@ module.exports = {
   isWorkerOnApprovedLeave,
   applyLeave,
   reviewLeave,
+  cancelLeave,
   listLeaves,
   getDatesInRange,
 };
