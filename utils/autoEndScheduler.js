@@ -118,6 +118,344 @@ const normalizeDayOfWeek = (val) => {
   return '';
 };
 
+/**
+ * Calculates start and end Date objects in UTC for a specific day in IST.
+ * dayOffset = 0 -> today
+ * dayOffset = 1 -> today - 1 (yesterday)
+ * dayOffset = 2 -> today - 2, etc.
+ */
+function getIstDayWindow(baseDate = new Date(), dayOffset = 1) {
+  const istOffsetMs = 5.5 * 3600000;
+  const baseIstTime = baseDate.getTime() + istOffsetMs;
+  const targetIstTime = baseIstTime - dayOffset * 24 * 3600000;
+  const targetDate = new Date(targetIstTime);
+  const targetDateStr = targetDate.toISOString().split('T')[0];
+
+  const [y, m, d] = targetDateStr.split('-').map(Number);
+  const startUtc = new Date(Date.UTC(y, m - 1, d, 0, 0, 0, 0) - istOffsetMs);
+  const endUtc = new Date(Date.UTC(y, m - 1, d, 23, 59, 59, 999) - istOffsetMs);
+
+  const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const dayOfWeek = days[targetDate.getUTCDay()];
+
+  return { targetDateStr, dayOfWeek, startUtc, endUtc };
+}
+
+/**
+ * Evaluates whether a worker is eligible and available to perform duty.
+ * Strict rules:
+ * 1. Must be active in Employees.
+ * 2. Must not be currently active on duty anywhere in this tenant.
+ * 3. Must not have already completed/started duty in this shift window today.
+ * 4. Must not be on approved personal leave (Sick/Casual/Other) in leaveManager (RequestMaster) or SiteRosterHolidays.
+ * 5. Site must not be closed in SiteRosterHolidays.
+ * 6. WEEKLY OFF & HOLIDAYS:
+ *    If the worker has Weekly Rest / Off or Holiday (via roster, exempt days, or employee weekly off),
+ *    but is NOT on personal leave, NOT busy, and site is NOT closed:
+ *    The worker IS AVAILABLE and their attendance should be marked!
+ */
+async function checkCandidateWorkerEligibility({
+  workerId,
+  AttendanceModel,
+  EmployeesModel,
+  SiteRosterHolidaysModel,
+  leaveManager,
+  tenantDbName,
+  lead,
+  effectiveLeadId,
+  shift,
+  shiftCodesList = [],
+  todayDateStr,
+  currentDayOfWeek,
+  scheduledStartUtc,
+  scheduledEndUtc,
+  excludeWorkerIds = new Set(),
+}) {
+  if (!workerId) return { ok: false, reason: 'no_id' };
+  const wId = String(workerId);
+
+  if (excludeWorkerIds && excludeWorkerIds.has(wId)) {
+    return { ok: false, reason: 'excluded' };
+  }
+
+  const emp = await EmployeesModel.findById(wId).lean();
+  if (!emp || emp.active === false) {
+    return { ok: false, reason: 'inactive' };
+  }
+
+  // Guard 1: Busy on active duty anywhere in this tenant?
+  const busy = await AttendanceModel.findOne({
+    employeeId: wId,
+    $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }],
+  }).lean();
+  if (busy) {
+    return { ok: false, reason: 'busy', siteName: busy.site_name || 'Another Site' };
+  }
+
+  // Guard 2: Already ran duty on this site/shift today in window?
+  const targetSiteId = effectiveLeadId || (lead ? lead._id : null);
+  const siteOrConditions = targetSiteId
+    ? [{ leadId: targetSiteId }, { leadId: String(targetSiteId) }, { siteId: targetSiteId }, { siteId: String(targetSiteId) }]
+    : [];
+
+  const shiftCodes = Array.isArray(shiftCodesList) && shiftCodesList.length > 0
+    ? shiftCodesList
+    : (shift && shift.shiftCode ? [shift.shiftCode] : []);
+
+  const windowStart = scheduledStartUtc ? new Date(scheduledStartUtc.getTime() - 2 * 3600000) : new Date(Date.now() - 2 * 3600000);
+  const windowEnd = scheduledEndUtc ? scheduledEndUtc : new Date(Date.now() + 2 * 3600000);
+
+  if (siteOrConditions.length > 0 && shiftCodes.length > 0) {
+    const alreadyRan = await AttendanceModel.findOne({
+      $and: [
+        { employeeId: wId },
+        { $or: siteOrConditions },
+        { shiftCode: { $in: shiftCodes } },
+        {
+          dutyStart: {
+            $gte: windowStart,
+            $lte: windowEnd,
+          },
+        },
+      ],
+    }).lean();
+    if (alreadyRan) {
+      return { ok: false, reason: 'already_ran' };
+    }
+  }
+
+  // Guard 3: Approved personal leave from leaveManager (RequestMaster)
+  if (leaveManager && tenantDbName) {
+    const approvedLeave = leaveManager.isWorkerOnApprovedLeave(tenantDbName, wId, todayDateStr);
+    if (approvedLeave) {
+      return { ok: false, reason: 'leave', remark: approvedLeave.leaveType || 'Approved Leave' };
+    }
+  }
+
+  // Guard 4: SiteRosterHolidays
+  let offRecord = null;
+  if (SiteRosterHolidaysModel && lead && lead._id) {
+    offRecord = await SiteRosterHolidaysModel.findOne({
+      siteId: lead._id,
+      $or: [
+        { workerId: wId, type: 'WeeklyRest', restDayOfWeek: { $regex: new RegExp(`^${currentDayOfWeek}`, 'i') } },
+        {
+          workerId: wId,
+          date: todayDateStr,
+          type: { $in: ['SickLeave', 'CasualLeave', 'OtherLeave', 'PaidHoliday', 'NationalHoliday', 'FestivalHoliday', 'WeeklyRest'] },
+        },
+        { date: todayDateStr, type: 'SiteClosed' },
+      ],
+    }).lean();
+  }
+
+  if (offRecord && offRecord.type === 'SiteClosed') {
+    return { ok: false, reason: 'site_closed', remark: offRecord.remark || 'Site Closed' };
+  }
+
+  if (offRecord && ['SickLeave', 'CasualLeave', 'OtherLeave'].includes(offRecord.type)) {
+    return { ok: false, reason: 'leave', remark: offRecord.remark || offRecord.type };
+  }
+
+  // Weekly Rest & Holiday detection:
+  const isShiftRest =
+    (shift && normalizeDayOfWeek(shift.weeklyRestDay) === currentDayOfWeek) ||
+    (shift && Array.isArray(shift.exemptDays) && shift.exemptDays.map(normalizeDayOfWeek).includes(currentDayOfWeek)) ||
+    normalizeDayOfWeek(emp.weeklyRestDay) === currentDayOfWeek ||
+    normalizeDayOfWeek(emp.weeklyOff) === currentDayOfWeek;
+
+  const isWeeklyOffOrHoliday = Boolean(
+    isShiftRest ||
+    (offRecord && ['WeeklyRest', 'PaidHoliday', 'NationalHoliday', 'FestivalHoliday'].includes(offRecord.type))
+  );
+
+  const holidayRemark = offRecord
+    ? (offRecord.remark || offRecord.type)
+    : (isShiftRest ? `${currentDayOfWeek} Weekly Off` : null);
+
+  // If worker has Weekly Off / Holiday, but passed all availability checks:
+  // THE WORKER IS AVAILABLE -> MARK ATTENDANCE!
+  return {
+    ok: true,
+    emp,
+    isWeeklyOffOrHoliday,
+    holidayRemark,
+  };
+}
+
+/**
+ * Strict chronological stepped fallback worker resolution:
+ * Checks today - 1 (yesterday). If none found/eligible, checks today - 2.
+ * If none found/eligible, checks today - 3, stepping backwards day-by-day up to maxDaysBack.
+ * Never picks a random worker from historical attendance records.
+ *
+ * If a worker on weekly off / holiday is available, marks attendance for that worker.
+ */
+async function findSteppedPreviousDayWorker({
+  AttendanceModel,
+  EmployeesModel,
+  SiteRosterHolidaysModel,
+  leaveManager,
+  tenantDbName,
+  lead,
+  effectiveLeadId,
+  shift,
+  targetShiftCode,
+  shiftCodesList = [],
+  baseDate = new Date(),
+  todayDateStr,
+  currentDayOfWeek,
+  scheduledStartUtc,
+  scheduledEndUtc,
+  excludeWorkerIds = new Set(),
+  maxDaysBack = 14,
+}) {
+  const targetSiteId = effectiveLeadId || (lead ? lead._id : null);
+  if (!targetSiteId) return null;
+
+  const siteOrConditions = [
+    { leadId: targetSiteId },
+    { leadId: String(targetSiteId) },
+    { siteId: targetSiteId },
+    { siteId: String(targetSiteId) },
+  ];
+  if (lead && lead._id && String(lead._id) !== String(targetSiteId)) {
+    siteOrConditions.push(
+      { leadId: lead._id },
+      { leadId: String(lead._id) },
+      { siteId: lead._id },
+      { siteId: String(lead._id) }
+    );
+  }
+
+  const targetCodes = Array.isArray(shiftCodesList) && shiftCodesList.length > 0
+    ? shiftCodesList
+    : [targetShiftCode || (shift && shift.shiftCode)].filter(Boolean);
+
+  const todayInfo = getIstInfo(baseDate);
+  const effTodayDateStr = todayDateStr || todayInfo.dateStr;
+  const effCurrentDayOfWeek = currentDayOfWeek || todayInfo.dayOfWeek;
+
+  for (let dayOffset = 1; dayOffset <= maxDaysBack; dayOffset++) {
+    const { targetDateStr, startUtc, endUtc } = getIstDayWindow(baseDate, dayOffset);
+
+    const dayDateCondition = {
+      $or: [
+        { dutyStart: { $gte: startUtc, $lte: endUtc } },
+        { date: { $gte: startUtc, $lte: endUtc } },
+        { date: targetDateStr },
+      ],
+    };
+
+    // Priority 1 on dayOffset: Worker who performed this SPECIFIC shift at this site
+    if (targetCodes.length > 0) {
+      const shiftDuties = await AttendanceModel.find({
+        $and: [
+          { $or: siteOrConditions },
+          { shiftCode: { $in: targetCodes } },
+          dayDateCondition,
+          { status: { $nin: ['Absent', 'Leave'] } },
+        ],
+      })
+        .sort({ dutyStart: -1, date: -1 })
+        .lean();
+
+      for (const duty of shiftDuties) {
+        if (!duty.employeeId) continue;
+        const candidateId = String(duty.employeeId);
+        if (excludeWorkerIds && excludeWorkerIds.has(candidateId)) continue;
+
+        const check = await checkCandidateWorkerEligibility({
+          workerId: candidateId,
+          AttendanceModel,
+          EmployeesModel,
+          SiteRosterHolidaysModel,
+          leaveManager,
+          tenantDbName,
+          lead,
+          effectiveLeadId: targetSiteId,
+          shift,
+          shiftCodesList: targetCodes,
+          todayDateStr: effTodayDateStr,
+          currentDayOfWeek: effCurrentDayOfWeek,
+          scheduledStartUtc,
+          scheduledEndUtc,
+          excludeWorkerIds,
+        });
+
+        if (check.ok) {
+          console.log(
+            `🔄 [autoEndScheduler] Stepped fallback found worker ${check.emp.name || candidateId} from today-${dayOffset} (${targetDateStr}) on shift ${targetShiftCode || targetCodes.join('/')} at "${lead.sender_name || 'Site'}"`
+          );
+          return {
+            workerId: candidateId,
+            emp: check.emp,
+            workerName: check.emp.name || duty.workerName || 'Worker',
+            foundDayOffset: dayOffset,
+            isWeeklyOffOrHoliday: check.isWeeklyOffOrHoliday,
+            holidayRemark: check.holidayRemark,
+          };
+        }
+      }
+    }
+
+    // Priority 2 on dayOffset: Worker who performed ANY shift at this site on this day
+    const anyDuties = await AttendanceModel.find({
+      $and: [
+        { $or: siteOrConditions },
+        dayDateCondition,
+        { status: { $nin: ['Absent', 'Leave'] } },
+      ],
+    })
+      .sort({ dutyStart: -1, date: -1 })
+      .lean();
+
+    for (const duty of anyDuties) {
+      if (!duty.employeeId) continue;
+      const candidateId = String(duty.employeeId);
+      if (excludeWorkerIds && excludeWorkerIds.has(candidateId)) continue;
+
+      const check = await checkCandidateWorkerEligibility({
+        workerId: candidateId,
+        AttendanceModel,
+        EmployeesModel,
+        SiteRosterHolidaysModel,
+        leaveManager,
+        tenantDbName,
+        lead,
+        effectiveLeadId: targetSiteId,
+        shift,
+        shiftCodesList: targetCodes,
+        todayDateStr: effTodayDateStr,
+        currentDayOfWeek: effCurrentDayOfWeek,
+        scheduledStartUtc,
+        scheduledEndUtc,
+        excludeWorkerIds,
+      });
+
+      if (check.ok) {
+        console.log(
+          `🔄 [autoEndScheduler] Stepped fallback found worker ${check.emp.name || candidateId} from today-${dayOffset} (${targetDateStr}) (site-level duty) at "${lead.sender_name || 'Site'}"`
+        );
+        return {
+          workerId: candidateId,
+          emp: check.emp,
+          workerName: check.emp.name || duty.workerName || 'Worker',
+          foundDayOffset: dayOffset,
+          isWeeklyOffOrHoliday: check.isWeeklyOffOrHoliday,
+          holidayRemark: check.holidayRemark,
+        };
+      }
+    }
+
+    // No available worker found on dayOffset; strictly step to dayOffset + 1
+    // (e.g. today-1 had none -> check today-2, then today-3)
+  }
+
+  // Strictly finished checking up to maxDaysBack without picking arbitrary workers
+  return null;
+}
+
 // ── Daily Shift Slot Suppression Registry ────────────────────────────────────
 // Prevents the background sweeper from force-restarting a shift slot on the same
 // day if a supervisor intentionally removed a worker who did not reach the site.
@@ -404,146 +742,7 @@ async function handleAutoShiftRollover(closedAttendance, AttendanceModel, tenant
         continue;
       }
 
-      // ── Resolve candidate worker for target shift ──
-      let incomingWorkerId = matchedShift.boundWorkerId
-        ? String(matchedShift.boundWorkerId._id || matchedShift.boundWorkerId)
-        : null;
-      let incomingEmp = null;
-      let incomingWorkerName = matchedShift.boundWorkerName || 'Worker';
-
-      if (incomingWorkerId) {
-        const emp = await Employees.findById(incomingWorkerId).lean();
-        if (emp && emp.active !== false) {
-          const isBusy = await AttendanceModel.findOne({
-            employeeId: incomingWorkerId,
-            $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }],
-          }).lean();
-          if (!isBusy) {
-            incomingEmp = emp;
-            incomingWorkerName = emp.name || matchedShift.boundWorkerName || 'Worker';
-          }
-        }
-      }
-
-      // Fallback: If bound worker is unavailable/inactive/busy, check recent duty performers at this site/shift
-      if (!incomingEmp) {
-        const prevDuties = await AttendanceModel.find({
-          $or: [{ leadId: effectiveLeadId }, { siteId: effectiveLeadId }],
-          shiftCode: targetShiftCode,
-          dutyStart: { $exists: true },
-        })
-          .sort({ dutyStart: -1 })
-          .limit(5)
-          .lean();
-
-        for (const prev of prevDuties) {
-          if (!prev.employeeId) continue;
-          const prevId = String(prev.employeeId);
-          const emp = await Employees.findById(prevId).lean();
-          if (emp && emp.active !== false) {
-            const isBusy = await AttendanceModel.findOne({
-              employeeId: prevId,
-              $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }],
-            }).lean();
-            if (!isBusy) {
-              incomingWorkerId = prevId;
-              incomingEmp = emp;
-              incomingWorkerName = emp.name || prev.workerName || 'Worker';
-              console.log(
-                `🔄 [autoEndScheduler] Rollover fallback worker: ${incomingWorkerName} (${incomingWorkerId}) for ${targetShiftCode} at site "${lead.sender_name || 'Site'}"`
-              );
-              break;
-            }
-          }
-        }
-      }
-
-      if (!incomingWorkerId || !incomingEmp) {
-        console.log(
-          `[autoEndScheduler] No available worker found for slot ${targetShiftCode} at site "${lead.sender_name || 'site'}". Checking next slot.`
-        );
-        if (io && tenantDbName) {
-          io.to(tenantDbName).emit('attendance:reliever_needed', {
-            siteId: String(lead._id),
-            siteName: lead.sender_name || lead.name || 'Site',
-            shiftCode: targetShiftCode,
-            reason: 'Bound worker unavailable and no recent substitute found',
-          });
-        }
-        continue;
-      }
-
-      // ── Check Approved Leave from leaveManager (RequestMaster) ──
-      const approvedLeave = leaveManager.isWorkerOnApprovedLeave(tenantDbName, incomingWorkerId, todayStr);
-      if (approvedLeave) {
-        console.log(
-          `🏖️ [autoEndScheduler] Worker ${incomingWorkerName} is on APPROVED LEAVE (${approvedLeave.fromDate} to ${approvedLeave.toDate}). Checking next slot.`
-        );
-        if (io && tenantDbName) {
-          io.to(tenantDbName).emit('attendance:reliever_needed', {
-            siteId: String(lead._id),
-            siteName: lead.sender_name || lead.name || 'Site',
-            shiftCode: targetShiftCode,
-            boundWorkerId: incomingWorkerId,
-            boundWorkerName: incomingWorkerName,
-            reason: `On Approved Leave until ${approvedLeave.toDate} (${approvedLeave.leaveType || 'Leave'})`,
-          });
-        }
-        continue;
-      }
-
-      // ── Check Weekly Rest, Shift Exemptions, and SiteRosterHolidays ──
-      const isShiftRestDay =
-        normalizeDayOfWeek(matchedShift.weeklyRestDay) === dayOfWeek ||
-        (Array.isArray(matchedShift.exemptDays) && matchedShift.exemptDays.map(normalizeDayOfWeek).includes(dayOfWeek)) ||
-        normalizeDayOfWeek(incomingEmp.weeklyRestDay) === dayOfWeek ||
-        normalizeDayOfWeek(incomingEmp.weeklyOff) === dayOfWeek;
-
-      let offRecord = null;
-      if (SiteRosterHolidays) {
-        offRecord = await SiteRosterHolidays.findOne({
-          siteId: lead._id,
-          $or: [
-            { workerId: incomingWorkerId, type: 'WeeklyRest', restDayOfWeek: { $regex: new RegExp(`^${dayOfWeek}`, 'i') } },
-            {
-              workerId: incomingWorkerId,
-              date: todayStr,
-              type: { $in: ['SickLeave', 'CasualLeave', 'OtherLeave', 'PaidHoliday', 'WeeklyRest'] },
-            },
-            { date: todayStr, type: 'SiteClosed' },
-          ],
-        }).lean();
-      }
-
-      if (isShiftRestDay || offRecord) {
-        console.log(
-          `🏖️ [autoEndScheduler] Worker ${incomingWorkerName} at ${lead.sender_name || 'Site'} has WEEKLY REST / OFF on ${dayOfWeek}. Skipping slot.`
-        );
-        if (io && tenantDbName) {
-          io.to(tenantDbName).emit('attendance:reliever_needed', {
-            siteId: String(lead._id),
-            siteName: lead.sender_name || lead.name || 'Site',
-            shiftCode: targetShiftCode,
-            boundWorkerId: incomingWorkerId,
-            boundWorkerName: incomingWorkerName,
-            reason: offRecord ? (offRecord.remark || offRecord.type) : `${dayOfWeek} Weekly Rest`,
-          });
-        }
-        continue;
-      }
-
-      // Guard: Prevent double-clocking if this incoming worker is already on duty anywhere
-      const alreadyActive = await AttendanceModel.findOne({
-        employeeId: incomingWorkerId,
-        $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }],
-      }).lean();
-
-      if (alreadyActive) {
-        console.log(`[autoEndScheduler] Bound worker ${incomingWorkerName} is already on duty. Checking next slot.`);
-        continue;
-      }
-
-      // Guard 1: Prevent double-clocking if this shift is ALREADY active on this site
+      // ── Guard 1: Prevent double-clocking if this shift is ALREADY active on this site ──
       const siteShiftAlreadyActive = await AttendanceModel.findOne({
         $or: [
           { leadId: effectiveLeadId },
@@ -560,24 +759,105 @@ async function handleAutoShiftRollover(closedAttendance, AttendanceModel, tenant
         continue;
       }
 
-      // Guard 2: Prevent double-clocking if this incoming worker already ran or started this shift in this handover window (+/- 2h)
-      const alreadyRanInWindow = await AttendanceModel.findOne({
-        employeeId: incomingWorkerId,
-        $or: [
-          { leadId: effectiveLeadId },
-          { siteId: effectiveLeadId },
-        ],
-        shiftCode: targetShiftCode,
-        dutyStart: {
-          $gte: new Date(endTime.getTime() - 2 * 3600000),
-          $lte: new Date(endTime.getTime() + 2 * 3600000),
-        },
-      }).lean();
+      // ── Resolve candidate worker for target shift ──
+      let incomingWorkerId = matchedShift.boundWorkerId
+        ? String(matchedShift.boundWorkerId._id || matchedShift.boundWorkerId)
+        : null;
+      let incomingEmp = null;
+      let incomingWorkerName = matchedShift.boundWorkerName || 'Worker';
+      let isWeeklyOffOrHoliday = false;
+      let holidayRemark = null;
 
-      if (alreadyRanInWindow) {
+      // Priority 1: Shift boundWorkerId (if active and available)
+      if (incomingWorkerId) {
+        const boundCheck = await checkCandidateWorkerEligibility({
+          workerId: incomingWorkerId,
+          AttendanceModel,
+          EmployeesModel: Employees,
+          SiteRosterHolidaysModel: SiteRosterHolidays,
+          leaveManager,
+          tenantDbName,
+          lead,
+          effectiveLeadId,
+          shift: matchedShift,
+          shiftCodesList: [targetShiftCode, matchedShift.shiftName, matchedShift.shiftPeriod].filter(Boolean),
+          todayDateStr: todayStr,
+          currentDayOfWeek: dayOfWeek,
+          scheduledStartUtc: endTime,
+          scheduledEndUtc: null,
+          excludeWorkerIds: new Set(),
+        });
+
+        if (boundCheck.ok) {
+          incomingEmp = boundCheck.emp;
+          incomingWorkerName = boundCheck.emp.name || matchedShift.boundWorkerName || 'Worker';
+          isWeeklyOffOrHoliday = boundCheck.isWeeklyOffOrHoliday;
+          holidayRemark = boundCheck.holidayRemark;
+          if (isWeeklyOffOrHoliday) {
+            console.log(
+              `🏖️ [autoEndScheduler] Bound worker ${incomingWorkerName} at ${lead.sender_name || 'Site'} has Weekly Off/Holiday (${holidayRemark || dayOfWeek}), but is available. Marking attendance as instructed.`
+            );
+          }
+        } else {
+          console.log(
+            `ℹ️ [autoEndScheduler] Bound worker ${incomingWorkerName} (${incomingWorkerId}) unavailable (${boundCheck.reason}: ${boundCheck.remark || ''}). Checking stepped previous day worker.`
+          );
+          incomingWorkerId = null;
+        }
+      }
+
+      // Priority 2: Stepped Fallback: today-1, then today-2, then today-3...
+      // Strictly avoids random worker selection. If weekly off/holiday worker available, mark attendance.
+      if (!incomingEmp) {
+        const excludeSet = new Set();
+        if (closedAttendance && closedAttendance.employeeId) {
+          excludeSet.add(String(closedAttendance.employeeId));
+        }
+
+        const steppedWorker = await findSteppedPreviousDayWorker({
+          AttendanceModel,
+          EmployeesModel: Employees,
+          SiteRosterHolidaysModel: SiteRosterHolidays,
+          leaveManager,
+          tenantDbName,
+          lead,
+          effectiveLeadId,
+          shift: matchedShift,
+          targetShiftCode,
+          shiftCodesList: [targetShiftCode, matchedShift.shiftName, matchedShift.shiftPeriod].filter(Boolean),
+          baseDate: endTime,
+          todayDateStr: todayStr,
+          currentDayOfWeek: dayOfWeek,
+          scheduledStartUtc: endTime,
+          scheduledEndUtc: null,
+          excludeWorkerIds: excludeSet,
+          maxDaysBack: 14,
+        });
+
+        if (steppedWorker) {
+          incomingWorkerId = steppedWorker.workerId;
+          incomingEmp = steppedWorker.emp;
+          incomingWorkerName = steppedWorker.workerName;
+          isWeeklyOffOrHoliday = steppedWorker.isWeeklyOffOrHoliday;
+          holidayRemark = steppedWorker.holidayRemark;
+          console.log(
+            `🔄 [autoEndScheduler] Rollover resolved stepped worker: ${incomingWorkerName} (${incomingWorkerId}) from today-${steppedWorker.foundDayOffset} for ${targetShiftCode} at site "${lead.sender_name || 'Site'}"`
+          );
+        }
+      }
+
+      if (!incomingWorkerId || !incomingEmp) {
         console.log(
-          `[autoEndScheduler] Worker ${incomingWorkerName} already ran shift ${targetShiftCode} in this handover window. Checking next slot.`
+          `[autoEndScheduler] No available worker found for slot ${targetShiftCode} at site "${lead.sender_name || 'site'}". Checking next slot.`
         );
+        if (io && tenantDbName) {
+          io.to(tenantDbName).emit('attendance:reliever_needed', {
+            siteId: String(lead._id),
+            siteName: lead.sender_name || lead.name || 'Site',
+            shiftCode: targetShiftCode,
+            reason: 'Bound worker unavailable and no previous day worker found',
+          });
+        }
         continue;
       }
 
@@ -588,6 +868,8 @@ async function handleAutoShiftRollover(closedAttendance, AttendanceModel, tenant
         incomingEmp,
         incomingWorkerName,
         targetShiftCode,
+        isWeeklyOffOrHoliday,
+        holidayRemark,
       };
       break;
     }
@@ -698,7 +980,9 @@ async function handleAutoShiftRollover(closedAttendance, AttendanceModel, tenant
       forcedOff: false,
       markedByDevice: false,
       markedByUserName: 'Auto Shift Rollover',
-      remarks: `Auto-bound handover from ${closedAttendance.workerName || 'previous shift'}`,
+      remarks: startedShift.isWeeklyOffOrHoliday
+        ? `Auto-bound handover from ${closedAttendance.workerName || 'previous shift'} (${startedShift.holidayRemark || 'Weekly Off / Holiday Duty'})`
+        : `Auto-bound handover from ${closedAttendance.workerName || 'previous shift'}`,
     });
 
     await newDuty.save();
@@ -822,6 +1106,8 @@ async function autoStartScheduledShifts(conn, tenantDbName, io) {
     const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     const currentDayOfWeek = days[istDate.getUTCDay()];
 
+    const assignedWorkerIdsThisRun = new Set();
+
     const leads = await Leads.find({
       status: { $in: VALID_LEAD_STATUSES_MONGO },
       'siteShifts.active': { $ne: false },
@@ -903,247 +1189,176 @@ async function autoStartScheduledShifts(conn, tenantDbName, io) {
 
         if (now >= scheduledEndUtc) continue;
 
-        // Helper to verify if candidate worker is eligible and available right now
-        const isWorkerEligible = async (wId) => {
-          if (!wId) return { ok: false, reason: 'no_id' };
-          const emp = await Employees.findById(wId).lean();
-          if (!emp || emp.active === false) return { ok: false, reason: 'inactive' };
+        const slotsNeeded = targetSlots - activeCount;
 
-          // Guard: Worker busy on active duty anywhere?
-          const busy = await Attendance.findOne({
-            employeeId: wId,
-            $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }],
-          }).lean();
-          if (busy) return { ok: false, reason: 'busy', siteName: busy.site_name };
+        for (let slotIdx = 0; slotIdx < slotsNeeded; slotIdx++) {
+          let targetWorkerId = null;
+          let targetEmp = null;
+          let workerName = null;
+          let isWeeklyOffOrHoliday = false;
+          let holidayRemark = null;
 
-          // Guard: Already ran duty on this site/shift today?
-          const alreadyRan = await Attendance.findOne({
-            $and: [
-              { employeeId: wId },
-              { $or: siteOrConditions },
-              { shiftCode: { $in: shiftCodesList } },
-              {
-                dutyStart: {
-                  $gte: new Date(scheduledStartUtc.getTime() - 2 * 3600000),
-                  $lte: scheduledEndUtc,
-                },
-              },
-            ],
-          }).lean();
-          if (alreadyRan) return { ok: false, reason: 'already_ran' };
+          // Priority 1: Shift boundWorkerId (if active and available)
+          if (shift.boundWorkerId) {
+            const boundId = String(shift.boundWorkerId._id || shift.boundWorkerId);
+            if (!assignedWorkerIdsThisRun.has(boundId)) {
+              const boundCheck = await checkCandidateWorkerEligibility({
+                workerId: boundId,
+                AttendanceModel: Attendance,
+                EmployeesModel: Employees,
+                SiteRosterHolidaysModel: SiteRosterHolidays,
+                leaveManager,
+                tenantDbName,
+                lead,
+                effectiveLeadId: lead._id,
+                shift,
+                shiftCodesList,
+                todayDateStr,
+                currentDayOfWeek,
+                scheduledStartUtc,
+                scheduledEndUtc,
+                excludeWorkerIds: assignedWorkerIdsThisRun,
+              });
 
-          // Guard: Approved leave from leaveManager (RequestMaster)
-          const approvedLeave = leaveManager.isWorkerOnApprovedLeave(tenantDbName, wId, todayDateStr);
-          if (approvedLeave) return { ok: false, reason: 'leave', approvedLeave };
-
-          // Guard: Weekly rest & SiteRosterHolidays
-          const isShiftRest =
-            normalizeDayOfWeek(shift.weeklyRestDay) === currentDayOfWeek ||
-            (Array.isArray(shift.exemptDays) && shift.exemptDays.map(normalizeDayOfWeek).includes(currentDayOfWeek)) ||
-            normalizeDayOfWeek(emp.weeklyRestDay) === currentDayOfWeek ||
-            normalizeDayOfWeek(emp.weeklyOff) === currentDayOfWeek;
-
-          let offRecord = null;
-          if (SiteRosterHolidays) {
-            offRecord = await SiteRosterHolidays.findOne({
-              siteId: lead._id,
-              $or: [
-                { workerId: wId, type: 'WeeklyRest', restDayOfWeek: { $regex: new RegExp(`^${currentDayOfWeek}`, 'i') } },
-                {
-                  workerId: wId,
-                  date: todayDateStr,
-                  type: { $in: ['SickLeave', 'CasualLeave', 'OtherLeave', 'PaidHoliday', 'WeeklyRest'] },
-                },
-                { date: todayDateStr, type: 'SiteClosed' },
-              ],
-            }).lean();
+              if (boundCheck.ok) {
+                targetWorkerId = boundId;
+                targetEmp = boundCheck.emp;
+                workerName = boundCheck.emp.name || shift.boundWorkerName || 'Worker';
+                isWeeklyOffOrHoliday = boundCheck.isWeeklyOffOrHoliday;
+                holidayRemark = boundCheck.holidayRemark;
+                if (isWeeklyOffOrHoliday) {
+                  console.log(
+                    `🏖️ [autoEndScheduler] Bound worker ${workerName} at ${lead.sender_name || 'Site'} has Weekly Off/Holiday (${holidayRemark || currentDayOfWeek}), but is available. Marking attendance as instructed.`
+                  );
+                }
+              } else {
+                console.log(
+                  `ℹ️ [autoEndScheduler] Bound worker ${shift.boundWorkerName || boundId} is unavailable (${boundCheck.reason}: ${boundCheck.remark || ''}). Checking stepped previous day worker.`
+                );
+              }
+            }
           }
 
-          if (isShiftRest || offRecord) {
-            return {
-              ok: false,
-              reason: 'rest',
-              remark: offRecord ? (offRecord.remark || offRecord.type) : `${currentDayOfWeek} Weekly Rest`,
-            };
+          // Priority 2: Stepped Fallback: today-1, then today-2, then today-3...
+          // Strictly avoids random worker selection. If weekly off/holiday worker available, mark attendance.
+          if (!targetWorkerId) {
+            const steppedWorker = await findSteppedPreviousDayWorker({
+              AttendanceModel: Attendance,
+              EmployeesModel: Employees,
+              SiteRosterHolidaysModel: SiteRosterHolidays,
+              leaveManager,
+              tenantDbName,
+              lead,
+              effectiveLeadId: lead._id,
+              shift,
+              targetShiftCode: shiftCode,
+              shiftCodesList,
+              baseDate: scheduledStartUtc,
+              todayDateStr,
+              currentDayOfWeek,
+              scheduledStartUtc,
+              scheduledEndUtc,
+              excludeWorkerIds: assignedWorkerIdsThisRun,
+              maxDaysBack: 14,
+            });
+
+            if (steppedWorker) {
+              targetWorkerId = steppedWorker.workerId;
+              targetEmp = steppedWorker.emp;
+              workerName = steppedWorker.workerName;
+              isWeeklyOffOrHoliday = steppedWorker.isWeeklyOffOrHoliday;
+              holidayRemark = steppedWorker.holidayRemark;
+              console.log(
+                `🔄 [autoEndScheduler] Stepped fallback selected worker ${workerName} (${targetWorkerId}) from today-${steppedWorker.foundDayOffset} for shift ${shiftCode} at site "${lead.sender_name || 'Site'}"`
+              );
+            }
           }
 
-          return { ok: true, emp };
-        };
-
-        // 3. Resolve Worker:
-        // Priority 1: Shift boundWorkerId (if active and available)
-        // Priority 2: Worker who performed the last duty on this shift at this site
-        // Priority 3: Worker who performed the last duty on any shift at this site
-        let targetWorkerId = null;
-        let targetEmp = null;
-        let workerName = null;
-
-        if (shift.boundWorkerId) {
-          const boundId = String(shift.boundWorkerId._id || shift.boundWorkerId);
-          const boundCheck = await isWorkerEligible(boundId);
-          if (boundCheck.ok) {
-            targetWorkerId = boundId;
-            targetEmp = boundCheck.emp;
-            workerName = boundCheck.emp.name || shift.boundWorkerName || 'Worker';
-          } else if (boundCheck.reason === 'rest') {
-            console.log(
-              `🏖️ [autoEndScheduler] Worker ${shift.boundWorkerName || 'Worker'} at ${lead.sender_name || 'Site'} is on WEEKLY REST / OFF on ${currentDayOfWeek}. Skipping auto-start.`
-            );
+          if (!targetWorkerId || !targetEmp) {
             if (io && tenantDbName) {
               io.to(tenantDbName).emit('attendance:reliever_needed', {
                 siteId: String(lead._id),
                 siteName: lead.sender_name || lead.name || 'Site',
                 shiftCode: shift.shiftCode,
-                boundWorkerId: boundId,
-                boundWorkerName: shift.boundWorkerName || 'Worker',
-                reason: boundCheck.remark,
+                reason: 'No available worker found for shift slot (checked stepped previous days)',
               });
             }
-            continue; // Legitimately on weekly rest / holiday!
-          } else if (boundCheck.reason === 'leave') {
-            console.log(
-              `🏖️ [autoEndScheduler] Worker ${shift.boundWorkerName || 'Worker'} is on APPROVED LEAVE. Checking fallback substitute.`
-            );
-          } else {
-            console.log(
-              `ℹ️ [autoEndScheduler] Bound worker ${shift.boundWorkerName || boundId} is ${boundCheck.reason} (${boundCheck.siteName || ''}). Checking fallback substitute.`
-            );
+            break; // Cannot fill further slots in this run
           }
-        }
 
-        // Fallback 1: Worker from previous duties on this shift at this site
-        if (!targetWorkerId) {
-          const prevDuties = await Attendance.find({
-            $or: siteOrConditions,
-            shiftCode: { $in: shiftCodesList },
-            dutyStart: { $exists: true },
-          })
-            .sort({ dutyStart: -1 })
-            .limit(6)
-            .lean();
+          assignedWorkerIdsThisRun.add(targetWorkerId);
 
-          for (const prev of prevDuties) {
-            if (!prev.employeeId) continue;
-            const pId = String(prev.employeeId);
-            const pCheck = await isWorkerEligible(pId);
-            if (pCheck.ok) {
-              targetWorkerId = pId;
-              targetEmp = pCheck.emp;
-              workerName = pCheck.emp.name || prev.workerName || 'Worker';
-              console.log(
-                `🔄 [autoEndScheduler] Resolved fallback worker ${workerName} (${targetWorkerId}) from shift history at "${lead.sender_name || 'Site'}"`
-              );
-              break;
-            }
-          }
-        }
+          // 4. Auto-start duty on clock set in client shift schedule
+          const dutyStartActual = scheduledStartUtc;
+          const dutyEndScheduled = scheduledEndUtc;
+          const resolvedDailyRate = shift.salaryRate || targetEmp.daily_rate || targetEmp.rate || 0;
 
-        // Fallback 2: Worker from previous duties on ANY shift at this site
-        if (!targetWorkerId) {
-          const anyPrevDuties = await Attendance.find({
-            $or: siteOrConditions,
-            dutyStart: { $exists: true },
-          })
-            .sort({ dutyStart: -1 })
-            .limit(6)
-            .lean();
+          // ── Resolve Site / Lead Coordinates for Auto-Started Duty ─────────────
+          const { lat: siteLat, long: siteLong, address: siteAddress } = resolveLeadCoordinates(lead);
 
-          for (const prev of anyPrevDuties) {
-            if (!prev.employeeId) continue;
-            const pId = String(prev.employeeId);
-            const pCheck = await isWorkerEligible(pId);
-            if (pCheck.ok) {
-              targetWorkerId = pId;
-              targetEmp = pCheck.emp;
-              workerName = pCheck.emp.name || prev.workerName || 'Worker';
-              console.log(
-                `🔄 [autoEndScheduler] Resolved fallback worker ${workerName} (${targetWorkerId}) from site history at "${lead.sender_name || 'Site'}"`
-              );
-              break;
-            }
-          }
-        }
-
-        if (!targetWorkerId || !targetEmp) {
-          if (io && tenantDbName) {
-            io.to(tenantDbName).emit('attendance:reliever_needed', {
-              siteId: String(lead._id),
-              siteName: lead.sender_name || lead.name || 'Site',
-              shiftCode: shift.shiftCode,
-              reason: 'No available worker found for shift slot',
+          const initialGeoHistory = [];
+          if (siteLat !== null && siteLong !== null) {
+            initialGeoHistory.push({
+              lat: siteLat,
+              long: siteLong,
+              address: siteAddress || lead.sender_name || lead.name || 'Site Location',
+              type: 'start',
+              timestamp: scheduledStartUtc,
             });
           }
-          continue;
-        }
 
-        // 4. Auto-start duty on clock set in client shift schedule
-        const dutyStartActual = scheduledStartUtc;
-        const dutyEndScheduled = scheduledEndUtc;
-        const resolvedDailyRate = shift.salaryRate || targetEmp.daily_rate || targetEmp.rate || 0;
-
-        // ── Resolve Site / Lead Coordinates for Auto-Started Duty ─────────────
-        const { lat: siteLat, long: siteLong, address: siteAddress } = resolveLeadCoordinates(lead);
-
-        const initialGeoHistory = [];
-        if (siteLat !== null && siteLong !== null) {
-          initialGeoHistory.push({
-            lat: siteLat,
-            long: siteLong,
-            address: siteAddress || lead.sender_name || lead.name || 'Site Location',
-            type: 'start',
-            timestamp: scheduledStartUtc,
+          const newDuty = new Attendance({
+            employeeId: targetWorkerId,
+            employeeType: 'Employees',
+            workerName,
+            role: targetEmp?.role || 'Security',
+            leadId: lead._id,
+            siteId: lead._id,
+            clientId: lead.clientId || null,
+            site_name: lead.sender_name || lead.name || 'Site',
+            startLat: siteLat,
+            startLong: siteLong,
+            siteLat: siteLat,
+            siteLong: siteLong,
+            geoHistory: initialGeoHistory,
+            status: 'Present',
+            dutyLevel: 1,
+            rate: resolvedDailyRate,
+            dailyRate: resolvedDailyRate,
+            date: scheduledStartUtc,
+            dutyStart: dutyStartActual,
+            dutyStartScheduled: scheduledStartUtc,
+            dutyEndScheduled: dutyEndScheduled,
+            shiftCode: shift.shiftCode,
+            shiftType: durationHrs === 12 ? '12hr' : '8hr',
+            shiftPeriod:
+              shift.shiftPeriod ||
+              (shiftCode === 'N2' ? 'Night12' : shiftCode === 'D' ? 'Day' : 'General'),
+            shiftHours: durationHrs,
+            shiftLockHours: durationHrs,
+            dutyEnd: null,
+            forcedOff: false,
+            markedByDevice: false,
+            markedByUserName: 'Auto Shift Rollover',
+            remarks: isWeeklyOffOrHoliday
+              ? `Auto-started duty for ${shift.shiftName || shiftCode} (${holidayRemark || 'Weekly Off / Holiday Duty'})`
+              : `Auto-started duty for ${shift.shiftName || shiftCode}`,
           });
+
+          await newDuty.save();
+
+          scheduleAutoEnd(newDuty._id, dutyEndScheduled, Attendance, tenantDbName, io);
+
+          if (io && tenantDbName) {
+            io.to(tenantDbName).emit('attendance:created', { data: newDuty });
+            io.to(tenantDbName).emit('attendance:active_updated');
+            recordRolloverSuccess(tenantDbName, io, 1);
+          }
+
+          console.log(
+            `[autoEndScheduler] Auto-started scheduled shift ${shiftCode} at site "${lead.sender_name || 'Site'}" for ${workerName} (${targetWorkerId})`
+          );
         }
-
-        const newDuty = new Attendance({
-          employeeId: targetWorkerId,
-          employeeType: 'Employees',
-          workerName,
-          role: targetEmp?.role || 'Security',
-          leadId: lead._id,
-          siteId: lead._id,
-          clientId: lead.clientId || null,
-          site_name: lead.sender_name || lead.name || 'Site',
-          startLat: siteLat,
-          startLong: siteLong,
-          siteLat: siteLat,
-          siteLong: siteLong,
-          geoHistory: initialGeoHistory,
-          status: 'Present',
-          dutyLevel: 1,
-          rate: resolvedDailyRate,
-          dailyRate: resolvedDailyRate,
-          date: scheduledStartUtc,
-          dutyStart: dutyStartActual,
-          dutyStartScheduled: scheduledStartUtc,
-          dutyEndScheduled: dutyEndScheduled,
-          shiftCode: shift.shiftCode,
-          shiftType: durationHrs === 12 ? '12hr' : '8hr',
-          shiftPeriod:
-            shift.shiftPeriod ||
-            (shiftCode === 'N2' ? 'Night12' : shiftCode === 'D' ? 'Day' : 'General'),
-          shiftHours: durationHrs,
-          shiftLockHours: durationHrs,
-          dutyEnd: null,
-          forcedOff: false,
-          markedByDevice: false,
-          markedByUserName: 'Auto Shift Rollover',
-          remarks: `Auto-started duty for ${shift.shiftName || shiftCode}`,
-        });
-
-        await newDuty.save();
-
-        scheduleAutoEnd(newDuty._id, dutyEndScheduled, Attendance, tenantDbName, io);
-
-        if (io && tenantDbName) {
-          io.to(tenantDbName).emit('attendance:created', { data: newDuty });
-          io.to(tenantDbName).emit('attendance:active_updated');
-          recordRolloverSuccess(tenantDbName, io, 1);
-        }
-
-        console.log(
-          `[autoEndScheduler] Auto-started scheduled shift ${shiftCode} at site "${lead.sender_name || 'Site'}" for ${workerName} (${targetWorkerId})`
-        );
       }
     }
   } catch (err) {
@@ -1387,4 +1602,7 @@ module.exports = {
   isShiftSlotSuppressed,
   autoDelinkInactiveWorkers,
   healMissingAttendanceGeo,
+  getIstDayWindow,
+  checkCandidateWorkerEligibility,
+  findSteppedPreviousDayWorker,
 };

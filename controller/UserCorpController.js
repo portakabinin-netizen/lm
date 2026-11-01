@@ -2281,7 +2281,7 @@ exports.manageEmployees = {
       const isAdminRole = ['corpadmin', 'useradmin', 'admin'].includes(role.toLowerCase());
       const isEmployeeCollection = !!employeeDoc;
       const isExemptUser = isAdminRole || isEmployeeCollection;
-      const finalGeoHistory = isExemptUser ? [] : geoHistory || [];
+      let finalGeoHistory = isExemptUser ? [] : (geoHistory || []);
 
       // Merge site-shift override on top of defaults (site always wins when available)
       const finalShiftCode =
@@ -2301,7 +2301,7 @@ exports.manageEmployees = {
       // Fetch site coordinates if leadId or siteId exists
       let siteLat = undefined;
       let siteLong = undefined;
-      const targetLeadId = leadId || siteId || req.body.siteId;
+      const targetLeadId = leadId || req.body.siteId;
       let siteDoc = null;
       if (targetLeadId) {
         siteDoc = await Leads.findById(targetLeadId).lean();
