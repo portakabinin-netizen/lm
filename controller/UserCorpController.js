@@ -1018,47 +1018,65 @@ exports.manageProducts = {
 };
 
 /**
- * Helper: Find a worker's latest work site from the Attendance collection in current month only.
- * Checks attendance records for current calendar month matching the worker's ID, mobile, or enrollment number.
+ * Helper: Find a worker's latest work site from the Attendance collection in current month (or recent active window).
+ * Checks attendance records for current calendar month matching the worker's ID, mobile, enrollment number, or name.
+ * If month has just begun (e.g. 1st of month), smoothly checks recent 35 days (previous month cycle) so the worker's
+ * real active work site is reliably retrieved instead of falling back to a dummy "Project Site" placeholder.
  * Resolves to actual site name or the linked project/lead name.
  */
-const getWorkerLatestMonthSite = async (tenantModels, workerId, workerMobile, enrollmentNo) => {
+const getWorkerLatestMonthSite = async (
+  tenantModels,
+  workerId,
+  workerMobile,
+  enrollmentNo,
+  referenceDate,
+  workerName
+) => {
   try {
     const { Attendance, Leads, Employees } = tenantModels || {};
-    if (!Attendance || !workerId) return null;
+    if (!Attendance || (!workerId && !workerMobile && !enrollmentNo && !workerName)) return null;
 
-    const now = new Date();
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
-    const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+    const refDate = referenceDate ? new Date(referenceDate) : new Date();
+    const validRef = !isNaN(refDate.getTime()) ? refDate : new Date();
+
+    // 1. Current calendar month boundary for the reference date
+    const startOfMonth = new Date(validRef.getFullYear(), validRef.getMonth(), 1, 0, 0, 0, 0);
+    const endOfMonth = new Date(validRef.getFullYear(), validRef.getMonth() + 1, 0, 23, 59, 59, 999);
+    const startOfMonthStr = startOfMonth.toISOString().slice(0, 10);
+    const endOfMonthStr = endOfMonth.toISOString().slice(0, 10);
+
+    // 2. Also check recent 35 days (covers previous month cycle if current month is brand new or worker worked recently)
+    const thirtyFiveDaysAgo = new Date(validRef.getTime() - 35 * 24 * 60 * 60 * 1000);
+    const thirtyFiveDaysAgoStr = thirtyFiveDaysAgo.toISOString().slice(0, 10);
 
     const targetIds = new Set();
     if (workerId) targetIds.add(String(workerId));
 
-    // Try finding worker in Employees collection if mobile or enrollmentNo exists
-    if (Employees && (workerMobile || enrollmentNo || mongoose.Types.ObjectId.isValid(workerId))) {
-      const empQuery = [];
-      if (mongoose.Types.ObjectId.isValid(workerId)) {
-        empQuery.push({ _id: new mongoose.Types.ObjectId(workerId) });
+    const empQuery = [];
+    if (workerId && mongoose.Types.ObjectId.isValid(workerId)) {
+      empQuery.push({ _id: new mongoose.Types.ObjectId(workerId) });
+    }
+    if (enrollmentNo) {
+      const cleanEfn = String(enrollmentNo).replace(/^EFN#?\s*/i, '').trim();
+      empQuery.push({ enrollment_no: cleanEfn });
+      empQuery.push({ enrollment_no: String(enrollmentNo) });
+    }
+    if (workerMobile) {
+      const cleanMob = String(workerMobile).replace(/\D/g, '').slice(-10);
+      if (cleanMob.length >= 10) {
+        empQuery.push({ mobile: { $regex: cleanMob + '$' } });
       }
-      if (enrollmentNo) {
-        const cleanEfn = String(enrollmentNo).replace(/^EFN#?\s*/i, '').trim();
-        empQuery.push({ enrollment_no: cleanEfn });
-        empQuery.push({ enrollment_no: String(enrollmentNo) });
-      }
-      if (workerMobile) {
-        const cleanMob = String(workerMobile).replace(/\D/g, '').slice(-10);
-        if (cleanMob.length >= 10) {
-          empQuery.push({ mobile: { $regex: cleanMob + '$' } });
-        }
-      }
+    }
+    if (workerName && String(workerName).trim().length > 2) {
+      empQuery.push({ name: new RegExp('^' + String(workerName).trim() + '$', 'i') });
+    }
 
-      if (empQuery.length > 0) {
-        const emp = await Employees.findOne({ $or: empQuery })
-          .select('_id enrollment_no mobile')
-          .lean()
-          .catch(() => null);
-        if (emp?._id) targetIds.add(String(emp._id));
-      }
+    if (Employees && empQuery.length > 0) {
+      const emp = await Employees.findOne({ $or: empQuery })
+        .select('_id enrollment_no mobile name locationId')
+        .lean()
+        .catch(() => null);
+      if (emp?._id) targetIds.add(String(emp._id));
     }
 
     const idConditions = [];
@@ -1070,48 +1088,105 @@ const getWorkerLatestMonthSite = async (tenantModels, workerId, workerMobile, en
       }
     });
 
-    const attQuery = {
+    if (workerName && String(workerName).trim().length > 2) {
+      idConditions.push({ workerName: new RegExp('^' + String(workerName).trim() + '$', 'i') });
+    }
+
+    if (idConditions.length === 0) return null;
+
+    const isGenericSite = (s) =>
+      !s || /^(project site|site project|hq\/remote|general|site)$/i.test(String(s).trim());
+
+    // Helper to extract clean site name from lead or attendance
+    const resolveSiteFromRecord = async (record) => {
+      if (!record) return null;
+      let site = (record.site_name || '').trim();
+      let siteId = String(record.leadId || record.siteId || '');
+
+      if (isGenericSite(site) && (record.leadId || record.siteId) && Leads) {
+        const lead = await Leads.findById(record.leadId || record.siteId).lean().catch(() => null);
+        if (lead) {
+          site = (lead.sender_name || lead.project_name || lead.name || lead.company_name || '').trim();
+        }
+      }
+
+      if (site && !isGenericSite(site)) {
+        return {
+          siteName: site,
+          siteId,
+          date: record.date || record.dutyStart || record.createdAt,
+        };
+      }
+      return null;
+    };
+
+    // Attempt 1: Current month of reference date
+    const currentMonthFilter = {
       $and: [
         { $or: idConditions },
-        { date: { $gte: startOfMonth, $lte: endOfMonth } },
+        {
+          $or: [
+            { date: { $gte: startOfMonth, $lte: endOfMonth } },
+            { dutyStart: { $gte: startOfMonth, $lte: endOfMonth } },
+            { createdAt: { $gte: startOfMonth, $lte: endOfMonth } },
+            { date: { $gte: startOfMonthStr, $lte: endOfMonthStr } },
+          ],
+        },
       ],
     };
 
-    const records = await Attendance.find(attQuery)
+    let records = await Attendance.find(currentMonthFilter)
       .sort({ date: -1, dutyStart: -1, createdAt: -1 })
       .limit(20)
       .lean()
       .catch(() => []);
 
+    // Attempt 2: If none in current month, check recent 35 days (e.g. yesterday in previous month)
+    if (!records || records.length === 0) {
+      const recentFilter = {
+        $and: [
+          { $or: idConditions },
+          {
+            $or: [
+              { date: { $gte: thirtyFiveDaysAgo } },
+              { dutyStart: { $gte: thirtyFiveDaysAgo } },
+              { createdAt: { $gte: thirtyFiveDaysAgo } },
+              { date: { $gte: thirtyFiveDaysAgoStr } },
+            ],
+          },
+        ],
+      };
+      records = await Attendance.find(recentFilter)
+        .sort({ date: -1, dutyStart: -1, createdAt: -1 })
+        .limit(20)
+        .lean()
+        .catch(() => []);
+    }
+
+    // Attempt 3: If still none, get latest attendance ever
+    if (!records || records.length === 0) {
+      records = await Attendance.find({ $or: idConditions })
+        .sort({ date: -1, dutyStart: -1, createdAt: -1 })
+        .limit(10)
+        .lean()
+        .catch(() => []);
+    }
+
     if (!records || records.length === 0) return null;
 
-    // Prefer record with actual site name (non-generic)
-    let chosenAtt = records.find(
-      (r) =>
-        r.site_name &&
-        !/^(project site|site project|hq\/remote|general)$/i.test(String(r.site_name).trim())
-    );
-
-    if (!chosenAtt) {
-      chosenAtt = records.find((r) => r.leadId || r.siteId) || records[0];
+    // Pick record with non-generic site name first
+    let chosen = records.find((r) => r.site_name && !isGenericSite(r.site_name));
+    if (!chosen) {
+      chosen = records.find((r) => r.leadId || r.siteId) || records[0];
     }
 
-    let site = (chosenAtt?.site_name || '').trim();
-    const isGeneric = !site || /^(project site|site project|hq\/remote|general)$/i.test(site);
+    const resolved = await resolveSiteFromRecord(chosen);
+    if (resolved) return resolved;
 
-    if (isGeneric && (chosenAtt?.leadId || chosenAtt?.siteId) && Leads) {
-      const lead = await Leads.findById(chosenAtt.leadId || chosenAtt.siteId).lean().catch(() => null);
-      if (lead) {
-        site = (lead.sender_name || lead.name || lead.company_name || '').trim();
-      }
-    }
-
-    if (site && !/^(project site|site project)$/i.test(site)) {
-      return {
-        siteName: site,
-        siteId: String(chosenAtt?.leadId || chosenAtt?.siteId || ''),
-        date: chosenAtt?.date,
-      };
+    // If chosen didn't resolve, loop through all records
+    for (const r of records) {
+      const res = await resolveSiteFromRecord(r);
+      if (res) return res;
     }
 
     return null;
@@ -2408,6 +2483,24 @@ exports.manageEmployees = {
     } catch (err) {
       console.error('cleanReconcileAttendance error:', err);
       return res.status(500).json({ success: false, message: err.message });
+    }
+  },
+  healGeoAttendance: async (req, res) => {
+    try {
+      const autoEndScheduler = require('../utils/autoEndScheduler');
+      const conn = req.tenantModels?.Attendance?.db;
+      if (!conn) {
+        return res.status(500).json({ success: false, message: 'Database connection not available' });
+      }
+      const updatedCount = await autoEndScheduler.healMissingAttendanceGeo(conn, req.tenantDbName, req.io);
+      res.json({
+        success: true,
+        message: `Healed coordinates for ${updatedCount} attendance record(s)`,
+        updatedCount,
+      });
+    } catch (err) {
+      console.error('healGeoAttendance error:', err);
+      res.status(500).json({ success: false, message: err.message });
     }
   },
   deleteAttendance: async (req, res) => {
@@ -3932,11 +4025,18 @@ exports.manageEmployees = {
 
   getWorkerCurrentMonthSite: async (req, res) => {
     try {
-      const { workerId, mobile, enrollment_no } = req.query;
-      if (!workerId) {
-        return res.status(400).json({ success: false, message: 'workerId is required' });
+      const { workerId, mobile, enrollment_no, workerName, date } = req.query;
+      if (!workerId && !mobile && !enrollment_no && !workerName) {
+        return res.status(400).json({ success: false, message: 'workerId, mobile or enrollment_no is required' });
       }
-      const siteInfo = await getWorkerLatestMonthSite(req.tenantModels, workerId, mobile, enrollment_no);
+      const siteInfo = await getWorkerLatestMonthSite(
+        req.tenantModels,
+        workerId,
+        mobile,
+        enrollment_no,
+        date || new Date(),
+        workerName
+      );
       res.json({
         success: true,
         data: siteInfo,
@@ -3982,7 +4082,7 @@ exports.manageEmployees = {
         return res.status(400).json({ success: false, message: 'workerId is required' });
       }
 
-      // ── Resolve Worker's Actual Site from Attendance in Current Month Only ──
+      // ── Resolve Worker's Actual Site from Attendance in Current Month / Active Window ──
       let resolvedProjectName = (projectName || '').trim();
       let resolvedProjectId = (projectId || '').trim();
 
@@ -3990,12 +4090,14 @@ exports.manageEmployees = {
         req.tenantModels,
         workerId,
         workerMobile,
-        enrollment_no || efn
+        enrollment_no || efn,
+        new Date(),
+        workerName
       );
       if (latestMonthSite?.siteName) {
         resolvedProjectName = latestMonthSite.siteName;
         resolvedProjectId = latestMonthSite.siteId || resolvedProjectId;
-      } else if (!resolvedProjectName || /^(project site|site project)$/i.test(resolvedProjectName)) {
+      } else if (!resolvedProjectName || /^(project site|site project|hq\/remote|general|site)$/i.test(resolvedProjectName)) {
         resolvedProjectName = 'Project Site';
       }
 
@@ -4235,14 +4337,16 @@ exports.manageEmployees = {
           let pName = (doc.projectName || '').trim();
           let pId = doc.projectId;
 
-          // Replace generic 'Project Site' with worker's actual work site from Attendance in current month only
-          const isGeneric = !pName || /^(project site|site project|hq\/remote|general)$/i.test(pName);
-          if (doc.workerId) {
+          // Replace generic 'Project Site' with worker's actual work site from Attendance in current month (or recent window)
+          const isGeneric = !pName || /^(project site|site project|hq\/remote|general|site)$/i.test(pName);
+          if (doc.workerId || doc.workerMobile || doc.enrollment_no || doc.workerName) {
             const siteInfo = await getWorkerLatestMonthSite(
               req.tenantModels,
               doc.workerId,
               doc.workerMobile,
-              doc.enrollment_no || doc.efn
+              doc.enrollment_no || doc.efn,
+              doc.appliedAt || doc.createdAt,
+              doc.workerName
             );
             if (siteInfo?.siteName) {
               pName = siteInfo.siteName;

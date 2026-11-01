@@ -1162,6 +1162,133 @@ async function autoDelinkInactiveWorkers(conn, tenantDbName, io) {
 }
 
 /**
+ * Auto-heals missing geo coordinates (siteLat, siteLong, startLat, startLong, geoHistory)
+ * for active attendance logs and today's attendance records from their matching Lead/Site.
+ */
+async function healMissingAttendanceGeo(conn, tenantDbName, io) {
+  try {
+    const { getTenantModels } = require('../models/TenantModels');
+    const { Attendance, Leads } = getTenantModels(conn);
+    if (!Attendance || !Leads) return 0;
+
+    const { dateStr } = getIstInfo();
+    const istOffsetMs = 5.5 * 3600000;
+    const startOfTodayUtc = new Date(new Date(`${dateStr}T00:00:00.000Z`).getTime() - istOffsetMs);
+
+    const query = {
+      $and: [
+        {
+          $or: [
+            { dutyEnd: null },
+            { dutyEnd: { $exists: false } },
+            { dutyEnd: '' },
+            { date: { $gte: startOfTodayUtc } },
+            { dutyStart: { $gte: startOfTodayUtc } },
+          ],
+        },
+        {
+          $or: [
+            { siteLat: null },
+            { siteLat: { $exists: false } },
+            { siteLong: null },
+            { siteLong: { $exists: false } },
+            { startLat: null },
+            { startLat: { $exists: false } },
+            { startLong: null },
+            { startLong: { $exists: false } },
+            { geoHistory: { $size: 0 } },
+            { geoHistory: { $exists: false } },
+          ],
+        },
+      ],
+    };
+
+    const attendances = await Attendance.find(query).lean();
+    if (!attendances || attendances.length === 0) return 0;
+
+    let updatedCount = 0;
+    for (const att of attendances) {
+      const targetLeadId = att.leadId || att.siteId;
+      let leadDoc = null;
+      if (targetLeadId) {
+        leadDoc = await Leads.findById(targetLeadId).lean();
+      }
+      if (!leadDoc && att.site_name) {
+        leadDoc = await Leads.findOne({
+          $or: [{ sender_name: att.site_name }, { name: att.site_name }],
+        }).lean();
+      }
+      if (!leadDoc) continue;
+
+      const coords = resolveLeadCoordinates(leadDoc, att);
+      if (coords.lat === null || coords.long === null) continue;
+
+      const $set = {};
+      let changed = false;
+
+      if (att.siteLat === undefined || att.siteLat === null) {
+        $set.siteLat = coords.lat;
+        changed = true;
+      }
+      if (att.siteLong === undefined || att.siteLong === null) {
+        $set.siteLong = coords.long;
+        changed = true;
+      }
+      if (att.startLat === undefined || att.startLat === null) {
+        $set.startLat = coords.lat;
+        changed = true;
+      }
+      if (att.startLong === undefined || att.startLong === null) {
+        $set.startLong = coords.long;
+        changed = true;
+      }
+
+      let updatedGeoHistory = Array.isArray(att.geoHistory) ? [...att.geoHistory] : [];
+      const hasStart = updatedGeoHistory.some((g) => g && g.type === 'start');
+      if (!hasStart) {
+        updatedGeoHistory.unshift({
+          lat: coords.lat,
+          long: coords.long,
+          address: coords.address || leadDoc.sender_name || leadDoc.name || att.site_name || 'Site Location',
+          type: 'start',
+          timestamp: att.dutyStart ? new Date(att.dutyStart) : new Date(),
+        });
+        $set.geoHistory = updatedGeoHistory;
+        changed = true;
+      }
+
+      if (att.dutyEnd && !updatedGeoHistory.some((g) => g && g.type === 'end')) {
+        updatedGeoHistory.push({
+          lat: coords.lat,
+          long: coords.long,
+          address: coords.address || leadDoc.sender_name || leadDoc.name || att.site_name || 'Site Location',
+          type: 'end',
+          timestamp: new Date(att.dutyEnd),
+        });
+        $set.geoHistory = updatedGeoHistory;
+        changed = true;
+      }
+
+      if (changed) {
+        await Attendance.updateOne({ _id: att._id }, { $set });
+        updatedCount++;
+      }
+    }
+
+    if (updatedCount > 0) {
+      console.log(`📍 [autoEndScheduler] Healed geo coordinates for ${updatedCount} attendance logs in tenant ${tenantDbName}`);
+      if (io && tenantDbName) {
+        io.to(tenantDbName).emit('attendance:active_updated');
+      }
+    }
+    return updatedCount;
+  } catch (err) {
+    console.error(`[autoEndScheduler] healMissingAttendanceGeo error in ${tenantDbName}:`, err.message);
+    return 0;
+  }
+}
+
+/**
  * Sweeps all active tenant databases to:
  * 1. Auto-close expired shifts and compute OT.
  * 2. Auto-start scheduled shifts across active sites.
@@ -1195,9 +1322,12 @@ async function sweepAllTenants(io) {
       try {
         const conn = await dbConnector.getTenantConnection(dbName);
         if (conn && conn.readyState === 1) {
-          const { Attendance } = getTenantModels(conn);
+          const { Attendance, Leads } = getTenantModels(conn);
           if (Attendance) {
             await sweepExpiredShifts(Attendance, dbName, io);
+          }
+          if (Attendance && Leads) {
+            await healMissingAttendanceGeo(conn, dbName, io);
           }
           await autoStartScheduledShifts(conn, dbName, io);
 
@@ -1256,4 +1386,5 @@ module.exports = {
   suppressShiftSlot,
   isShiftSlotSuppressed,
   autoDelinkInactiveWorkers,
+  healMissingAttendanceGeo,
 };

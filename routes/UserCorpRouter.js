@@ -83,6 +83,7 @@ router.post("/hr/attendance/continue-shift",         ctrl.manageEmployees.contin
 router.post("/hr/broadcast",                         ctrl.manageEmployees.sendBroadcast);
 
 router.post("/hr/attendance/clean-reconcile", ctrl.manageEmployees.cleanReconcileAttendance);
+router.post("/hr/attendance/heal-geo",        ctrl.manageEmployees.healGeoAttendance);
 router.post("/hr/attendance/lock-batch", ctrl.manageEmployees.lockBatchAttendance);
 router.post("/hr/attendance/unlock-batch", ctrl.manageEmployees.unlockBatchAttendance);
 router.post("/hr/attendance/relock-batch", ctrl.manageEmployees.relockBatchAttendance);
