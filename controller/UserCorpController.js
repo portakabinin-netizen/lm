@@ -2223,19 +2223,40 @@ exports.manageEmployees = {
       const finalDutyEndScheduled =
         req.body.dutyEndScheduled || new Date(dutyStartMs + finalShiftLockHours * 3600000);
 
-      // Fetch site coordinates if leadId exists
+      // Fetch site coordinates if leadId or siteId exists
       let siteLat = undefined;
       let siteLong = undefined;
-      if (leadId) {
-        const site = await Leads.findById(leadId).lean();
-        if (site && site.location && site.location.lat && site.location.long) {
-          siteLat = Number(site.location.lat);
-          siteLong = Number(site.location.long);
+      const targetLeadId = leadId || siteId || req.body.siteId;
+      let siteDoc = null;
+      if (targetLeadId) {
+        siteDoc = await Leads.findById(targetLeadId).lean();
+        if (siteDoc && siteDoc.location && siteDoc.location.lat !== undefined && siteDoc.location.long !== undefined) {
+          siteLat = Number(siteDoc.location.lat);
+          siteLong = Number(siteDoc.location.long);
+        } else if (siteDoc && siteDoc.lat !== undefined && siteDoc.long !== undefined) {
+          siteLat = Number(siteDoc.lat);
+          siteLong = Number(siteDoc.long);
         }
       }
 
       const startLat = req.body.startLat || req.body.lat || (finalGeoHistory && finalGeoHistory.length > 0 ? finalGeoHistory[0].lat : undefined) || siteLat;
       const startLong = req.body.startLong || req.body.long || (finalGeoHistory && finalGeoHistory.length > 0 ? finalGeoHistory[0].long : undefined) || siteLong;
+
+      if ((!finalGeoHistory || finalGeoHistory.length === 0) && (startLat !== undefined || siteLat !== undefined)) {
+        const initialLat = startLat ?? siteLat;
+        const initialLong = startLong ?? siteLong;
+        if (initialLat !== undefined && initialLong !== undefined) {
+          finalGeoHistory = [
+            {
+              lat: initialLat,
+              long: initialLong,
+              address: siteDoc?.location?.address || site_name || 'Site Location',
+              type: 'start',
+              timestamp: dutyStart ? new Date(dutyStart) : new Date(),
+            },
+          ];
+        }
+      }
 
       const record = new Attendance({
         employeeId,
@@ -2446,6 +2467,10 @@ exports.manageEmployees = {
         'dutyEnd',
         'dailyRate',
         'dailyEarn',
+        'siteLat',
+        'siteLong',
+        'startLat',
+        'startLong',
       ];
       const update = {};
       allowed.forEach((k) => {
@@ -4419,11 +4444,36 @@ exports.manageEmployees = {
           const scheduledEnd = new Date(now.getTime() + shiftHours * 3600000);
 
           let siteName = req.body.site_name || req.body.siteName;
-          if (!siteName && req.body.leadId && Leads) {
-            const siteDoc = await Leads.findById(req.body.leadId).lean();
-            if (siteDoc) siteName = siteDoc.sender_name || siteDoc.name;
+          let siteLat = null;
+          let siteLong = null;
+          let siteAddress = '';
+          const targetLeadId = req.body.leadId || req.body.siteId;
+          if (targetLeadId && Leads) {
+            const siteDoc = await Leads.findById(targetLeadId).lean();
+            if (siteDoc) {
+              siteName = siteDoc.sender_name || siteDoc.name || siteName;
+              if (siteDoc.location) {
+                if (siteDoc.location.lat !== undefined && !isNaN(Number(siteDoc.location.lat))) siteLat = Number(siteDoc.location.lat);
+                if (siteDoc.location.long !== undefined && !isNaN(Number(siteDoc.location.long))) siteLong = Number(siteDoc.location.long);
+                if (siteDoc.location.address) siteAddress = String(siteDoc.location.address);
+              } else if (siteDoc.lat !== undefined && siteDoc.long !== undefined) {
+                siteLat = Number(siteDoc.lat);
+                siteLong = Number(siteDoc.long);
+              }
+            }
           }
           if (!siteName) siteName = emp?.assignedSite || 'HQ/Remote';
+
+          const initialGeoHistory = [];
+          if (siteLat !== null && siteLong !== null) {
+            initialGeoHistory.push({
+              lat: siteLat,
+              long: siteLong,
+              address: siteAddress || siteName || 'Site Location',
+              type: 'start',
+              timestamp: now,
+            });
+          }
 
           const newDuty = new Attendance({
             employeeId: emp?._id || employeeId,
@@ -4443,6 +4493,11 @@ exports.manageEmployees = {
             site_name: siteName,
             siteId: req.body.siteId || null,
             leadId: req.body.leadId || null,
+            startLat: siteLat,
+            startLong: siteLong,
+            siteLat: siteLat,
+            siteLong: siteLong,
+            geoHistory: initialGeoHistory,
             markedByDevice: false,
             markedByUserName: responderName,
             isLate: true,

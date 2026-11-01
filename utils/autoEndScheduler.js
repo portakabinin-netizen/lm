@@ -31,6 +31,53 @@ const isValidLeadStatus = (status) => {
 
 const VALID_LEAD_STATUSES_MONGO = ['Accepted', 'accepted', 'Tax Invoice', 'tax invoice'];
 
+/**
+ * Robustly resolve latitude, longitude, and address from a Lead (Site) document
+ * with fallbacks to prior attendance if available.
+ */
+function resolveLeadCoordinates(lead, fallbackAttendance = null) {
+  let lat = null;
+  let long = null;
+  let address = '';
+
+  if (lead?.location) {
+    if (lead.location.lat !== undefined && lead.location.lat !== null && !isNaN(Number(lead.location.lat))) {
+      lat = Number(lead.location.lat);
+    }
+    if (lead.location.long !== undefined && lead.location.long !== null && !isNaN(Number(lead.location.long))) {
+      long = Number(lead.location.long);
+    }
+    if (lead.location.address) {
+      address = String(lead.location.address).trim();
+    }
+  }
+
+  // Fallbacks on lead object root
+  if (lat === null) {
+    const rawLat = lead?.lat ?? lead?.latitude ?? lead?.locationLat;
+    if (rawLat !== undefined && rawLat !== null && !isNaN(Number(rawLat))) lat = Number(rawLat);
+  }
+  if (long === null) {
+    const rawLong = lead?.long ?? lead?.longitude ?? lead?.locationLong;
+    if (rawLong !== undefined && rawLong !== null && !isNaN(Number(rawLong))) long = Number(rawLong);
+  }
+  if (!address && (lead?.sender_city || lead?.sender_state || lead?.sender_name || lead?.name)) {
+    address = [lead?.sender_name || lead?.name, lead?.sender_city, lead?.sender_state].filter(Boolean).join(', ');
+  }
+
+  // Fallback to prior attendance if lead record itself has no coordinates
+  if (lat === null && fallbackAttendance) {
+    const fLat = fallbackAttendance.siteLat ?? fallbackAttendance.startLat;
+    if (fLat !== undefined && fLat !== null && !isNaN(Number(fLat))) lat = Number(fLat);
+  }
+  if (long === null && fallbackAttendance) {
+    const fLong = fallbackAttendance.siteLong ?? fallbackAttendance.startLong;
+    if (fLong !== undefined && fLong !== null && !isNaN(Number(fLong))) long = Number(fLong);
+  }
+
+  return { lat, long, address };
+}
+
 function parseShiftStartTime(timeStr, defaultHour = 8) {
   if (!timeStr) return { safeH: defaultHour, safeM: 0, totalMins: defaultHour * 60 };
   const str = String(timeStr).trim();
@@ -166,20 +213,69 @@ function scheduleAutoEnd(attendanceId, scheduledEndAt, AttendanceModel, tenantDb
       const overtimeEarn = parseFloat((overtimeHours * baseHourlyRate * overtimeRate).toFixed(2));
       const dailyEarn = parseFloat(((hoursWorked / standardHours) * baseDailyRate).toFixed(2));
 
-      await AttendanceModel.updateOne(
-        { _id: id },
-        {
-          $set: {
-            hoursWorked,
-            dailyRate: baseDailyRate,
-            dailyEarn,
-            isOvertime: overtimeHours > 0,
-            overtimeHours,
-            overtimeRate: 1.0,
-            overtimeEarn,
-          },
-        }
-      );
+      // ── Resolve Site / Lead Coordinates for Auto-Closing Duty ─────────────
+      let leadDoc = null;
+      const effectiveLeadId = result.leadId || result.siteId;
+      if (effectiveLeadId) {
+        try {
+          const db = AttendanceModel.db;
+          const Leads = db.models.Leads || db.model('Leads');
+          leadDoc = await Leads.findById(effectiveLeadId).lean();
+        } catch {}
+      }
+      const coords = resolveLeadCoordinates(leadDoc, result);
+
+      const updateFields = {
+        hoursWorked,
+        dailyRate: baseDailyRate,
+        dailyEarn,
+        isOvertime: overtimeHours > 0,
+        overtimeHours,
+        overtimeRate: 1.0,
+        overtimeEarn,
+      };
+
+      if ((result.siteLat === undefined || result.siteLat === null) && coords.lat !== null) {
+        updateFields.siteLat = coords.lat;
+        result.siteLat = coords.lat;
+      }
+      if ((result.siteLong === undefined || result.siteLong === null) && coords.long !== null) {
+        updateFields.siteLong = coords.long;
+        result.siteLong = coords.long;
+      }
+      if ((result.startLat === undefined || result.startLat === null) && coords.lat !== null) {
+        updateFields.startLat = coords.lat;
+        result.startLat = coords.lat;
+      }
+      if ((result.startLong === undefined || result.startLong === null) && coords.long !== null) {
+        updateFields.startLong = coords.long;
+        result.startLong = coords.long;
+      }
+
+      // Ensure geoHistory has an 'end' tick with site coordinates
+      const endLat = result.siteLat ?? coords.lat;
+      const endLong = result.siteLong ?? coords.long;
+      const hasEndTick = Array.isArray(result.geoHistory) && result.geoHistory.some((g) => g.type === 'end');
+
+      if (endLat !== null && endLong !== null && !hasEndTick) {
+        await AttendanceModel.updateOne(
+          { _id: id },
+          {
+            $set: updateFields,
+            $push: {
+              geoHistory: {
+                lat: endLat,
+                long: endLong,
+                address: coords.address || leadDoc?.sender_name || leadDoc?.name || result.site_name || 'Site Location',
+                type: 'end',
+                timestamp: endTime,
+              },
+            },
+          }
+        );
+      } else {
+        await AttendanceModel.updateOne({ _id: id }, { $set: updateFields });
+      }
 
       if (io && tenantDbName) {
         io.to(tenantDbName).emit('attendance:duty_off', {
@@ -555,6 +651,20 @@ async function handleAutoShiftRollover(closedAttendance, AttendanceModel, tenant
     const nextDutyEndScheduled = new Date(scheduledStartUtc.getTime() + nextDurationHrs * 3600000);
     const resolvedDailyRate = matchedShift.salaryRate || incomingEmp.daily_rate || incomingEmp.rate || 0;
 
+    // ── Resolve Site / Lead Coordinates for Swapped Duty ─────────────────
+    const { lat: siteLat, long: siteLong, address: siteAddress } = resolveLeadCoordinates(lead, closedAttendance);
+
+    const initialGeoHistory = [];
+    if (siteLat !== null && siteLong !== null) {
+      initialGeoHistory.push({
+        lat: siteLat,
+        long: siteLong,
+        address: siteAddress || lead.sender_name || lead.name || closedAttendance.site_name || 'Site Location',
+        type: 'start',
+        timestamp: scheduledStartUtc,
+      });
+    }
+
     const newDuty = new AttendanceModel({
       employeeId: incomingWorkerId,
       employeeType: 'Employees',
@@ -564,6 +674,11 @@ async function handleAutoShiftRollover(closedAttendance, AttendanceModel, tenant
       siteId: effectiveLeadId,
       clientId: closedAttendance.clientId || lead.clientId || null,
       site_name: lead.sender_name || lead.name || closedAttendance.site_name,
+      startLat: siteLat,
+      startLong: siteLong,
+      siteLat: siteLat,
+      siteLong: siteLong,
+      geoHistory: initialGeoHistory,
       status: 'Present',
       dutyLevel: 1,
       rate: resolvedDailyRate,
@@ -966,6 +1081,20 @@ async function autoStartScheduledShifts(conn, tenantDbName, io) {
         const dutyEndScheduled = scheduledEndUtc;
         const resolvedDailyRate = shift.salaryRate || targetEmp.daily_rate || targetEmp.rate || 0;
 
+        // ── Resolve Site / Lead Coordinates for Auto-Started Duty ─────────────
+        const { lat: siteLat, long: siteLong, address: siteAddress } = resolveLeadCoordinates(lead);
+
+        const initialGeoHistory = [];
+        if (siteLat !== null && siteLong !== null) {
+          initialGeoHistory.push({
+            lat: siteLat,
+            long: siteLong,
+            address: siteAddress || lead.sender_name || lead.name || 'Site Location',
+            type: 'start',
+            timestamp: scheduledStartUtc,
+          });
+        }
+
         const newDuty = new Attendance({
           employeeId: targetWorkerId,
           employeeType: 'Employees',
@@ -975,6 +1104,11 @@ async function autoStartScheduledShifts(conn, tenantDbName, io) {
           siteId: lead._id,
           clientId: lead.clientId || null,
           site_name: lead.sender_name || lead.name || 'Site',
+          startLat: siteLat,
+          startLong: siteLong,
+          siteLat: siteLat,
+          siteLong: siteLong,
+          geoHistory: initialGeoHistory,
           status: 'Present',
           dutyLevel: 1,
           rate: resolvedDailyRate,
