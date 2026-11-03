@@ -273,7 +273,22 @@ const attendanceSchema = new mongoose.Schema({
         originalWorkerName: { type: String },
         leaveType: { type: String, enum: ['ShortLeave', 'LongLeave', 'UnannouncedAbsent', null], default: null },
         handoverType: { type: String, enum: ['DoubleShift', 'Reliever', 'Overtime', null], default: null },
-        overtimeRate: { type: Number, default: 0 }
+        overtimeRate: { type: Number, default: 0 },
+        // ── Penalty Management ──
+        penaltyImposed: { type: Number, default: 0 },
+        penaltyDeducted: { type: Number, default: 0 },
+        penaltyWaivedOff: { type: Number, default: 0 },
+        violationType: { type: String, default: '' },
+        penaltyReason: { type: String, default: '' },
+        penaltyApprovedBy: { type: String, default: '' },
+        penaltyMediaUrl: { type: String, default: '' },
+        penaltyMedia: [
+          {
+            url: { type: String },
+            type: { type: String, default: 'image' },
+            uploadedAt: { type: Date, default: Date.now },
+          },
+        ]
     }
 }, { _id: true, timestamps: true });
 

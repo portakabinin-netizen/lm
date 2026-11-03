@@ -142,6 +142,53 @@ function getIstDayWindow(baseDate = new Date(), dayOffset = 1) {
 }
 
 /**
+ * Detects whether a worker or staff logs in with their own mobile / device.
+ * Rules:
+ * 1. Head Office corporate staff (leadId === '__HO__').
+ * 2. Employee record has employeeType === 'userMaster' or user_id set.
+ * 3. Worker ID exists in userMaster as an active user.
+ * 4. Worker mobile number matches a registered active user in userMaster.
+ */
+async function isWorkerOwnDevice({ workerId, emp, leadId, EmployeesModel }) {
+  try {
+    if (!workerId && !emp) return false;
+    if (leadId === '__HO__' || String(leadId) === '__HO__') return true;
+    if (emp?.employeeType === 'userMaster') return true;
+    if (emp?.user_id) return true;
+
+    const userMaster = require('../models/userMaster');
+
+    const wId = workerId ? String(workerId) : (emp ? String(emp._id) : null);
+    if (wId) {
+      const existsInUserMaster = await userMaster.exists({ _id: wId, userActive: true });
+      if (existsInUserMaster) return true;
+    }
+
+    let targetEmp = emp;
+    if (!targetEmp && EmployeesModel && wId) {
+      targetEmp = await EmployeesModel.findById(wId).select('user_id mobile employeeType').lean();
+    }
+
+    if (targetEmp) {
+      if (targetEmp.employeeType === 'userMaster' || targetEmp.user_id) return true;
+      if (targetEmp.mobile) {
+        const cleanMob = String(targetEmp.mobile).replace(/\D/g, '').slice(-10);
+        if (cleanMob && cleanMob.length === 10) {
+          const mobileUser = await userMaster.exists({ userMobile: cleanMob, userActive: true });
+          if (mobileUser) return true;
+        }
+      }
+    }
+
+    return false;
+  } catch (err) {
+    console.warn('[autoEndScheduler] isWorkerOwnDevice check error:', err.message);
+    return false;
+  }
+}
+
+
+/**
  * Evaluates whether a worker is eligible and available to perform duty.
  * Strict rules:
  * 1. Must be active in Employees.
@@ -232,21 +279,36 @@ async function checkCandidateWorkerEligibility({
     }
   }
 
-  // Guard 4: SiteRosterHolidays
+  // Guard 4: SiteRoster Holidays & Offs
   let offRecord = null;
   if (SiteRosterHolidaysModel && lead && lead._id) {
-    offRecord = await SiteRosterHolidaysModel.findOne({
-      siteId: lead._id,
-      $or: [
-        { workerId: wId, type: 'WeeklyRest', restDayOfWeek: { $regex: new RegExp(`^${currentDayOfWeek}`, 'i') } },
-        {
-          workerId: wId,
-          date: todayDateStr,
-          type: { $in: ['SickLeave', 'CasualLeave', 'OtherLeave', 'PaidHoliday', 'NationalHoliday', 'FestivalHoliday', 'WeeklyRest'] },
-        },
-        { date: todayDateStr, type: 'SiteClosed' },
-      ],
-    }).lean();
+    try {
+      const rosterDoc = await SiteRosterHolidaysModel.findOne({ siteId: lead._id }).lean();
+      if (rosterDoc && Array.isArray(rosterDoc.holidays)) {
+        const found = rosterDoc.holidays.find(h => 
+          h.date === todayDateStr || 
+          (h.type === 'WeeklyRest' && h.dayName && h.dayName.toLowerCase().startsWith(currentDayOfWeek.toLowerCase()))
+        );
+        if (found) offRecord = found;
+      }
+
+      if (!offRecord) {
+        offRecord = await SiteRosterHolidaysModel.findOne({
+          siteId: lead._id,
+          $or: [
+            { workerId: wId, type: 'WeeklyRest', restDayOfWeek: { $regex: new RegExp(`^${currentDayOfWeek}`, 'i') } },
+            {
+              workerId: wId,
+              date: todayDateStr,
+              type: { $in: ['SickLeave', 'CasualLeave', 'OtherLeave', 'PaidHoliday', 'NationalHoliday', 'FestivalHoliday', 'WeeklyRest'] },
+            },
+            { date: todayDateStr, type: 'SiteClosed' },
+          ],
+        }).lean();
+      }
+    } catch (e) {
+      console.warn('[autoEndScheduler] Error checking roster holidays:', e.message);
+    }
   }
 
   if (offRecord && offRecord.type === 'SiteClosed') {
@@ -291,6 +353,146 @@ async function checkCandidateWorkerEligibility({
  *
  * If a worker on weekly off / holiday is available, marks attendance for that worker.
  */
+/**
+ * Roster Table Bound Worker Resolution:
+ * Looks up the assigned/bound worker for this site + shift slot directly from
+ * lead.siteShifts or SiteRosterHolidays table.
+ * NO historical attendance checking (no today-1, today-2, etc.).
+ * The assigned worker continues continuously until explicitly changed by supervisor/admin.
+ * 
+ * If a worker on weekly off / holiday is available, marks attendance for that worker.
+ * If worker is on approved leave in RequestMaster, worker is flagged unavailable.
+ */
+async function resolveBoundRosterWorker({
+  AttendanceModel,
+  EmployeesModel,
+  SiteRosterHolidaysModel,
+  leaveManager,
+  tenantDbName,
+  lead,
+  effectiveLeadId,
+  shift,
+  targetShiftCode,
+  shiftCodesList = [],
+  baseDate = new Date(),
+  todayDateStr,
+  currentDayOfWeek,
+  scheduledStartUtc,
+  scheduledEndUtc,
+  excludeWorkerIds = new Set(),
+}) {
+  const targetSiteId = effectiveLeadId || (lead ? lead._id : null);
+  if (!targetSiteId) return null;
+
+  const targetCode = targetShiftCode || (shift && shift.shiftCode);
+  let boundWorkerId = shift?.boundWorkerId
+    ? String(shift.boundWorkerId._id || shift.boundWorkerId)
+    : null;
+  let boundSalaryRate = Number(shift?.salaryRate) || 0;
+  let boundWorkerName = shift?.boundWorkerName || '';
+
+  // 1. If not bound directly in shift object, look in SiteRoster (Unified Contract Master)
+  if (!boundWorkerId && SiteRosterHolidaysModel) {
+    try {
+      const rosterDoc = await SiteRosterHolidaysModel.findOne({ siteId: targetSiteId }).lean();
+      if (rosterDoc && Array.isArray(rosterDoc.shifts)) {
+        const matchShift = rosterDoc.shifts.find(s => s.shiftCode === targetCode && s.active !== false);
+        if (matchShift) {
+          const activeWorker = matchShift.workers?.find(w => w.status === 'Active');
+          if (activeWorker && activeWorker.workerId) {
+            boundWorkerId = String(activeWorker.workerId._id || activeWorker.workerId);
+            boundWorkerName = activeWorker.workerName || boundWorkerName;
+            if (!boundSalaryRate && matchShift.salaryRate) {
+              boundSalaryRate = Number(matchShift.salaryRate);
+            }
+          }
+        }
+      }
+
+      // Fallback for legacy flat documents
+      if (!boundWorkerId) {
+        const legacyDuty = await SiteRosterHolidaysModel.findOne({
+          siteId: targetSiteId,
+          shiftCode: targetCode,
+          status: 'Active',
+          type: { $in: ['ShiftDuty', 'WeeklyRest'] },
+          workerId: { $ne: null },
+        }).sort({ updatedAt: -1, createdAt: -1 }).lean();
+
+        if (legacyDuty && legacyDuty.workerId) {
+          boundWorkerId = String(legacyDuty.workerId._id || legacyDuty.workerId);
+          if (!boundSalaryRate && legacyDuty.salaryRate) {
+            boundSalaryRate = Number(legacyDuty.salaryRate);
+          }
+          if (!boundWorkerName && legacyDuty.workerName) {
+            boundWorkerName = legacyDuty.workerName;
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[autoEndScheduler] Error querying SiteRoster for ' + targetCode + ':', e.message);
+    }
+  }
+
+  if (!boundWorkerId) {
+    console.log(
+      '[autoEndScheduler] No permanently bound worker assigned in roster table for slot ' + targetCode + ' at "' + (lead?.sender_name || 'Site') + '".'
+    );
+    return null;
+  }
+
+  if (excludeWorkerIds && excludeWorkerIds.has(boundWorkerId)) {
+    return null;
+  }
+
+  const todayInfo = getIstInfo(baseDate);
+  const effTodayDateStr = todayDateStr || todayInfo.dateStr;
+  const effCurrentDayOfWeek = currentDayOfWeek || todayInfo.dayOfWeek;
+
+  const targetCodes = Array.isArray(shiftCodesList) && shiftCodesList.length > 0
+    ? shiftCodesList
+    : [targetCode].filter(Boolean);
+
+  const check = await checkCandidateWorkerEligibility({
+    workerId: boundWorkerId,
+    AttendanceModel,
+    EmployeesModel,
+    SiteRosterHolidaysModel,
+    leaveManager,
+    tenantDbName,
+    lead,
+    effectiveLeadId: targetSiteId,
+    shift,
+    shiftCodesList: targetCodes,
+    todayDateStr: effTodayDateStr,
+    currentDayOfWeek: effCurrentDayOfWeek,
+    scheduledStartUtc,
+    scheduledEndUtc,
+    excludeWorkerIds,
+  });
+
+  if (check.ok) {
+    const resolvedWorkerName = check.emp?.name || boundWorkerName || 'Worker';
+    const finalSalaryRate = boundSalaryRate || check.emp?.daily_rate || check.emp?.rate || 0;
+    console.log(
+      '🔒 [autoEndScheduler] Bound roster worker resolved: ' + resolvedWorkerName + ' (' + boundWorkerId + ') for ' + targetCode + ' at "' + (lead?.sender_name || 'Site') + '" (salaryRate: ₹' + finalSalaryRate + ')'
+    );
+    return {
+      workerId: boundWorkerId,
+      emp: check.emp,
+      workerName: resolvedWorkerName,
+      salaryRate: finalSalaryRate,
+      isWeeklyOffOrHoliday: check.isWeeklyOffOrHoliday,
+      holidayRemark: check.holidayRemark,
+    };
+  } else {
+    console.log(
+      '⚠️ [autoEndScheduler] Bound worker ' + boundWorkerId + ' unavailable for ' + targetCode + ' at "' + (lead?.sender_name || 'Site') + '": ' + check.reason + ' (' + (check.remark || '') + ')'
+    );
+    return null;
+  }
+}
+
 async function findSteppedPreviousDayWorker({
   AttendanceModel,
   EmployeesModel,
@@ -532,6 +734,26 @@ function scheduleAutoEnd(attendanceId, scheduledEndAt, AttendanceModel, tenantDb
   const timer = setTimeout(async () => {
     _timers.delete(id);
     try {
+      // ── Guard: Skip auto-closing if worker marked duty on own device or logs in with own device ──
+      const existing = await AttendanceModel.findById(id).select('markedByDevice employeeType employeeId siteId workerName').lean();
+      if (!existing) return;
+      if (existing.markedByDevice === true || existing.employeeType === 'userMaster' || existing.siteId === '__HO__') {
+        console.log(`📱 [autoEndScheduler] Attendance ${id} (${existing.workerName || 'Staff'}) marked on own device. Skipping auto-end; duty end will be marked by worker/staff.`);
+        return;
+      }
+      const db = AttendanceModel.db;
+      const Employees = db.models.Employees || (db.model && db.model('Employees'));
+      const isOwnDev = await isWorkerOwnDevice({
+        workerId: existing.employeeId,
+        leadId: existing.siteId,
+        EmployeesModel: Employees,
+      });
+      if (isOwnDev) {
+        console.log(`📱 [autoEndScheduler] Worker ${existing.workerName || 'Staff'} (${existing.employeeId}) logs in with own device. Skipping auto-end; duty end will be marked by worker/staff.`);
+        return;
+      }
+      // ─────────────────────────────────────────────────────────────────────────────────────────────
+
       const endTime = new Date(scheduledEndAt);
       const result = await AttendanceModel.findOneAndUpdate(
         { _id: id, $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }] },
@@ -703,7 +925,9 @@ async function handleAutoShiftRollover(closedAttendance, AttendanceModel, tenant
       const nightShift = activeSiteShifts.find((s) => /^(N|N2|NIGHT)$/i.test(s.shiftCode));
       nextShiftCode = nightShift ? nightShift.shiftCode : 'N';
     } else if (outgoingCode === 'G') {
-      nextShiftCode = 'G';
+      // 🛡️ General shift (G) is EXEMPT from shift switching / rotational rollover
+      console.log(`[autoEndScheduler] Shift G (General) at site "${lead.sender_name || 'Site'}" is exempt from rotational shift switching.`);
+      return null;
     } else {
       const other = activeSiteShifts.find((s) => s.shiftCode !== outgoingCode);
       nextShiftCode = other ? other.shiftCode : outgoingCode;
@@ -759,107 +983,69 @@ async function handleAutoShiftRollover(closedAttendance, AttendanceModel, tenant
         continue;
       }
 
-      // ── Resolve candidate worker for target shift ──
-      let incomingWorkerId = matchedShift.boundWorkerId
-        ? String(matchedShift.boundWorkerId._id || matchedShift.boundWorkerId)
-        : null;
-      let incomingEmp = null;
-      let incomingWorkerName = matchedShift.boundWorkerName || 'Worker';
-      let isWeeklyOffOrHoliday = false;
-      let holidayRemark = null;
+      // ── Resolve candidate worker for target shift strictly from Roster table (no historical guessing) ──
+      const boundId = matchedShift?.boundWorkerId ? String(matchedShift.boundWorkerId._id || matchedShift.boundWorkerId) : null;
+      const justEndedWorkerId = closedAttendance?.employeeId ? String(closedAttendance.employeeId) : null;
 
-      // Priority 1: Shift boundWorkerId (if active and available)
-      if (incomingWorkerId) {
-        const boundCheck = await checkCandidateWorkerEligibility({
-          workerId: incomingWorkerId,
-          AttendanceModel,
-          EmployeesModel: Employees,
-          SiteRosterHolidaysModel: SiteRosterHolidays,
-          leaveManager,
-          tenantDbName,
-          lead,
-          effectiveLeadId,
-          shift: matchedShift,
-          shiftCodesList: [targetShiftCode, matchedShift.shiftName, matchedShift.shiftPeriod].filter(Boolean),
-          todayDateStr: todayStr,
-          currentDayOfWeek: dayOfWeek,
-          scheduledStartUtc: endTime,
-          scheduledEndUtc: null,
-          excludeWorkerIds: new Set(),
-        });
+      // Check if candidate shift allows continuous double duty / shift switching:
+      // - DaNi: D <-> N2 (Day / Night12 switching or double duty)
+      // - MANG: M -> A -> N -> M (Morning -> Afternoon -> Night sequential switching)
+      // - G is strictly exempt
+      const isSwitchOrDoubleDutyPair =
+        (outgoingCode === 'D' && targetShiftCode === 'N2') ||
+        (outgoingCode === 'N2' && targetShiftCode === 'D') ||
+        (outgoingCode === 'M' && targetShiftCode === 'A') ||
+        (outgoingCode === 'A' && targetShiftCode === 'N') ||
+        (outgoingCode === 'N' && targetShiftCode === 'M');
 
-        if (boundCheck.ok) {
-          incomingEmp = boundCheck.emp;
-          incomingWorkerName = boundCheck.emp.name || matchedShift.boundWorkerName || 'Worker';
-          isWeeklyOffOrHoliday = boundCheck.isWeeklyOffOrHoliday;
-          holidayRemark = boundCheck.holidayRemark;
-          if (isWeeklyOffOrHoliday) {
-            console.log(
-              `🏖️ [autoEndScheduler] Bound worker ${incomingWorkerName} at ${lead.sender_name || 'Site'} has Weekly Off/Holiday (${holidayRemark || dayOfWeek}), but is available. Marking attendance as instructed.`
-            );
-          }
-        } else {
-          console.log(
-            `ℹ️ [autoEndScheduler] Bound worker ${incomingWorkerName} (${incomingWorkerId}) unavailable (${boundCheck.reason}: ${boundCheck.remark || ''}). Checking stepped previous day worker.`
-          );
-          incomingWorkerId = null;
-        }
+      const excludeSet = new Set();
+      if (boundId && justEndedWorkerId && boundId === justEndedWorkerId && isSwitchOrDoubleDutyPair) {
+        // Worker is assigned to do BOTH shifts (Double Duty: D-N2 or M-A/A-N/N-M) - allow seamless rollover!
+        console.log(`[autoEndScheduler] Worker ${justEndedWorkerId} is bound to both ${outgoingCode} and ${targetShiftCode} (Double Duty). Allowing rollover.`);
+      } else if (justEndedWorkerId) {
+        excludeSet.add(justEndedWorkerId);
       }
 
-      // Priority 2: Stepped Fallback: today-1, then today-2, then today-3...
-      // Strictly avoids random worker selection. If weekly off/holiday worker available, mark attendance.
-      if (!incomingEmp) {
-        const excludeSet = new Set();
-        if (closedAttendance && closedAttendance.employeeId) {
-          excludeSet.add(String(closedAttendance.employeeId));
-        }
+      const boundWorker = await resolveBoundRosterWorker({
+        AttendanceModel,
+        EmployeesModel: Employees,
+        SiteRosterHolidaysModel: SiteRosterHolidays,
+        leaveManager,
+        tenantDbName,
+        lead,
+        effectiveLeadId,
+        shift: matchedShift,
+        targetShiftCode,
+        shiftCodesList: [targetShiftCode, matchedShift.shiftName, matchedShift.shiftPeriod].filter(Boolean),
+        baseDate: endTime,
+        todayDateStr: todayStr,
+        currentDayOfWeek: dayOfWeek,
+        scheduledStartUtc: endTime,
+        scheduledEndUtc: null,
+        excludeWorkerIds: excludeSet,
+      });
 
-        const steppedWorker = await findSteppedPreviousDayWorker({
-          AttendanceModel,
-          EmployeesModel: Employees,
-          SiteRosterHolidaysModel: SiteRosterHolidays,
-          leaveManager,
-          tenantDbName,
-          lead,
-          effectiveLeadId,
-          shift: matchedShift,
-          targetShiftCode,
-          shiftCodesList: [targetShiftCode, matchedShift.shiftName, matchedShift.shiftPeriod].filter(Boolean),
-          baseDate: endTime,
-          todayDateStr: todayStr,
-          currentDayOfWeek: dayOfWeek,
-          scheduledStartUtc: endTime,
-          scheduledEndUtc: null,
-          excludeWorkerIds: excludeSet,
-          maxDaysBack: 14,
-        });
-
-        if (steppedWorker) {
-          incomingWorkerId = steppedWorker.workerId;
-          incomingEmp = steppedWorker.emp;
-          incomingWorkerName = steppedWorker.workerName;
-          isWeeklyOffOrHoliday = steppedWorker.isWeeklyOffOrHoliday;
-          holidayRemark = steppedWorker.holidayRemark;
-          console.log(
-            `🔄 [autoEndScheduler] Rollover resolved stepped worker: ${incomingWorkerName} (${incomingWorkerId}) from today-${steppedWorker.foundDayOffset} for ${targetShiftCode} at site "${lead.sender_name || 'Site'}"`
-          );
-        }
-      }
-
-      if (!incomingWorkerId || !incomingEmp) {
+      if (!boundWorker) {
         console.log(
-          `[autoEndScheduler] No available worker found for slot ${targetShiftCode} at site "${lead.sender_name || 'site'}". Checking next slot.`
+          `[autoEndScheduler] No available bound worker for slot ${targetShiftCode} at site "${lead.sender_name || 'site'}". Reliever required.`
         );
         if (io && tenantDbName) {
           io.to(tenantDbName).emit('attendance:reliever_needed', {
             siteId: String(lead._id),
             siteName: lead.sender_name || lead.name || 'Site',
             shiftCode: targetShiftCode,
-            reason: 'Bound worker unavailable and no previous day worker found',
+            reason: 'Bound worker unavailable or on leave. Reliever required.',
           });
         }
         continue;
       }
+
+      const incomingWorkerId = boundWorker.workerId;
+      const incomingEmp = boundWorker.emp;
+      const incomingWorkerName = boundWorker.workerName;
+      const isWeeklyOffOrHoliday = boundWorker.isWeeklyOffOrHoliday;
+      const holidayRemark = boundWorker.holidayRemark;
+      const rosterSalaryRate = boundWorker.salaryRate || matchedShift.salaryRate || 0;
 
       // Found an eligible incoming candidate shift slot!
       startedShift = {
@@ -870,7 +1056,24 @@ async function handleAutoShiftRollover(closedAttendance, AttendanceModel, tenant
         targetShiftCode,
         isWeeklyOffOrHoliday,
         holidayRemark,
+        rosterSalaryRate,
       };
+      // ── SKIP WORKERS/STAFF WHO LOG IN WITH THEIR OWN DEVICE ──
+      const isIncomingOwnDevice = await isWorkerOwnDevice({
+        workerId: incomingWorkerId,
+        emp: incomingEmp,
+        leadId: lead._id,
+        EmployeesModel: Employees,
+      });
+
+      if (isIncomingOwnDevice) {
+        console.log(
+          `📱 [autoEndScheduler] Rollover worker/staff ${incomingWorkerName} (${incomingWorkerId}) logs in with own device. Skipping auto-start rollover; duty start will be marked by worker/staff.`
+        );
+        continue; // Worker marks duty themselves via app
+      }
+      // ──────────────────────────────────────────────────────────
+
       break;
     }
 
@@ -931,7 +1134,7 @@ async function handleAutoShiftRollover(closedAttendance, AttendanceModel, tenant
     }
 
     const nextDutyEndScheduled = new Date(scheduledStartUtc.getTime() + nextDurationHrs * 3600000);
-    const resolvedDailyRate = matchedShift.salaryRate || incomingEmp.daily_rate || incomingEmp.rate || 0;
+    const resolvedDailyRate = startedShift.rosterSalaryRate || matchedShift.salaryRate || incomingEmp.daily_rate || incomingEmp.rate || 0;
 
     // ── Resolve Site / Lead Coordinates for Swapped Duty ─────────────────
     const { lat: siteLat, long: siteLong, address: siteAddress } = resolveLeadCoordinates(lead, closedAttendance);
@@ -947,6 +1150,7 @@ async function handleAutoShiftRollover(closedAttendance, AttendanceModel, tenant
       });
     }
 
+    const isDoubleDuty = String(incomingWorkerId) === String(closedAttendance.employeeId);
     const newDuty = new AttendanceModel({
       employeeId: incomingWorkerId,
       employeeType: 'Employees',
@@ -979,10 +1183,15 @@ async function handleAutoShiftRollover(closedAttendance, AttendanceModel, tenant
       dutyEnd: null,
       forcedOff: false,
       markedByDevice: false,
-      markedByUserName: 'Auto Shift Rollover',
-      remarks: startedShift.isWeeklyOffOrHoliday
-        ? `Auto-bound handover from ${closedAttendance.workerName || 'previous shift'} (${startedShift.holidayRemark || 'Weekly Off / Holiday Duty'})`
-        : `Auto-bound handover from ${closedAttendance.workerName || 'previous shift'}`,
+      markedByUserName: isDoubleDuty ? 'Continuous Double Duty' : 'Auto Shift Rollover',
+      isDoubleShift: isDoubleDuty,
+      previousShiftId: isDoubleDuty ? closedAttendance._id : null,
+      doubleShiftNotified: isDoubleDuty,
+      remarks: isDoubleDuty
+        ? `Continuous double duty (${outgoingCode} -> ${targetShiftCode})`
+        : (startedShift.isWeeklyOffOrHoliday
+          ? `Auto-bound handover from ${closedAttendance.workerName || 'previous shift'} (${startedShift.holidayRemark || 'Weekly Off / Holiday Duty'})`
+          : `Auto-bound handover from ${closedAttendance.workerName || 'previous shift'}`),
     });
 
     await newDuty.save();
@@ -1021,11 +1230,35 @@ async function sweepExpiredShifts(AttendanceModel, tenantDbName, io) {
     const expiredRecords = await AttendanceModel.find({
       $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }],
       dutyEndScheduled: { $exists: true, $ne: null, $lte: now },
+      markedByDevice: { $ne: true }, // NEVER auto-end records marked by workers on their own devices
+      employeeType: { $ne: 'userMaster' },
+      siteId: { $ne: '__HO__' },
     }).lean();
 
     if (!expiredRecords || expiredRecords.length === 0) return;
 
+    const db = AttendanceModel.db;
+    const Employees = db.models.Employees || (db.model && db.model('Employees'));
+
     for (const rec of expiredRecords) {
+      if (rec.markedByDevice === true || rec.employeeType === 'userMaster' || rec.siteId === '__HO__') {
+        cancelAutoEnd(rec._id);
+        continue;
+      }
+
+      const isOwnDevice = await isWorkerOwnDevice({
+        workerId: rec.employeeId,
+        leadId: rec.siteId || rec.leadId,
+        EmployeesModel: Employees,
+      });
+
+      if (isOwnDevice) {
+        console.log(
+          `📱 [autoEndScheduler] Skipping auto-end for ${rec.workerName} (${rec.employeeId}) — worker logs in with own device. Duty end must be marked by worker/staff.`
+        );
+        cancelAutoEnd(rec._id);
+        continue;
+      }
       const endTime = rec.dutyEndScheduled ? new Date(rec.dutyEndScheduled) : now;
       const dutyStartDt = rec.dutyStart ? new Date(rec.dutyStart) : endTime;
       const elapsedHrs = (endTime.getTime() - dutyStartDt.getTime()) / 3600000;
@@ -1198,100 +1431,67 @@ async function autoStartScheduledShifts(conn, tenantDbName, io) {
           let isWeeklyOffOrHoliday = false;
           let holidayRemark = null;
 
-          // Priority 1: Shift boundWorkerId (if active and available)
-          if (shift.boundWorkerId) {
-            const boundId = String(shift.boundWorkerId._id || shift.boundWorkerId);
-            if (!assignedWorkerIdsThisRun.has(boundId)) {
-              const boundCheck = await checkCandidateWorkerEligibility({
-                workerId: boundId,
-                AttendanceModel: Attendance,
-                EmployeesModel: Employees,
-                SiteRosterHolidaysModel: SiteRosterHolidays,
-                leaveManager,
-                tenantDbName,
-                lead,
-                effectiveLeadId: lead._id,
-                shift,
-                shiftCodesList,
-                todayDateStr,
-                currentDayOfWeek,
-                scheduledStartUtc,
-                scheduledEndUtc,
-                excludeWorkerIds: assignedWorkerIdsThisRun,
-              });
+          // Strictly resolve bound worker from roster table (no historical guessing)
+          const boundWorker = await resolveBoundRosterWorker({
+            AttendanceModel: Attendance,
+            EmployeesModel: Employees,
+            SiteRosterHolidaysModel: SiteRosterHolidays,
+            leaveManager,
+            tenantDbName,
+            lead,
+            effectiveLeadId: lead._id,
+            shift,
+            targetShiftCode: shiftCode,
+            shiftCodesList,
+            baseDate: scheduledStartUtc,
+            todayDateStr,
+            currentDayOfWeek,
+            scheduledStartUtc,
+            scheduledEndUtc,
+            excludeWorkerIds: assignedWorkerIdsThisRun,
+          });
 
-              if (boundCheck.ok) {
-                targetWorkerId = boundId;
-                targetEmp = boundCheck.emp;
-                workerName = boundCheck.emp.name || shift.boundWorkerName || 'Worker';
-                isWeeklyOffOrHoliday = boundCheck.isWeeklyOffOrHoliday;
-                holidayRemark = boundCheck.holidayRemark;
-                if (isWeeklyOffOrHoliday) {
-                  console.log(
-                    `🏖️ [autoEndScheduler] Bound worker ${workerName} at ${lead.sender_name || 'Site'} has Weekly Off/Holiday (${holidayRemark || currentDayOfWeek}), but is available. Marking attendance as instructed.`
-                  );
-                }
-              } else {
-                console.log(
-                  `ℹ️ [autoEndScheduler] Bound worker ${shift.boundWorkerName || boundId} is unavailable (${boundCheck.reason}: ${boundCheck.remark || ''}). Checking stepped previous day worker.`
-                );
-              }
-            }
-          }
-
-          // Priority 2: Stepped Fallback: today-1, then today-2, then today-3...
-          // Strictly avoids random worker selection. If weekly off/holiday worker available, mark attendance.
-          if (!targetWorkerId) {
-            const steppedWorker = await findSteppedPreviousDayWorker({
-              AttendanceModel: Attendance,
-              EmployeesModel: Employees,
-              SiteRosterHolidaysModel: SiteRosterHolidays,
-              leaveManager,
-              tenantDbName,
-              lead,
-              effectiveLeadId: lead._id,
-              shift,
-              targetShiftCode: shiftCode,
-              shiftCodesList,
-              baseDate: scheduledStartUtc,
-              todayDateStr,
-              currentDayOfWeek,
-              scheduledStartUtc,
-              scheduledEndUtc,
-              excludeWorkerIds: assignedWorkerIdsThisRun,
-              maxDaysBack: 14,
-            });
-
-            if (steppedWorker) {
-              targetWorkerId = steppedWorker.workerId;
-              targetEmp = steppedWorker.emp;
-              workerName = steppedWorker.workerName;
-              isWeeklyOffOrHoliday = steppedWorker.isWeeklyOffOrHoliday;
-              holidayRemark = steppedWorker.holidayRemark;
-              console.log(
-                `🔄 [autoEndScheduler] Stepped fallback selected worker ${workerName} (${targetWorkerId}) from today-${steppedWorker.foundDayOffset} for shift ${shiftCode} at site "${lead.sender_name || 'Site'}"`
-              );
-            }
-          }
-
-          if (!targetWorkerId || !targetEmp) {
+          if (!boundWorker) {
             if (io && tenantDbName) {
               io.to(tenantDbName).emit('attendance:reliever_needed', {
                 siteId: String(lead._id),
                 siteName: lead.sender_name || lead.name || 'Site',
                 shiftCode: shift.shiftCode,
-                reason: 'No available worker found for shift slot (checked stepped previous days)',
+                reason: 'No available bound worker assigned in roster for shift slot. Reliever required.',
               });
             }
-            break; // Cannot fill further slots in this run
+            break; // Cannot fill further slots without assigned bound worker
           }
+
+          targetWorkerId = boundWorker.workerId;
+          targetEmp = boundWorker.emp;
+          workerName = boundWorker.workerName;
+          isWeeklyOffOrHoliday = boundWorker.isWeeklyOffOrHoliday;
+          holidayRemark = boundWorker.holidayRemark;
+          const autoStartRosterSalary = boundWorker.salaryRate || shift.salaryRate || 0;
+
+          // ── SKIP WORKERS/STAFF WHO LOG IN WITH THEIR OWN DEVICE ──
+          const workerHasOwnDevice = await isWorkerOwnDevice({
+            workerId: targetWorkerId,
+            emp: targetEmp,
+            leadId: lead._id,
+            EmployeesModel: Employees,
+          });
+
+          if (workerHasOwnDevice) {
+            console.log(
+              `📱 [autoEndScheduler] Worker/staff ${workerName} (${targetWorkerId}) at "${lead.sender_name || 'Site'}" logs in with own device. Skipping auto-start duty; duty start will be marked by worker/staff via app.`
+            );
+            continue; // Do NOT auto-start duty! Worker will mark duty start via app
+          }
+          // ─────────────────────────────────────────────────────────
 
           assignedWorkerIdsThisRun.add(targetWorkerId);
 
           // 4. Auto-start duty on clock set in client shift schedule
           const dutyStartActual = scheduledStartUtc;
           const dutyEndScheduled = scheduledEndUtc;
-          const resolvedDailyRate = shift.salaryRate || targetEmp.daily_rate || targetEmp.rate || 0;
+          const resolvedDailyRate = autoStartRosterSalary || shift.salaryRate || targetEmp.daily_rate || targetEmp.rate || 0;
 
           // ── Resolve Site / Lead Coordinates for Auto-Started Duty ─────────────
           const { lat: siteLat, long: siteLong, address: siteAddress } = resolveLeadCoordinates(lead);
@@ -1605,4 +1805,6 @@ module.exports = {
   getIstDayWindow,
   checkCandidateWorkerEligibility,
   findSteppedPreviousDayWorker,
+  resolveBoundRosterWorker,
+  isWorkerOwnDevice,
 };

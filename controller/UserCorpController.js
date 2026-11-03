@@ -814,7 +814,8 @@ exports.manageLeads = {
   // ── GET site shifts + live stats ──────────────────────────────────────────
   getSiteShifts: async (req, res) => {
     try {
-      const { Leads, Attendance } = req.tenantModels;
+      const { Leads, Attendance, SiteRoster, SiteRosterHolidays, Employees } = req.tenantModels;
+      const RosterModel = SiteRoster || SiteRosterHolidays;
       const lead = await Leads.findById(req.params.id).lean();
       if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
 
@@ -822,6 +823,20 @@ exports.manageLeads = {
       const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
       const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
       const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+
+      // Check if this lead represents corporate Head Office
+      const isTeamHO = /Team HO|Head Office|Corporate/i.test(lead.sender_name || lead.name || '');
+
+      let rosterDoc = null;
+      if (RosterModel) {
+        rosterDoc = await RosterModel.findOne({
+          $or: [
+            { siteId: lead._id },
+            { siteId: String(lead._id) },
+            ...(isTeamHO ? [{ siteId: '__HO__' }, { siteName: /Head Office|Corporate/i }] : []),
+          ],
+        }).lean();
+      }
 
       // Count monthly Present records at this lead per shift code
       const monthlyAgg = await Attendance.aggregate([
@@ -854,17 +869,54 @@ exports.manageLeads = {
         activeCountByShift[r._id] = r.count;
       });
 
-      const shiftsWithStats = (lead.siteShifts || []).map((s) => {
-        const permittedThisMonth = (s.workerSlots || 1) * daysInMonth;
+      const shiftsWithStats = (lead.siteShifts || []).map((s, idx) => {
+        let workers = Array.isArray(s.workers) && s.workers.length > 0 ? s.workers : [];
+
+        // Check if roster has workers for this shift
+        if (workers.length === 0 && rosterDoc?.shifts) {
+          const matchingRosterShift = rosterDoc.shifts.find(
+            (rsh) => rsh.shiftCode === s.shiftCode || String(rsh._id) === String(s._id)
+          ) || rosterDoc.shifts[idx];
+          if (matchingRosterShift && Array.isArray(matchingRosterShift.workers) && matchingRosterShift.workers.length > 0) {
+            workers = matchingRosterShift.workers;
+          }
+        }
+
+        // Fallback: If boundWorkerId exists, seed workers array with this bound worker
+        if (workers.length === 0 && (s.boundWorkerId || s.boundWorkerName)) {
+          const rawExempt = Array.isArray(s.exemptDays) ? s.exemptDays : [];
+          const rawWeekly = (typeof s.weeklyRestDay === 'string' && s.weeklyRestDay.trim())
+            ? s.weeklyRestDay.split(',').map((d) => d.trim()).filter(Boolean)
+            : [];
+          const combined = Array.from(new Set([...rawExempt, ...rawWeekly]));
+          workers = [
+            {
+              workerId: String(s.boundWorkerId?._id || s.boundWorkerId || ''),
+              workerName: s.boundWorkerName || 'Duty Worker',
+              enrollmentNo: s.boundWorkerEnrollment || '',
+              mobile: s.boundWorkerMobile || '',
+              salaryRate: Number(s.salaryRate) || 0,
+              billRate: Number(s.billRate) || 0,
+              weeklyRestDay: combined.length > 0 ? combined.join(', ') : null,
+              exemptDays: combined,
+              status: 'Active',
+            },
+          ];
+        }
+
+        const resolvedWorkerSlots = Math.max(Number(s.workerSlots) || 1, workers.length || 1);
+        const permittedThisMonth = resolvedWorkerSlots * daysInMonth;
         const actualThisMonth = monthlyCountByShift[s.shiftCode] || 0;
         const activeNow = activeCountByShift[s.shiftCode] || 0;
         return {
           ...s,
+          workerSlots: resolvedWorkerSlots,
+          workers,
           permittedThisMonth,
           actualThisMonth,
           activeNow,
           isExcess: actualThisMonth > permittedThisMonth,
-          slotExcess: activeNow > (s.workerSlots || 1),
+          slotExcess: activeNow > resolvedWorkerSlots,
         };
       });
 
@@ -888,21 +940,222 @@ exports.manageLeads = {
     }
   },
 
-  // ── PUT site shifts (full replace of siteShifts array) ───────────────────
+  // ── PUT site shifts (full replace of siteShifts array & 2-way Roster sync) ───────────────────
   updateSiteShifts: async (req, res) => {
     try {
-      const { Leads } = req.tenantModels;
+      const { Leads, SiteRoster, SiteRosterHolidays, Employees } = req.tenantModels;
+      const RosterModel = SiteRoster || SiteRosterHolidays;
       const { siteShifts } = req.body;
       if (!Array.isArray(siteShifts)) {
         return res.status(400).json({ success: false, message: 'siteShifts must be an array' });
       }
+
+      // GroupName strictly MANG or DaNi, preserve or set shiftStartDate
+      const now = new Date();
+      const isTeamHO = /Team HO|Head Office|Corporate/i.test(lead?.sender_name || lead?.name || '');
+      const normalizedShifts = siteShifts.map((s) => {
+        let workers = Array.isArray(s.workers) ? s.workers : [];
+
+        // Fallback: If no workers array but bound worker exists
+        if (workers.length === 0 && (s.boundWorkerId || s.boundWorkerName)) {
+          const rawEx = Array.isArray(s.exemptDays) ? s.exemptDays : [];
+          const rawWk = (typeof s.weeklyRestDay === 'string' && s.weeklyRestDay.trim())
+            ? s.weeklyRestDay.split(',').map((d) => d.trim()).filter(Boolean)
+            : [];
+          const comb = Array.from(new Set([...rawEx, ...rawWk]));
+          workers = [
+            {
+              workerId: String(s.boundWorkerId?._id || s.boundWorkerId || ''),
+              workerName: s.boundWorkerName || 'Duty Worker',
+              enrollmentNo: s.boundWorkerEnrollment || '',
+              mobile: s.boundWorkerMobile || '',
+              salaryRate: Number(s.salaryRate) || 0,
+              billRate: Number(s.billRate) || 0,
+              weeklyRestDay: comb.length > 0 ? comb.join(', ') : null,
+              exemptDays: comb,
+              status: 'Active',
+            },
+          ];
+        }
+
+        const normalizedWorkers = workers.map((w) => {
+          const wEx = Array.isArray(w.exemptDays) ? w.exemptDays : [];
+          const wWk = (typeof w.weeklyRestDay === 'string' && w.weeklyRestDay.trim())
+            ? w.weeklyRestDay.split(',').map((d) => d.trim()).filter(Boolean)
+            : [];
+          const comb = Array.from(new Set([...wEx, ...wWk]));
+          return {
+            workerId: String(w.workerId?._id || w.workerId || ''),
+            workerName: w.workerName || w.name || 'Worker',
+            enrollmentNo: w.enrollmentNo || w.enrollment_no || '',
+            mobile: w.mobile || '',
+            salaryRate: Number(w.salaryRate) || 0,
+            billRate: Number(w.billRate) || 0,
+            weeklyRestDay: comb.length > 0 ? comb.join(', ') : null,
+            exemptDays: comb,
+            status: w.status || 'Active',
+          };
+        });
+
+        const firstWorker = normalizedWorkers[0];
+        const rawShiftEx = Array.isArray(s.exemptDays) ? s.exemptDays : [];
+        const rawShiftWk = (typeof s.weeklyRestDay === 'string' && s.weeklyRestDay.trim())
+          ? s.weeklyRestDay.split(',').map((d) => d.trim()).filter(Boolean)
+          : [];
+        const shiftCombRest = Array.from(new Set([...rawShiftEx, ...rawShiftWk]));
+
+        return {
+          ...s,
+          groupName: s.groupName === 'DaNi' || Number(s.durationHrs) === 12 ? 'DaNi' : 'MANG',
+          durationHrs: Number(s.durationHrs) || (s.groupName === 'DaNi' ? 12 : 8),
+          shiftStartDate: s.shiftStartDate ? new Date(s.shiftStartDate) : now,
+          workerSlots: Math.max(Number(s.workerSlots) || 1, normalizedWorkers.length || 1),
+          billRate: Number(s.billRate) || 0,
+          salaryRate: Number(s.salaryRate) || 0,
+          active: s.active !== false,
+          weeklyRestDay: shiftCombRest.length > 0 ? shiftCombRest.join(', ') : null,
+          exemptDays: shiftCombRest,
+          boundWorkerId: firstWorker?.workerId || s.boundWorkerId || null,
+          boundWorkerName: firstWorker?.workerName || s.boundWorkerName || '',
+          boundWorkerMobile: firstWorker?.mobile || s.boundWorkerMobile || '',
+          boundWorkerEnrollment: firstWorker?.enrollmentNo || s.boundWorkerEnrollment || '',
+          workers: normalizedWorkers,
+        };
+      });
+
       const lead = await Leads.findByIdAndUpdate(
         req.params.id,
-        { $set: { siteShifts } },
+        { $set: { siteShifts: normalizedShifts } },
         { new: true }
       );
       if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
-      req.io.to(req.tenantDbName).emit('lead:updated', { data: lead });
+
+      // ── Bidirectional Sync: Site shifts -> SiteRoster (Unified Contract Master) ──
+      if (RosterModel) {
+        try {
+          const siteId = lead._id;
+          const siteName = lead.sender_name || lead.client_name || lead.name || 'Site';
+
+          let rosterDoc = await RosterModel.findOne({ siteId });
+          if (!rosterDoc) {
+            rosterDoc = new RosterModel({
+              siteId,
+              siteName,
+              clientId: lead.clientId || null,
+              gstNo: lead.gst_number || '',
+              billingAddress: {
+                line1: lead.sender_address || lead.location?.address || '',
+                city: lead.sender_city || '',
+                state: lead.sender_state || '',
+                pincode: lead.sender_pincode || '',
+                country: 'India',
+              },
+              deliveryAddress: {
+                isSameAsBilling: true,
+                line1: lead.location?.address || lead.sender_address || '',
+                city: lead.sender_city || '',
+                state: lead.sender_state || '',
+                pincode: lead.sender_pincode || '',
+                country: 'India',
+              },
+              contactPerson: {
+                name: lead.contact_person || lead.sender_name || '',
+                mobile: lead.sender_mobile || '',
+                email: lead.sender_email || '',
+                waNumber: lead.sender_mobile || '',
+              },
+              shifts: [],
+            });
+          }
+
+          // Build roster shifts matching normalizedShifts with multiple workers
+          const rosterShifts = [];
+          for (const s of normalizedShifts) {
+            if (!s.shiftCode) continue;
+
+            const rawExempt = Array.isArray(s.exemptDays) ? s.exemptDays : [];
+            const rawWeekly = (typeof s.weeklyRestDay === 'string' && s.weeklyRestDay.trim())
+              ? s.weeklyRestDay.split(',').map((d) => d.trim()).filter(Boolean)
+              : [];
+            const combinedRest = Array.from(new Set([...rawExempt, ...rawWeekly]));
+            const restStr = combinedRest.length > 0 ? combinedRest.join(', ') : null;
+
+            // Map all assigned workers for this shift
+            let assignedWorkers = (s.workers || []).map((w) => ({
+              workerId: w.workerId,
+              workerName: w.workerName,
+              enrollmentNo: w.enrollmentNo || '',
+              mobile: w.mobile || '',
+              salaryRate: Number(w.salaryRate) || 0,
+              billRate: Number(w.billRate) || 0,
+              weeklyRestDay: w.weeklyRestDay || null,
+              exemptDays: w.exemptDays || [],
+              assignedDate: s.shiftStartDate || now,
+              status: w.status || 'Active',
+            }));
+
+            rosterShifts.push({
+              shiftCode: s.shiftCode,
+              shiftName: s.shiftName || 'Shift',
+              groupName: s.groupName,
+              startTime: s.startTime || '08:00',
+              durationHrs: s.durationHrs,
+              shiftStartDate: s.shiftStartDate || now,
+              workerSlots: s.workerSlots,
+              billRate: s.billRate,
+              salaryRate: s.salaryRate,
+              weeklyRestDay: restStr,
+              exemptDays: combinedRest,
+              active: s.active,
+              workers: assignedWorkers,
+            });
+          }
+
+          rosterDoc.siteName = siteName;
+          rosterDoc.shifts = rosterShifts;
+          rosterDoc.totalConfiguredShifts = rosterShifts.length;
+          rosterDoc.totalRequiredWorkers = rosterShifts.reduce((acc, sh) => acc + (sh.active ? sh.workerSlots : 0), 0);
+          rosterDoc.totalAssignedWorkers = rosterShifts.reduce((acc, sh) => acc + (sh.workers?.length || 0), 0);
+          await rosterDoc.save();
+
+          // If this is Head Office HO, also sync to '__HO__' corporate roster and UserMaster
+          if (isTeamHO) {
+            let hoDoc = await RosterModel.findOne({ siteId: '__HO__' });
+            if (hoDoc) {
+              hoDoc.shifts = rosterShifts;
+              hoDoc.totalConfiguredShifts = rosterShifts.length;
+              hoDoc.totalRequiredWorkers = rosterShifts.reduce((acc, sh) => acc + (sh.active ? sh.workerSlots : 0), 0);
+              hoDoc.totalAssignedWorkers = rosterShifts.reduce((acc, sh) => acc + (sh.workers?.length || 0), 0);
+              await hoDoc.save();
+            }
+
+            // Sync UserMaster dutyShift config for corporate staff
+            try {
+              const userMaster = require('../models/userMaster');
+              for (const s of normalizedShifts) {
+                for (const w of s.workers || []) {
+                  if (w.workerId && mongoose.Types.ObjectId.isValid(String(w.workerId))) {
+                    await userMaster.findByIdAndUpdate(w.workerId, {
+                      $set: {
+                        'dutyShift.salaryRate': w.salaryRate,
+                        'dutyShift.weeklyRestDay': w.weeklyRestDay,
+                        'dutyShift.exemptDays': w.exemptDays,
+                        weeklyRestDay: w.weeklyRestDay,
+                        exemptDays: w.exemptDays,
+                      },
+                    });
+                  }
+                }
+              }
+            } catch (uErr) {
+              console.warn('updateSiteShifts -> userMaster sync notice:', uErr.message);
+            }
+          }
+        } catch (syncErr) {
+          console.warn('updateSiteShifts -> SiteRoster sync error:', syncErr.message);
+        }
+      }
+
       res.json({ success: true, data: lead });
     } catch (err) {
       res.status(500).json({ success: false, message: err.message });
@@ -1904,7 +2157,7 @@ exports.manageEmployees = {
       }
       const limitVal = req.query.limit ? parseInt(req.query.limit, 10) : 5000;
       const data = await Attendance.find(q)
-        .select('_id employeeId employeeType leadId clientId siteId site_name shiftCode shiftPeriod shiftGroupName date status dutyLevel rate dutyStart dutyEnd markedByUserName')
+        .select('_id employeeId employeeType leadId clientId siteId site_name shiftCode shiftPeriod shiftGroupName date status dutyLevel rate dutyStart dutyEnd markedByUserName hoursWorked dailyRate dailyEarn penaltyImposed penaltyDeducted penaltyWaivedOff violationType penaltyReason penaltyApprovedBy penaltyMediaUrl penaltyMedia geoHistory')
         .sort({ date: -1 })
         .limit(limitVal)
         .lean();
@@ -2342,7 +2595,10 @@ exports.manageEmployees = {
         status: status || 'Present',
         customCreated: true, // Tag it so we know it was manually marked/handled
         dutyLevel: dutyLevel ?? 1,
-        rate: rate || siteShiftOverride?.billRate || 0,
+        rate: siteShiftOverride?.salaryRate || rate || 0,
+        dailyRate: siteShiftOverride?.salaryRate || rate || 0,
+        dailyEarn: siteShiftOverride?.salaryRate || rate || 0,
+        monthlyRate: (siteShiftOverride?.salaryRate || rate || 0) * 30,
         date: date || new Date(),
         site_name,
         remarks,
@@ -2564,6 +2820,14 @@ exports.manageEmployees = {
         'siteLong',
         'startLat',
         'startLong',
+        'penaltyImposed',
+        'penaltyDeducted',
+        'penaltyWaivedOff',
+        'violationType',
+        'penaltyReason',
+        'penaltyApprovedBy',
+        'penaltyMediaUrl',
+        'penaltyMedia',
       ];
       const update = {};
       allowed.forEach((k) => {
@@ -3157,51 +3421,52 @@ exports.manageEmployees = {
         const targetLeadId = leadId || siteId;
         if (targetLeadId && Leads) {
           const site = await Leads.findById(targetLeadId).lean();
-          if (site && site.location && site.location.lat && site.location.long) {
-            siteLat = site.location.lat;
-            siteLong = site.location.long;
-            const isSelf = String(req.user._id || req.user.userId) === String(queryId);
+          if (site) {
+            const rawSiteLat = site.location?.lat ?? site.lat ?? site.latitude;
+            const rawSiteLong = site.location?.long ?? site.long ?? site.longitude;
+            if (rawSiteLat !== undefined && rawSiteLat !== null && rawSiteLong !== undefined && rawSiteLong !== null) {
+              siteLat = Number(rawSiteLat);
+              siteLong = Number(rawSiteLong);
+            }
 
-            if (!isSelf) {
-              // 🚀 Started by someone else -> use site coordinates as default if supervisor doesn't provide them
-              if (!startLat) startLat = siteLat;
-              if (!startLong) startLong = siteLong;
-              finalLat = siteLat;
-              finalLong = siteLong;
-              finalSiteName = site.sender_name || finalSiteName;
-            } else {
-              if (!lat || !long) {
-                return res.status(400).json({
-                  success: false,
-                  message: "Location services must be enabled to mark your attendance."
-                });
+            const isSelf = Boolean(
+              String(req.user._id || req.user.userId) === String(queryId) ||
+              String(req.user._id || req.user.userId) === String(emp?.user_id || emp?._id)
+            );
+
+            if (siteLat !== null && siteLong !== null && !isNaN(siteLat) && !isNaN(siteLong)) {
+              if (!isSelf) {
+                // 🚀 Started by supervisor on behalf of worker -> use site coordinates as default if supervisor doesn't provide them
+                if (!startLat) startLat = siteLat;
+                if (!startLong) startLong = siteLong;
+                finalLat = siteLat;
+                finalLong = siteLong;
+                finalSiteName = site.sender_name || finalSiteName;
               } else {
-                const getDistance = (lat1, lon1, lat2, lon2) => {
-                  const R = 6371e3;
-                  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-                  const dLon = ((lon2 - lon1) * Math.PI) / 180;
-                  const a =
-                    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-                    Math.cos((lat1 * Math.PI) / 180) *
-                      Math.cos((lat2 * Math.PI) / 180) *
-                      Math.sin(dLon / 2) *
-                      Math.sin(dLon / 2);
-                  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-                };
-                const dist = getDistance(lat, long, siteLat, siteLong);
-                const geofenceRadius = Number(site.geofenceRadiusMeters) || 100;
-                
-                if (dist > geofenceRadius) {
+                // 📱 Self-marking on own device (markedByDevice: true) -> STRICT GEOFENCING ENFORCED
+                if (!lat || !long) {
                   return res.status(400).json({
                     success: false,
-                    message: "You are not at selected site. Reach your selected site or select site where you are available.",
-                    notAtSite: true
+                    message: "Location services must be enabled to mark your attendance."
                   });
+                } else {
+                  const dist = getDistanceMetres(Number(lat), Number(long), siteLat, siteLong);
+                  const geofenceRadius = Number(site.geofenceRadiusMeters || site.geofenceRadius || site.location?.geofenceRadius) || 100;
+                  
+                  if (dist > geofenceRadius) {
+                    return res.status(400).json({
+                      success: false,
+                      message: `You are not at selected site (${Math.round(dist)}m away, allowed: ${geofenceRadius}m). Reach your selected site or select site where you are available.`,
+                      notAtSite: true,
+                      distanceMeters: Math.round(dist),
+                      geofenceRadiusMeters: geofenceRadius,
+                    });
+                  }
+                  
+                  finalLat = Number(lat);
+                  finalLong = Number(long);
+                  finalSiteName = site.sender_name || finalSiteName;
                 }
-                
-                finalLat = lat;
-                finalLong = long;
-                finalSiteName = site.sender_name || finalSiteName;
               }
             }
           }
@@ -3258,9 +3523,10 @@ exports.manageEmployees = {
           shiftGroupName: toggleFinalGroupName,
           shiftHours: toggleFinalLockHrs,
           shiftLockHours: toggleFinalLockHrs,
-          monthlyRate: fetchedMonthlyRate,
-          dailyRate: fetchedDailyRate,
-          rate: toggleSiteShiftOverride?.salaryRate || fetchedDailyRate || currentRate,
+          monthlyRate: (toggleSiteShiftOverride?.salaryRate || fetchedDailyRate || currentRate || 0) * 30,
+          dailyRate: toggleSiteShiftOverride?.salaryRate || fetchedDailyRate || currentRate || 0,
+          dailyEarn: toggleSiteShiftOverride?.salaryRate || fetchedDailyRate || currentRate || 0,
+          rate: toggleSiteShiftOverride?.salaryRate || fetchedDailyRate || currentRate || 0,
           geoHistory: finalGeoHistory,
           status: 'Present',
           site_name: finalSiteName,
@@ -3315,8 +3581,16 @@ exports.manageEmployees = {
           })()
         ) : null;
 
-        // Store matched shift on req for slot check — resolved during site-shift lookup
-        if (req._matchedSiteShiftSlots === 1 && record.dutyEndScheduled) {
+        // Store matched shift on req for slot check — only auto-end if NOT self-marked by worker on own device
+        const isSelfMarkedOnDevice = Boolean(
+          record.markedByDevice ||
+          String(req.user._id || req.user.userId) === String(queryId) ||
+          String(req.user._id || req.user.userId) === String(emp?.user_id || emp?._id) ||
+          emp?.employeeType === 'userMaster' ||
+          isExemptUser
+        );
+
+        if (req._matchedSiteShiftSlots === 1 && record.dutyEndScheduled && !isSelfMarkedOnDevice) {
           autoEndScheduler.scheduleAutoEnd(
             record._id,
             record.dutyEndScheduled,
@@ -3587,6 +3861,16 @@ exports.manageEmployees = {
         });
       }
 
+      // 🛡️ Guard: General shift (G) is STRICTLY EXEMPT from rotational switching and continuous double duty
+      const curCode = String(current.shiftCode || '').trim().toUpperCase();
+      if (curCode === 'G' || curCode === 'GENERAL') {
+        return res.status(403).json({
+          success: false,
+          exempt: true,
+          message: 'General shift (G) is strictly exempt from shift switching and continuous double duty.',
+        });
+      }
+
       // Resolve exemption
       const { Employees, Leads } = req.tenantModels;
       const userMaster = require('../models/userMaster');
@@ -3670,11 +3954,26 @@ exports.manageEmployees = {
       // ───────────────────────────────────────────────────────────────────────
 
       // 3. Determine next shift lock hours from leads database
+      // Enforce strict sequential rotation:
+      // DaNi: D <-> N2
+      // MANG: M -> A -> N -> M (G is strictly exempt)
+      let expectedNextShiftCode = '';
+      if (curCode === 'D' || curCode === 'DAY') expectedNextShiftCode = 'N2';
+      else if (curCode === 'N2' || curCode === 'NIGHT' || curCode === 'NIGHT12') expectedNextShiftCode = 'D';
+      else if (curCode === 'M' || curCode === 'MORNING') expectedNextShiftCode = 'A';
+      else if (curCode === 'A' || curCode === 'AFTERNOON') expectedNextShiftCode = 'N';
+      else if (curCode === 'N' || curCode === 'NIGHT8') expectedNextShiftCode = 'M';
+
+      let targetReqCode = String(nextShiftCode || '').trim().toUpperCase();
+      if (!targetReqCode || targetReqCode === 'CONTINUED') {
+        targetReqCode = expectedNextShiftCode;
+      }
+
       let nextLockHrs = nextShiftType === '12hr' ? 12 : 8;
       let finalNextShiftType = nextShiftType || '8hr';
       let finalNextShiftPeriod = SHIFT_PERIOD_MAP[nextShiftPeriod] || nextShiftPeriod || 'Morning';
       let nextRate = current.rate || 0;
-      let finalNextShiftCode = nextShiftCode || 'G';
+      let finalNextShiftCode = targetReqCode || expectedNextShiftCode || 'D';
 
       const targetLeadId = leadId || siteId || current.leadId;
       if (targetLeadId && Leads) {
@@ -3691,8 +3990,19 @@ exports.manageEmployees = {
         }
 
         const nextShift =
-          activeSiteShifts.find((s) => s.shiftCode === nextShiftCode) || activeSiteShifts[0];
+          activeSiteShifts.find((s) => s.shiftCode === targetReqCode) ||
+          activeSiteShifts.find((s) => s.shiftCode === expectedNextShiftCode) ||
+          activeSiteShifts.find((s) => s.shiftCode !== curCode && s.shiftCode !== 'G') ||
+          activeSiteShifts[0];
+
         if (nextShift) {
+          if (nextShift.shiftCode === 'G') {
+            return res.status(422).json({
+              success: false,
+              exempt: true,
+              message: 'General shift (G) is strictly exempt from double duty continuation.',
+            });
+          }
           finalNextShiftCode = nextShift.shiftCode;
           nextLockHrs = nextShift.durationHrs || nextLockHrs;
           finalNextShiftType = nextShift.durationHrs === 12 ? '12hr' : '8hr';
@@ -4973,27 +5283,657 @@ exports.manageEmployees = {
     }
   },
 
+  // ── Helper: 1:1 Invariant Roster Reconciler (Total Roster Records == Total Accepted Leads) ──
+  reconcileSiteRostersInternal: async (tenantModels, options = {}) => {
+    const { Leads, SiteRoster, SiteRosterHolidays, Employees, Attendance, ProfileMaster } = tenantModels;
+    const RosterModel = SiteRoster || SiteRosterHolidays;
+    if (!Leads || !RosterModel) return { totalActive: 0, reconciled: 0 };
+
+    // 1. Fetch all accepted leads
+    const activeLeads = await Leads.find({
+      status: { $regex: /^(accepted|tax invoice)$/i },
+    }).lean();
+
+    const activeLeadIds = activeLeads.map((l) => String(l._id));
+
+    // 2. Remove non-accepted leads from roster (Total records of roster = total accepted leads)
+    await RosterModel.deleteMany({
+      siteId: { $nin: activeLeadIds, $ne: '__HO__' },
+    });
+
+    const now = new Date();
+    const istOffsetMs = 5.5 * 3600000;
+    const nowIst = new Date(now.getTime() + istOffsetMs);
+    const startTodayUtc = new Date(new Date(nowIst.toISOString().slice(0, 10) + 'T00:00:00.000Z').getTime() - istOffsetMs);
+    const endTodayUtc = new Date(startTodayUtc.getTime() + 24 * 3600000 - 1);
+    const startYesterdayUtc = new Date(startTodayUtc.getTime() - 24 * 3600000);
+    const endYesterdayUtc = new Date(startTodayUtc.getTime() - 1);
+
+    // Fetch ProfileMaster corporate locations (HO, BR)
+    let profileLocations = [];
+    if (ProfileMaster) {
+      try {
+        const prof = await ProfileMaster.findOne({}).lean();
+        if (prof && Array.isArray(prof.locations)) {
+          profileLocations = prof.locations;
+        }
+      } catch (profErr) {
+        console.warn('Could not read ProfileMaster locations:', profErr.message);
+      }
+    }
+    const hoLocation = profileLocations.find((loc) => loc.locationType === 'HO') || profileLocations[0] || null;
+
+    // Pre-cache employees
+    const allEmps = Employees ? await Employees.find({}).lean() : [];
+    const empMap = new Map();
+    for (const emp of allEmps) empMap.set(String(emp._id), emp);
+
+    // Find registered corporate staff in Employees
+    const corpStaffEmps = allEmps.filter((e) =>
+      e.userRole && ['CorpAdmin', 'Project', 'Sales', 'Finance', 'userAdmin'].includes(e.userRole)
+    );
+
+    let reconciledCount = 0;
+
+    for (const lead of activeLeads) {
+      const siteId = String(lead._id);
+      const isTeamHO = /Team HO|Head Office|Corporate/i.test(lead.sender_name || lead.name || '');
+      const siteName = isTeamHO ? 'Head Office (HO)' : (lead.sender_name || lead.client_name || lead.name || 'Site');
+
+      let rosterDoc = await RosterModel.findOne({ siteId });
+      if (!rosterDoc) {
+        rosterDoc = new RosterModel({
+          siteId,
+          siteName,
+          clientId: lead.clientId || null,
+          gstNo: lead.gst_number || (isTeamHO && hoLocation?.gstin ? hoLocation.gstin : ''),
+          billingAddress: {
+            line1: '',
+            city: '',
+            state: '',
+            pincode: '',
+            country: 'India',
+          },
+          deliveryAddress: {
+            isSameAsBilling: true,
+            line1: '',
+            city: '',
+            state: '',
+            pincode: '',
+            country: 'India',
+          },
+          contactPerson: {
+            name: '',
+            mobile: '',
+            email: '',
+            waNumber: '',
+          },
+          shifts: [],
+          holidays: [],
+        });
+      }
+
+      rosterDoc.siteName = siteName;
+
+      // ── Populate Address & Contact (Corporate HO or Client Site) ──
+      if (isTeamHO && hoLocation) {
+        // Corporate Head Office Address
+        const hoAddr = hoLocation.address || {};
+        rosterDoc.billingAddress = {
+          line1: hoAddr.line1 || '141B Ground Floor, OPP. LSR College',
+          city: hoAddr.city || hoAddr.district || 'South Delhi',
+          state: hoAddr.state || 'Delhi',
+          pincode: hoAddr.pincode || '110048',
+          country: 'India',
+        };
+        rosterDoc.deliveryAddress = {
+          isSameAsBilling: true,
+          line1: hoAddr.line1 || '141B Ground Floor, OPP. LSR College',
+          city: hoAddr.city || hoAddr.district || 'South Delhi',
+          state: hoAddr.state || 'Delhi',
+          pincode: hoAddr.pincode || '110048',
+          country: 'India',
+        };
+        rosterDoc.gstNo = hoLocation.gstin || lead.gst_number || '';
+        rosterDoc.contactPerson = {
+          name: 'Suresh Chauhan',
+          mobile: '9212790790',
+          email: 'admin@prathamservices.com',
+          waNumber: '9212790790',
+        };
+      } else {
+        // Client Site Address
+        rosterDoc.billingAddress = {
+          line1: lead.sender_address || lead.location?.address || rosterDoc.billingAddress.line1 || '',
+          city: lead.sender_city || rosterDoc.billingAddress.city || '',
+          state: lead.sender_state || rosterDoc.billingAddress.state || '',
+          pincode: lead.sender_pincode || rosterDoc.billingAddress.pincode || '',
+          country: 'India',
+        };
+        rosterDoc.deliveryAddress = {
+          isSameAsBilling: true,
+          line1: lead.location?.address || lead.sender_address || rosterDoc.deliveryAddress.line1 || '',
+          city: lead.sender_city || rosterDoc.deliveryAddress.city || '',
+          state: lead.sender_state || rosterDoc.deliveryAddress.state || '',
+          pincode: lead.sender_pincode || rosterDoc.deliveryAddress.pincode || '',
+          country: 'India',
+        };
+        if (lead.gst_number) rosterDoc.gstNo = lead.gst_number;
+        rosterDoc.contactPerson = {
+          name: lead.contact_person || lead.sender_name || '',
+          mobile: lead.sender_mobile || '',
+          email: lead.sender_email || '',
+          waNumber: lead.sender_mobile || '',
+        };
+      }
+
+      // ── Populate Shifts & Assigned Workers ──
+      let siteShifts = Array.isArray(lead.siteShifts) ? [...lead.siteShifts] : [];
+      let leadModified = false;
+
+      if (isTeamHO) {
+        // 🏢 Corporate Roster for Registered Users (HO / BR)
+        // Bind registered corporate staff (CorpAdmin, Project, Sales, Finance)
+        const hoWorkers = corpStaffEmps.map((emp) => ({
+          workerId: emp._id,
+          workerName: emp.name,
+          enrollmentNo: emp.userRole || 'HO-Staff',
+          mobile: emp.mobile,
+          weeklyRestDay: 'Sun',
+          assignedDate: now,
+          status: 'Active',
+        }));
+
+        siteShifts = [{
+          shiftName: 'General',
+          groupName: 'MANG',
+          shiftCode: 'G',
+          startTime: '09:00',
+          durationHrs: 8,
+          shiftStartDate: now,
+          workerSlots: hoWorkers.length > 0 ? hoWorkers.length : 1,
+          billRate: 0,
+          salaryRate: 0,
+          active: true,
+          boundWorkerId: hoWorkers[0]?.workerId || null,
+          boundWorkerName: hoWorkers[0]?.workerName || 'Corporate Staff',
+          weeklyRestDay: 'Sun',
+        }];
+        leadModified = true;
+
+        rosterDoc.shifts = [{
+          shiftCode: 'G',
+          shiftName: 'General',
+          groupName: 'MANG',
+          startTime: '09:00',
+          durationHrs: 8,
+          shiftStartDate: now,
+          workerSlots: hoWorkers.length > 0 ? hoWorkers.length : 1,
+          billRate: 0,
+          salaryRate: 0,
+          active: true,
+          workers: hoWorkers,
+        }];
+      } else {
+        // 🛡️ Standard Client Site Shifts
+        if (siteShifts.length === 0) {
+          siteShifts = [{
+            shiftName: 'Day',
+            groupName: 'DaNi',
+            shiftCode: 'D',
+            startTime: '08:00',
+            durationHrs: 12,
+            shiftStartDate: now,
+            workerSlots: 1,
+            billRate: 15000,
+            salaryRate: 12000,
+            active: true,
+          }];
+          leadModified = true;
+        }
+
+        // Check duties
+        const siteDutiesToday = Attendance
+          ? await Attendance.find({
+              $and: [
+                { $or: [{ leadId: siteId }, { siteId }] },
+                {
+                  $or: [
+                    { date: { $gte: startTodayUtc, $lte: endTodayUtc } },
+                    { dutyStart: { $gte: startTodayUtc, $lte: endTodayUtc } },
+                  ],
+                },
+                { status: { $nin: ['Absent', 'Leave'] } },
+              ],
+            }).lean()
+          : [];
+
+        const siteDutiesYesterday = Attendance
+          ? await Attendance.find({
+              $and: [
+                { $or: [{ leadId: siteId }, { siteId }] },
+                {
+                  $or: [
+                    { date: { $gte: startYesterdayUtc, $lte: endYesterdayUtc } },
+                    { dutyStart: { $gte: startYesterdayUtc, $lte: endYesterdayUtc } },
+                  ],
+                },
+                { status: { $nin: ['Absent', 'Leave'] } },
+              ],
+            }).lean()
+          : [];
+
+        const todayShiftDutyMap = new Map();
+        for (const d of siteDutiesToday) {
+          const code = String(d.shiftCode || '').trim().toUpperCase();
+          if (code && !todayShiftDutyMap.has(code)) todayShiftDutyMap.set(code, d);
+        }
+
+        const yestShiftDutyMap = new Map();
+        for (const d of siteDutiesYesterday) {
+          const code = String(d.shiftCode || '').trim().toUpperCase();
+          if (code && !yestShiftDutyMap.has(code)) yestShiftDutyMap.set(code, d);
+        }
+
+        const rosterShifts = [];
+        for (let i = 0; i < siteShifts.length; i++) {
+          const s = siteShifts[i];
+          const code = String(s.shiftCode || '').trim().toUpperCase();
+          if (!code) continue;
+
+          const groupName = s.groupName === 'DaNi' || Number(s.durationHrs) === 12 ? 'DaNi' : 'MANG';
+          const durationHrs = Number(s.durationHrs) || (groupName === 'DaNi' ? 12 : 8);
+          const shiftStartDate = s.shiftStartDate ? new Date(s.shiftStartDate) : now;
+          const workerSlots = Number(s.workerSlots) || 1;
+          let salaryRate = Number(s.salaryRate) || 0;
+          let billRate = Number(s.billRate) || 0;
+
+          let boundWorkerId = s.boundWorkerId ? String(s.boundWorkerId._id || s.boundWorkerId) : null;
+          let boundWorkerName = s.boundWorkerName || '';
+          let boundWorkerEnr = s.boundWorkerEnrollment || '';
+          let boundWorkerMob = s.boundWorkerMobile || '';
+
+          if (!boundWorkerId && todayShiftDutyMap.has(code)) {
+            const duty = todayShiftDutyMap.get(code);
+            boundWorkerId = String(duty.employeeId);
+            if (!salaryRate && duty.rate) salaryRate = Number(duty.rate);
+            leadModified = true;
+          } else if (!boundWorkerId && yestShiftDutyMap.has(code)) {
+            const duty = yestShiftDutyMap.get(code);
+            boundWorkerId = String(duty.employeeId);
+            if (!salaryRate && duty.rate) salaryRate = Number(duty.rate);
+            leadModified = true;
+          }
+
+          if (boundWorkerId) {
+            const emp = empMap.get(boundWorkerId);
+            if (emp) {
+              boundWorkerName = emp.name || boundWorkerName;
+              boundWorkerEnr = emp.enrollment_no || emp.enrollmentNo || boundWorkerEnr;
+              boundWorkerMob = emp.mobile || boundWorkerMob;
+            }
+            s.boundWorkerId = boundWorkerId;
+            s.boundWorkerName = boundWorkerName;
+            s.boundWorkerEnrollment = boundWorkerEnr;
+            s.boundWorkerMobile = boundWorkerMob;
+            if (salaryRate) s.salaryRate = salaryRate;
+          }
+
+          s.groupName = groupName;
+          s.durationHrs = durationHrs;
+          s.shiftStartDate = shiftStartDate;
+
+          const rawExempt = Array.isArray(s.exemptDays) ? s.exemptDays : [];
+          const rawWeekly = (typeof s.weeklyRestDay === 'string' && s.weeklyRestDay.trim())
+            ? s.weeklyRestDay.split(',').map((d) => d.trim()).filter(Boolean)
+            : [];
+          const combinedRest = Array.from(new Set([...rawExempt, ...rawWeekly]));
+          const restStr = combinedRest.length > 0 ? combinedRest.join(', ') : null;
+
+          const assignedWorkers = [];
+          if (boundWorkerId) {
+            assignedWorkers.push({
+              workerId: boundWorkerId,
+              workerName: boundWorkerName || 'Worker',
+              enrollmentNo: boundWorkerEnr,
+              mobile: boundWorkerMob,
+              weeklyRestDay: restStr,
+              exemptDays: combinedRest,
+              salaryRate: s.salaryRate || salaryRate || 0,
+              assignedDate: shiftStartDate,
+              status: 'Active',
+            });
+          }
+
+          rosterShifts.push({
+            shiftCode: code,
+            shiftName: s.shiftName || (groupName === 'DaNi' ? 'Day' : 'General'),
+            groupName,
+            startTime: s.startTime || '08:00',
+            durationHrs,
+            shiftStartDate,
+            workerSlots,
+            billRate,
+            salaryRate: s.salaryRate || salaryRate || 0,
+            weeklyRestDay: restStr,
+            exemptDays: combinedRest,
+            active: s.active !== false,
+            workers: assignedWorkers,
+          });
+        }
+
+        rosterDoc.shifts = rosterShifts;
+      }
+
+      if (leadModified) {
+        await Leads.findByIdAndUpdate(siteId, { $set: { siteShifts, sender_name: siteName } });
+      }
+
+      rosterDoc.totalConfiguredShifts = rosterDoc.shifts.length;
+      rosterDoc.totalRequiredWorkers = rosterDoc.shifts.reduce((acc, sh) => acc + (sh.active ? sh.workerSlots : 0), 0);
+      rosterDoc.totalAssignedWorkers = rosterDoc.shifts.reduce((acc, sh) => acc + (sh.workers?.length || 0), 0);
+      rosterDoc.status = rosterDoc.totalAssignedWorkers >= rosterDoc.totalRequiredWorkers ? 'Active' : 'Pending_Staffing';
+
+      await rosterDoc.save();
+      reconciledCount++;
+    }
+
+    return {
+      totalActiveLeads: activeLeads.length,
+      reconciledCount,
+    };
+  },
+
+  syncRosterFromYesterdayDuties: async (req, res) => {
+    try {
+      const result = await exports.manageEmployees.reconcileSiteRostersInternal(req.tenantModels);
+      if (req.io && req.tenantDbName) {
+        req.io.to(req.tenantDbName).emit('roster:synced', result);
+      }
+      res.json({
+        success: true,
+        message: `Successfully reconciled ${result.reconciledCount} site rosters matching all ${result.totalActiveLeads} active leads.`,
+        ...result,
+      });
+    } catch (err) {
+      console.error('syncRosterFromYesterdayDuties error:', err);
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
   listSiteRosterHolidays: async (req, res) => {
     try {
-      const { SiteRosterHolidays } = req.tenantModels || {};
-      if (!SiteRosterHolidays) {
-        return res.status(500).json({ success: false, message: 'Tenant SiteRosterHolidays model not available' });
+      const { SiteRoster, SiteRosterHolidays, Leads } = req.tenantModels || {};
+      const RosterModel = SiteRoster || SiteRosterHolidays;
+      if (!RosterModel) {
+        return res.status(500).json({ success: false, message: 'Tenant SiteRoster model not available' });
       }
       const { year, month, siteId, workerId, type } = req.query;
-      const filter = {};
-      if (year) filter.year = Number(year);
-      if (month) filter.month = Number(month);
-      if (siteId && mongoose.Types.ObjectId.isValid(siteId)) filter.siteId = siteId;
-      if (workerId && mongoose.Types.ObjectId.isValid(workerId)) filter.workerId = workerId;
-      if (type) filter.type = type;
 
-      const data = await SiteRosterHolidays.find(filter)
-        .populate('siteId', 'project_name name')
-        .populate('workerId', 'name mobile enrollment_no')
-        .sort({ date: 1, createdAt: 1 })
+      const filter = {};
+      if (siteId && mongoose.Types.ObjectId.isValid(siteId)) {
+        filter.siteId = siteId;
+      } else if (siteId === '__HO__' || siteId === '__corp__') {
+        filter.siteId = '__HO__';
+      }
+
+      const { Employees } = req.tenantModels || {};
+      const userMaster = require('../models/userMaster');
+      const targetDb = req.tenantDbName || req.user?.dbName;
+      const staffQuery = { userActive: { $ne: false } };
+      if (targetDb) {
+        staffQuery['accessCorporate.dbName'] = targetDb;
+      }
+      let registeredUsers = [];
+      try {
+        registeredUsers = await userMaster.find(staffQuery).select('_id userMobile userDisplayName').lean();
+      } catch {}
+      const regUserIds = new Set(registeredUsers.map((u) => String(u._id)));
+      const regMobiles = new Set(registeredUsers.map((u) => String(u.userMobile || '').replace(/\D/g, '').slice(-10)).filter(Boolean));
+
+      let empWithUser = [];
+      try {
+        if (Employees) {
+          empWithUser = await Employees.find({ user_id: { $exists: true, $ne: null } }).select('_id user_id mobile').lean();
+        }
+      } catch {}
+      const empUserLinkedIds = new Set(empWithUser.map((e) => String(e._id)));
+      const empUserLinkedMobiles = new Set(empWithUser.map((e) => String(e.mobile || '').replace(/\D/g, '').slice(-10)).filter(Boolean));
+
+      const rosters = await RosterModel.find(filter)
+        .populate('siteId', 'sender_name client_name status siteShifts')
+        .sort({ siteName: 1 })
         .lean();
 
-      res.json({ success: true, data });
+      // If callers query flat items (e.g. SalaryRegister looking for holidays/leaves or legacy shift cards)
+      const flatItems = [];
+      for (const r of rosters) {
+        const leadDoc = (r.siteId && typeof r.siteId === 'object') ? r.siteId : null;
+        const leadShifts = Array.isArray(leadDoc?.siteShifts) ? leadDoc.siteShifts : [];
+
+        // Flatten contract shifts into duty items
+        for (const sh of r.shifts || []) {
+          // Find matching shift from lead.siteShifts
+          const matchedLeadShift = leadShifts.find((ls) =>
+            (ls.shiftCode && sh.shiftCode && String(ls.shiftCode).toLowerCase() === String(sh.shiftCode).toLowerCase()) ||
+            (ls.shiftName && sh.shiftName && ls.shiftName.trim().toLowerCase() === sh.shiftName.trim().toLowerCase())
+          );
+
+          // Resolve effective exemptDays and weeklyRestDay from shift or leadShift
+          const rawExempt = Array.isArray(sh.exemptDays) && sh.exemptDays.length > 0
+            ? sh.exemptDays
+            : (Array.isArray(matchedLeadShift?.exemptDays) && matchedLeadShift.exemptDays.length > 0
+              ? matchedLeadShift.exemptDays
+              : []);
+          const rawWeekly = (sh.weeklyRestDay || matchedLeadShift?.weeklyRestDay || '');
+          const weeklyDays = (typeof rawWeekly === 'string' && rawWeekly.trim())
+            ? rawWeekly.split(',').map((d) => d.trim()).filter(Boolean)
+            : [];
+          const shiftRestDays = Array.from(new Set([...rawExempt, ...weeklyDays]));
+          const shiftRestStr = shiftRestDays.length > 0 ? shiftRestDays.join(', ') : null;
+
+          // If sh.workers is empty, but matchedLeadShift has boundWorkerName or boundWorkerId, create duty worker
+          const effectiveWorkers = (Array.isArray(sh.workers) && sh.workers.length > 0)
+            ? sh.workers
+            : (matchedLeadShift?.boundWorkerName || matchedLeadShift?.boundWorkerId
+              ? [{
+                  workerId: matchedLeadShift.boundWorkerId,
+                  workerName: matchedLeadShift.boundWorkerName || 'Duty Worker',
+                  enrollmentNo: matchedLeadShift.boundWorkerEnrollment || '',
+                  mobile: matchedLeadShift.boundWorkerMobile || '',
+                  weeklyRestDay: shiftRestStr,
+                  exemptDays: shiftRestDays,
+                  salaryRate: matchedLeadShift.salaryRate || sh.salaryRate || 0,
+                  status: 'Active',
+                }]
+              : []);
+
+          for (const w of effectiveWorkers) {
+            if (!workerId || String(w.workerId) === String(workerId)) {
+              const wRawExempt = Array.isArray(w.exemptDays) && w.exemptDays.length > 0
+                ? w.exemptDays
+                : shiftRestDays;
+              const wRawWeekly = w.weeklyRestDay || shiftRestStr;
+              const wWeeklyDays = (typeof wRawWeekly === 'string' && wRawWeekly.trim())
+                ? wRawWeekly.split(',').map((d) => d.trim()).filter(Boolean)
+                : [];
+              const combinedWorkerRestDays = Array.from(new Set([...wRawExempt, ...wWeeklyDays]));
+              const workerRestStr = combinedWorkerRestDays.length > 0 ? combinedWorkerRestDays.join(', ') : null;
+
+              const salary = (w.salaryRate !== undefined && w.salaryRate !== null && w.salaryRate !== '')
+                ? Number(w.salaryRate)
+                : (sh.salaryRate || matchedLeadShift?.salaryRate || 0);
+
+              const cleanMob = String(w.mobile || matchedLeadShift?.boundWorkerMobile || '').replace(/\D/g, '').slice(-10);
+              const wid = String(w.workerId || matchedLeadShift?.boundWorkerId || '');
+              const isOwnDevice = (
+                r.siteId === '__HO__' ||
+                regUserIds.has(wid) ||
+                empUserLinkedIds.has(wid) ||
+                (cleanMob && (regMobiles.has(cleanMob) || empUserLinkedMobiles.has(cleanMob)))
+              );
+
+              flatItems.push({
+                _id: w._id || sh._id,
+                siteId: leadDoc?._id || r.siteId?._id || r.siteId,
+                siteName: r.siteName || leadDoc?.sender_name || 'Site',
+                clientId: r.clientId,
+                type: 'ShiftDuty',
+                shiftCode: sh.shiftCode,
+                shiftName: sh.shiftName || matchedLeadShift?.shiftName || 'Shift',
+                groupName: sh.groupName || matchedLeadShift?.groupName || 'MANG',
+                startTime: sh.startTime || matchedLeadShift?.startTime || '08:00',
+                durationHrs: sh.durationHrs || matchedLeadShift?.durationHrs || 8,
+                shiftStartDate: sh.shiftStartDate || matchedLeadShift?.shiftStartDate || new Date(),
+                salaryRate: salary,
+                billRate: sh.billRate || matchedLeadShift?.billRate || 0,
+                workerId: w.workerId || matchedLeadShift?.boundWorkerId,
+                workerName: w.workerName || matchedLeadShift?.boundWorkerName || 'Worker',
+                enrollmentNo: w.enrollmentNo || matchedLeadShift?.boundWorkerEnrollment || '',
+                mobile: w.mobile || matchedLeadShift?.boundWorkerMobile || '',
+                weeklyRestDay: workerRestStr,
+                exemptDays: combinedWorkerRestDays,
+                restDayOfWeek: workerRestStr,
+                isOwnDevice: Boolean(isOwnDevice),
+                status: w.status || 'Active',
+                remark: `Roster Contract Assignment (${sh.shiftCode})`,
+                isPaid: true,
+                year: Number(year) || new Date().getFullYear(),
+                month: Number(month) || (new Date().getMonth() + 1),
+              });
+            }
+          }
+        }
+
+        // Add site holidays
+        for (const h of r.holidays || []) {
+          if (!type || h.type === type) {
+            flatItems.push({
+              _id: h._id,
+              siteId: r.siteId?._id || r.siteId,
+              siteName: r.siteName,
+              type: h.type,
+              date: h.date,
+              dayName: h.dayName,
+              remark: h.remark,
+              isPaid: h.isPaid,
+              year: Number(year) || new Date().getFullYear(),
+              month: Number(month) || (new Date().getMonth() + 1),
+            });
+          }
+        }
+      }
+
+      // Dynamic Corporate Staff Roster from userMaster (Active Registered Users)
+      if (!siteId || siteId === '__HO__' || siteId === '__corp__') {
+        const hoInRosters = rosters.some(r => r.siteId === '__HO__');
+        if (!hoInRosters) {
+          try {
+            const userMaster = require('../models/userMaster');
+            const targetDb = req.tenantDbName || req.user?.dbName;
+            const staffQuery = { userActive: { $ne: false } };
+            if (targetDb) {
+              staffQuery['accessCorporate.dbName'] = targetDb;
+            }
+
+            const corporateStaff = await userMaster
+              .find(staffQuery)
+              .select('-userPassword')
+              .lean();
+
+            if (corporateStaff.length > 0) {
+              const hoWorkers = corporateStaff.map((u, idx) => {
+                const uSalary = u.dutyShift?.salaryRate ?? u.salaryRate ?? 0;
+                const uExempt = Array.isArray(u.dutyShift?.exemptDays) && u.dutyShift.exemptDays.length > 0
+                  ? u.dutyShift.exemptDays
+                  : (Array.isArray(u.exemptDays) && u.exemptDays.length > 0 ? u.exemptDays : []);
+                const uRest = u.dutyShift?.weeklyRestDay || u.weeklyRestDay || (uExempt.length ? uExempt.join(', ') : null);
+
+                return {
+                  workerId: u._id,
+                  workerName: u.userDisplayName || u.name || ('Staff ' + (idx + 1)),
+                  enrollmentNo: u.userAadhar ? ('UID-' + String(u.userAadhar).slice(-4)) : (u.userRole || ('HO-' + (idx + 1))),
+                  mobile: u.userMobile || '',
+                  weeklyRestDay: uRest,
+                  exemptDays: uExempt,
+                  salaryRate: uSalary,
+                  status: 'Active',
+                };
+              });
+
+              // Include in rosters as corporate roster
+              rosters.unshift({
+                _id: '__HO__',
+                siteId: '__HO__',
+                siteName: 'Corporate Staff (Head Office)',
+                shifts: [
+                  {
+                    shiftCode: 'G',
+                    shiftName: 'General (Office Staff)',
+                    groupName: 'MANG',
+                    startTime: corporateStaff[0]?.dutyShift?.startFrom || '09:00',
+                    durationHrs: corporateStaff[0]?.dutyShift?.durationHrs || 8,
+                    shiftStartDate: new Date(),
+                    workerSlots: corporateStaff.length,
+                    salaryRate: 0,
+                    billRate: 0,
+                    active: true,
+                    workers: hoWorkers,
+                  },
+                ],
+                holidays: [],
+                totalConfiguredShifts: 1,
+                totalRequiredWorkers: corporateStaff.length,
+                totalAssignedWorkers: corporateStaff.length,
+              });
+
+              // Include each corporate staff member in flatItems
+              for (const u of corporateStaff) {
+                const uSalary = u.dutyShift?.salaryRate ?? u.salaryRate ?? 0;
+                const uExempt = Array.isArray(u.dutyShift?.exemptDays) && u.dutyShift.exemptDays.length > 0
+                  ? u.dutyShift.exemptDays
+                  : (Array.isArray(u.exemptDays) && u.exemptDays.length > 0 ? u.exemptDays : []);
+                const uRest = u.dutyShift?.weeklyRestDay || u.weeklyRestDay || (uExempt.length ? uExempt.join(', ') : null);
+
+                flatItems.unshift({
+                  _id: u._id,
+                  siteId: '__HO__',
+                  siteName: 'Corporate Staff (Head Office)',
+                  type: 'ShiftDuty',
+                  shiftCode: 'G',
+                  shiftName: u.dutyShift?.shiftName || 'General (Office Staff)',
+                  groupName: u.dutyShift?.groupName || 'MANG',
+                  startTime: u.dutyShift?.startFrom || '09:00',
+                  durationHrs: u.dutyShift?.durationHrs || 8,
+                  shiftStartDate: new Date(),
+                  salaryRate: uSalary,
+                  billRate: 0,
+                  workerId: u._id,
+                  workerName: u.userDisplayName || u.name || 'Staff Member',
+                  enrollmentNo: u.userAadhar ? ('UID-' + String(u.userAadhar).slice(-4)) : (u.userRole || 'STAFF'),
+                  mobile: u.userMobile || '',
+                  restDayOfWeek: uRest,
+                  exemptDays: uExempt,
+                  status: 'Active',
+                  remark: 'Corporate Staff Assignment (' + (u.userRole || 'Office') + ')',
+                  isPaid: true,
+                  year: Number(year) || new Date().getFullYear(),
+                  month: Number(month) || (new Date().getMonth() + 1),
+                });
+              }
+            }
+          } catch (uErr) {
+            console.warn('listSiteRosterHolidays -> dynamic userMaster staff error:', uErr.message);
+          }
+        }
+      }
+
+      res.json({
+        success: true,
+        data: flatItems,
+        rosters,
+        totalRosters: rosters.length,
+      });
     } catch (err) {
       console.error('listSiteRosterHolidays error:', err.message);
       res.status(500).json({ success: false, message: err.message });
@@ -5002,50 +5942,192 @@ exports.manageEmployees = {
 
   saveSiteRosterHoliday: async (req, res) => {
     try {
-      const { SiteRosterHolidays } = req.tenantModels || {};
-      if (!SiteRosterHolidays) {
-        return res.status(500).json({ success: false, message: 'Tenant SiteRosterHolidays model not available' });
+      const { SiteRoster, SiteRosterHolidays, Leads, Employees } = req.tenantModels || {};
+      const RosterModel = SiteRoster || SiteRosterHolidays;
+      if (!RosterModel) {
+        return res.status(500).json({ success: false, message: 'Tenant SiteRoster model not available' });
       }
+
       const {
-        year,
-        month,
-        date,
-        dayName,
         siteId,
-        clientId,
-        siteName,
         shiftCode,
         workerId,
         workerName,
-        type,
+        salaryRate,
+        billRate,
+        groupName,
+        shiftName,
+        startTime,
+        durationHrs,
+        shiftStartDate,
         restDayOfWeek,
+        type,
+        date,
+        dayName,
         remark,
         isPaid,
+        billingAddress,
+        deliveryAddress,
+        gstNo,
+        contactPerson,
       } = req.body;
 
-      const dateObj = date ? new Date(date) : new Date();
-      const effYear = year || dateObj.getFullYear();
-      const effMonth = month || (dateObj.getMonth() + 1);
+      if (!siteId) {
+        return res.status(400).json({ success: false, message: 'siteId is required' });
+      }
 
-      const doc = await SiteRosterHolidays.create({
-        year: Number(effYear),
-        month: Number(effMonth),
-        date: typeof date === 'string' ? date : dateObj.toISOString().slice(0, 10),
-        dayName: dayName || dateObj.toLocaleDateString('en-US', { weekday: 'short' }),
-        siteId,
-        clientId: clientId || null,
-        siteName: siteName || 'Site',
-        shiftCode: shiftCode || 'G',
-        workerId,
-        workerName: workerName || 'Worker',
-        type: type || 'WeeklyRest',
-        restDayOfWeek: restDayOfWeek || null,
-        remark: remark || 'Site Roster Holiday / Rest',
-        isPaid: isPaid !== undefined ? Boolean(isPaid) : true,
-        createdBy: req.user?._id || null,
-      });
+      let rosterDoc = await RosterModel.findOne({ siteId });
+      if (!rosterDoc) {
+        let siteName = 'Site';
+        if (Leads) {
+          const l = await Leads.findById(siteId).lean();
+          if (l) siteName = l.sender_name || l.client_name || l.name || siteName;
+        }
+        rosterDoc = new RosterModel({
+          siteId,
+          siteName,
+          shifts: [],
+          holidays: [],
+        });
+      }
 
-      res.status(201).json({ success: true, message: 'Site roster holiday saved', data: doc });
+      // Update Site Profile if passed
+      if (gstNo !== undefined) rosterDoc.gstNo = gstNo;
+      if (billingAddress) rosterDoc.billingAddress = { ...rosterDoc.billingAddress, ...billingAddress };
+      if (deliveryAddress) rosterDoc.deliveryAddress = { ...rosterDoc.deliveryAddress, ...deliveryAddress };
+      if (contactPerson) rosterDoc.contactPerson = { ...rosterDoc.contactPerson, ...contactPerson };
+
+      const now = new Date();
+
+      // Case 1: Holiday / Off addition
+      if (type && type !== 'ShiftDuty') {
+        const dObj = date ? new Date(date) : now;
+        rosterDoc.holidays.push({
+          date: typeof date === 'string' ? date : dObj.toISOString().slice(0, 10),
+          dayName: dayName || dObj.toLocaleDateString('en-US', { weekday: 'short' }),
+          type: type || 'WeeklyRest',
+          remark: remark || 'Site Off / Holiday',
+          isPaid: isPaid !== undefined ? Boolean(isPaid) : true,
+        });
+        await rosterDoc.save();
+        return res.status(201).json({ success: true, message: 'Holiday saved to site roster', data: rosterDoc });
+      }
+
+      // Case 2: Shift worker change / replacement (Strictly replaces assigned worker)
+      if (shiftCode) {
+        const code = String(shiftCode).trim().toUpperCase();
+        let targetShift = (rosterDoc.shifts || []).find((s) => s.shiftCode === code);
+
+        const effGroupName = groupName === 'DaNi' || Number(durationHrs) === 12 ? 'DaNi' : 'MANG';
+        const effDurationHrs = Number(durationHrs) || (effGroupName === 'DaNi' ? 12 : 8);
+        const effStartDate = shiftStartDate ? new Date(shiftStartDate) : now;
+
+        if (!targetShift) {
+          // Add new shift
+          targetShift = {
+            shiftCode: code,
+            shiftName: shiftName || (effGroupName === 'DaNi' ? 'Day' : 'General'),
+            groupName: effGroupName,
+            startTime: startTime || '08:00',
+            durationHrs: effDurationHrs,
+            shiftStartDate: effStartDate,
+            workerSlots: 1,
+            billRate: Number(billRate) || 0,
+            salaryRate: Number(salaryRate) || 0,
+            active: true,
+            workers: [],
+          };
+          rosterDoc.shifts.push(targetShift);
+        } else {
+          // Update shift contract details
+          if (groupName) targetShift.groupName = effGroupName;
+          if (durationHrs) targetShift.durationHrs = effDurationHrs;
+          if (shiftStartDate) targetShift.shiftStartDate = effStartDate;
+          if (salaryRate !== undefined) targetShift.salaryRate = Number(salaryRate);
+          if (billRate !== undefined) targetShift.billRate = Number(billRate);
+          if (startTime) targetShift.startTime = startTime;
+          if (shiftName) targetShift.shiftName = shiftName;
+        }
+
+        // Change assigned worker (atomic replace, no runaway addition)
+        let wEnr = '';
+        let wMob = '';
+        let finalWorkerName = workerName || '';
+        if (workerId && Employees) {
+          const emp = await Employees.findById(workerId).lean();
+          if (emp) {
+            finalWorkerName = emp.name || finalWorkerName;
+            wEnr = emp.enrollment_no || emp.enrollmentNo || '';
+            wMob = emp.mobile || '';
+          }
+        }
+
+        if (workerId) {
+          targetShift.workers = [{
+            workerId,
+            workerName: finalWorkerName || 'Worker',
+            enrollmentNo: wEnr,
+            mobile: wMob,
+            weeklyRestDay: restDayOfWeek || null,
+            assignedDate: effStartDate,
+            status: 'Active',
+          }];
+        }
+
+        // Two-way sync to Leads.siteShifts
+        if (Leads) {
+          try {
+            const leadDoc = await Leads.findById(siteId);
+            if (leadDoc && Array.isArray(leadDoc.siteShifts)) {
+              let shiftIdx = leadDoc.siteShifts.findIndex((s) => s.shiftCode === code);
+              if (shiftIdx === -1) {
+                leadDoc.siteShifts.push({
+                  shiftCode: code,
+                  shiftName: targetShift.shiftName,
+                  groupName: targetShift.groupName,
+                  startTime: targetShift.startTime,
+                  durationHrs: targetShift.durationHrs,
+                  shiftStartDate: targetShift.shiftStartDate,
+                  workerSlots: targetShift.workerSlots,
+                  billRate: targetShift.billRate,
+                  salaryRate: targetShift.salaryRate,
+                  active: true,
+                  boundWorkerId: workerId || null,
+                  boundWorkerName: finalWorkerName,
+                  boundWorkerEnrollment: wEnr,
+                  boundWorkerMobile: wMob,
+                  weeklyRestDay: restDayOfWeek || null,
+                });
+              } else {
+                if (workerId) {
+                  leadDoc.siteShifts[shiftIdx].boundWorkerId = workerId;
+                  leadDoc.siteShifts[shiftIdx].boundWorkerName = finalWorkerName;
+                  leadDoc.siteShifts[shiftIdx].boundWorkerEnrollment = wEnr;
+                  leadDoc.siteShifts[shiftIdx].boundWorkerMobile = wMob;
+                }
+                if (salaryRate !== undefined) leadDoc.siteShifts[shiftIdx].salaryRate = Number(salaryRate);
+                if (billRate !== undefined) leadDoc.siteShifts[shiftIdx].billRate = Number(billRate);
+                if (restDayOfWeek) leadDoc.siteShifts[shiftIdx].weeklyRestDay = restDayOfWeek;
+                leadDoc.siteShifts[shiftIdx].shiftStartDate = effStartDate;
+                leadDoc.siteShifts[shiftIdx].groupName = effGroupName;
+              }
+              await leadDoc.save();
+              if (req.io && req.tenantDbName) {
+                req.io.to(req.tenantDbName).emit('lead:updated', { data: leadDoc });
+              }
+            }
+          } catch (leadSyncErr) {
+            console.warn('saveSiteRosterHoliday -> Leads sync error:', leadSyncErr.message);
+          }
+        }
+      }
+
+      rosterDoc.totalConfiguredShifts = rosterDoc.shifts.length;
+      rosterDoc.totalRequiredWorkers = rosterDoc.shifts.reduce((acc, sh) => acc + (sh.active ? sh.workerSlots : 0), 0);
+      rosterDoc.totalAssignedWorkers = rosterDoc.shifts.reduce((acc, sh) => acc + (sh.workers?.length || 0), 0);
+      await rosterDoc.save();
+
+      res.status(200).json({ success: true, message: 'Site roster updated successfully', data: rosterDoc });
     } catch (err) {
       console.error('saveSiteRosterHoliday error:', err.message);
       res.status(400).json({ success: false, message: err.message });
@@ -5054,77 +6136,178 @@ exports.manageEmployees = {
 
   setupSiteWeeklyRest: async (req, res) => {
     try {
-      const { SiteRosterHolidays } = req.tenantModels || {};
-      if (!SiteRosterHolidays) {
-        return res.status(500).json({ success: false, message: 'Tenant SiteRosterHolidays model not available' });
-      }
-      const { siteId, workerId, siteName, workerName, restDayOfWeek, year } = req.body;
+      const { SiteRoster, SiteRosterHolidays, Leads } = req.tenantModels || {};
+      const RosterModel = SiteRoster || SiteRosterHolidays;
+      const { siteId, workerId, restDayOfWeek } = req.body;
       if (!siteId || !workerId || !restDayOfWeek) {
         return res.status(400).json({ success: false, message: 'siteId, workerId and restDayOfWeek are required' });
       }
-      const effYear = Number(year) || new Date().getFullYear();
 
-      const existing = await SiteRosterHolidays.findOneAndUpdate(
-        { siteId, workerId, restDayOfWeek },
-        {
-          $set: {
-            siteName: siteName || 'Site',
-            workerName: workerName || 'Worker',
-            year: effYear,
-            month: new Date().getMonth() + 1,
-            type: 'WeeklyRest',
-            remark: `Weekly Rest (${restDayOfWeek})`,
-            isPaid: true,
-            createdBy: req.user?._id || null,
-          },
-        },
-        { new: true, upsert: true }
-      );
+      const rosterDoc = await RosterModel.findOne({ siteId });
+      if (rosterDoc && Array.isArray(rosterDoc.shifts)) {
+        for (const sh of rosterDoc.shifts) {
+          for (const w of sh.workers || []) {
+            if (String(w.workerId) === String(workerId)) {
+              w.weeklyRestDay = restDayOfWeek;
+            }
+          }
+        }
+        await rosterDoc.save();
+      }
 
-      res.json({ success: true, message: 'Weekly rest setup saved', data: existing });
+      // Sync into Leads.siteShifts
+      if (Leads) {
+        const leadDoc = await Leads.findById(siteId);
+        if (leadDoc && Array.isArray(leadDoc.siteShifts)) {
+          for (const s of leadDoc.siteShifts) {
+            if (String(s.boundWorkerId) === String(workerId)) {
+              s.weeklyRestDay = restDayOfWeek;
+            }
+          }
+          await leadDoc.save();
+        }
+      }
+
+      res.json({ success: true, message: 'Weekly rest saved to roster', data: { siteId, workerId, restDayOfWeek } });
     } catch (err) {
       console.error('setupSiteWeeklyRest error:', err.message);
       res.status(500).json({ success: false, message: err.message });
     }
   },
 
+  
+  saveCorporateRoster: async (req, res) => {
+    try {
+      const { staffConfigs } = req.body;
+      if (!Array.isArray(staffConfigs)) {
+        return res.status(400).json({ success: false, message: 'staffConfigs must be an array' });
+      }
+
+      const userMaster = require('../models/userMaster');
+      const { SiteRoster, SiteRosterHolidays } = req.tenantModels || {};
+      const RosterModel = SiteRoster || SiteRosterHolidays;
+
+      const updatedUsers = [];
+      const rosterWorkers = [];
+
+      for (const item of staffConfigs) {
+        const userId = item.userId || item._id;
+        if (!userId) continue;
+
+        const rawExempt = Array.isArray(item.exemptDays) ? item.exemptDays : [];
+        const rawWeekly = (typeof item.weeklyRestDay === 'string' && item.weeklyRestDay.trim())
+          ? item.weeklyRestDay.split(',').map((d) => d.trim()).filter(Boolean)
+          : [];
+        const combined = Array.from(new Set([...rawExempt, ...rawWeekly]));
+        const weeklyRestDay = combined.length > 0 ? combined.join(', ') : null;
+        const salaryRate = Number(item.salaryRate) || 0;
+
+        // 1. Update in userMaster
+        const updated = await userMaster.findByIdAndUpdate(
+          userId,
+          {
+            $set: {
+              salaryRate: salaryRate,
+              'dutyShift.salaryRate': salaryRate,
+              'dutyShift.weeklyRestDay': weeklyRestDay,
+              'dutyShift.exemptDays': combined,
+              ...(item.startFrom ? { 'dutyShift.startFrom': item.startFrom } : {}),
+              ...(item.durationHrs ? { 'dutyShift.durationHrs': Number(item.durationHrs) } : {}),
+            },
+          },
+          { new: true }
+        ).select('-userPassword').lean();
+
+        if (updated) {
+          updatedUsers.push(updated);
+          rosterWorkers.push({
+            workerId: updated._id,
+            workerName: updated.userDisplayName || updated.name || 'Staff',
+            enrollmentNo: updated.userAadhar ? ('UID-' + String(updated.userAadhar).slice(-4)) : (updated.userRole || 'HO-Staff'),
+            mobile: updated.userMobile || '',
+            weeklyRestDay: weeklyRestDay,
+            exemptDays: combined,
+            salaryRate: salaryRate,
+            assignedDate: new Date(),
+            status: 'Active',
+          });
+        }
+      }
+
+      // 2. Save all information in SiteRoster (Contract Master for Corporate HO)
+      if (RosterModel) {
+        let corpRoster = await RosterModel.findOne({ siteId: '__HO__' });
+        if (!corpRoster) {
+          corpRoster = new RosterModel({
+            siteId: '__HO__',
+            siteName: 'Corporate Staff (Head Office)',
+            shifts: [],
+            holidays: [],
+          });
+        }
+
+        corpRoster.siteName = 'Corporate Staff (Head Office)';
+        corpRoster.shifts = [
+          {
+            shiftCode: 'G',
+            shiftName: 'General (Office Staff)',
+            groupName: 'MANG',
+            startTime: staffConfigs[0]?.startFrom || '09:00',
+            durationHrs: Number(staffConfigs[0]?.durationHrs) || 8,
+            shiftStartDate: new Date(),
+            workerSlots: rosterWorkers.length,
+            salaryRate: 0,
+            billRate: 0,
+            active: true,
+            weeklyRestDay: null,
+            exemptDays: [],
+            workers: rosterWorkers,
+          },
+        ];
+        corpRoster.totalConfiguredShifts = 1;
+        corpRoster.totalRequiredWorkers = rosterWorkers.length;
+        corpRoster.totalAssignedWorkers = rosterWorkers.length;
+        await corpRoster.save();
+      }
+
+      res.json({
+        success: true,
+        message: 'Corporate roster, salary and rest days saved successfully',
+        data: updatedUsers,
+      });
+    } catch (err) {
+      console.error('saveCorporateRoster error:', err.message);
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
   generateYearHolidays: async (req, res) => {
     try {
-      const { SiteRosterHolidays, Leads } = req.tenantModels || {};
-      if (!SiteRosterHolidays) {
-        return res.status(500).json({ success: false, message: 'Tenant SiteRosterHolidays model not available' });
-      }
-      const { siteId, year, holidays } = req.body;
-      if (!siteId || !year || !Array.isArray(holidays)) {
-        return res.status(400).json({ success: false, message: 'siteId, year, and holidays array are required' });
+      const { SiteRoster, SiteRosterHolidays } = req.tenantModels || {};
+      const RosterModel = SiteRoster || SiteRosterHolidays;
+      const { siteId, holidays } = req.body;
+      if (!siteId || !Array.isArray(holidays)) {
+        return res.status(400).json({ success: false, message: 'siteId and holidays array are required' });
       }
 
-      let siteName = 'Site';
-      if (Leads) {
-        const siteDoc = await Leads.findById(siteId).lean();
-        if (siteDoc) siteName = siteDoc.project_name || siteDoc.name || siteName;
+      const rosterDoc = await RosterModel.findOne({ siteId });
+      if (!rosterDoc) {
+        return res.status(404).json({ success: false, message: 'Site roster not found' });
       }
 
-      const docs = holidays.map((h) => {
+      for (const h of holidays) {
         const d = new Date(h.date);
-        return {
-          year: Number(year),
-          month: !isNaN(d.getMonth()) ? d.getMonth() + 1 : 1,
+        rosterDoc.holidays.push({
           date: h.date,
           dayName: h.dayName || (!isNaN(d.getDay()) ? d.toLocaleDateString('en-US', { weekday: 'short' }) : ''),
-          siteId,
-          siteName,
-          workerId: h.workerId || siteId,
-          workerName: h.workerName || 'Site All Workers',
           type: h.type || 'NationalHoliday',
           remark: h.remark || h.name || 'Holiday',
           isPaid: h.isPaid !== undefined ? Boolean(h.isPaid) : true,
-          createdBy: req.user?._id || null,
-        };
-      });
+        });
+      }
 
-      const result = await SiteRosterHolidays.insertMany(docs, { ordered: false });
-      res.json({ success: true, message: `Generated ${result.length} holidays for ${year}`, count: result.length });
+      await rosterDoc.save();
+      res.json({ success: true, message: `Added ${holidays.length} holidays to site roster`, data: rosterDoc });
     } catch (err) {
       console.error('generateYearHolidays error:', err.message);
       res.status(500).json({ success: false, message: err.message });
@@ -5133,13 +6316,35 @@ exports.manageEmployees = {
 
   deleteSiteRosterHoliday: async (req, res) => {
     try {
-      const { SiteRosterHolidays } = req.tenantModels || {};
-      if (!SiteRosterHolidays) {
-        return res.status(500).json({ success: false, message: 'Tenant SiteRosterHolidays model not available' });
-      }
+      const { SiteRoster, SiteRosterHolidays } = req.tenantModels || {};
+      const RosterModel = SiteRoster || SiteRosterHolidays;
       const { id } = req.params;
-      await SiteRosterHolidays.findByIdAndDelete(id);
-      res.json({ success: true, message: 'Site roster holiday deleted successfully' });
+
+      // Check if id is a holiday subdocument, a shift subdocument, or a whole roster document
+      const doc = await RosterModel.findOne({
+        $or: [
+          { _id: id },
+          { 'holidays._id': id },
+          { 'shifts._id': id },
+          { 'shifts.workers._id': id },
+        ],
+      });
+
+      if (!doc) {
+        return res.status(404).json({ success: false, message: 'Roster item not found' });
+      }
+
+      if (String(doc._id) === String(id)) {
+        await RosterModel.findByIdAndDelete(id);
+      } else {
+        doc.holidays = (doc.holidays || []).filter((h) => String(h._id) !== String(id));
+        for (const sh of doc.shifts || []) {
+          sh.workers = (sh.workers || []).filter((w) => String(w._id) !== String(id));
+        }
+        await doc.save();
+      }
+
+      res.json({ success: true, message: 'Roster item deleted successfully' });
     } catch (err) {
       console.error('deleteSiteRosterHoliday error:', err.message);
       res.status(500).json({ success: false, message: err.message });
@@ -5149,13 +6354,10 @@ exports.manageEmployees = {
   listWorkerPenalties: async (req, res) => {
     try {
       const { Attendance } = req.tenantModels || {};
-      if (!Attendance) {
-        return res.status(500).json({ success: false, message: 'Tenant Attendance model not available' });
-      }
-      const { month, year, workerId } = req.query;
+      const { workerId, year, month } = req.query;
       const filter = {
         $or: [
-          { penaltyImposed: { $gt: 0 } },
+          { penaltyAmount: { $gt: 0 } },
           { penaltyDeducted: { $gt: 0 } },
         ],
       };
@@ -5193,6 +6395,10 @@ exports.manageEmployees = {
     }
   },
 
+  listPenaltyRecords: async (req, res) => {
+    return module.exports.manageEmployees.listWorkerPenalties(req, res);
+  },
+
   saveWorkerPenalty: async (req, res) => {
     try {
       const { Attendance } = req.tenantModels || {};
@@ -5200,16 +6406,51 @@ exports.manageEmployees = {
         return res.status(500).json({ success: false, message: 'Tenant Attendance model not available' });
       }
       const { id } = req.params;
-      const { workerId, deductedAmount, penaltyImposed, penaltyReason, violationType, date } = req.body;
+      const { workerId, deductedAmount, penaltyImposed, penaltyReason, violationType, date, month, year, settleMonth } = req.body;
 
-      const targetEmpId = workerId || id;
+      const targetEmpId = workerId || req.body.employeeId || id;
+
+      // ── BATCH SETTLE MONTHLY PENALTIES ON SALARY POSTING (100% Same-Month Recovery) ──
+      if (settleMonth || (deductedAmount !== undefined && month && year && !date)) {
+        const m = Number(month);
+        const y = Number(year);
+        if (m && y && targetEmpId) {
+          const startOfMonth = new Date(y, m - 1, 1, 0, 0, 0, 0);
+          const endOfMonth = new Date(y, m, 0, 23, 59, 59, 999);
+          const attDocs = await Attendance.find({
+            employeeId: targetEmpId,
+            date: { $gte: startOfMonth, $lte: endOfMonth },
+            penaltyImposed: { $gt: 0 },
+          });
+          for (const doc of attDocs) {
+            const imp = Number(doc.penaltyImposed) || 0;
+            const wai = Number(doc.penaltyWaivedOff) || 0;
+            doc.penaltyDeducted = Math.max(0, imp - wai);
+            await doc.save();
+          }
+          return res.json({ success: true, message: 'Monthly penalties settled in attendance', count: attDocs.length });
+        }
+      }
+
       let query = {};
+      let isAttendanceDoc = false;
       if (id && mongoose.Types.ObjectId.isValid(id)) {
-        query._id = id;
-      } else if (targetEmpId) {
+        const exists = await Attendance.exists({ _id: id });
+        if (exists) {
+          query._id = id;
+          isAttendanceDoc = true;
+        }
+      }
+
+      if (!isAttendanceDoc && targetEmpId) {
         query.employeeId = targetEmpId;
         if (date) {
-          query.date = new Date(date);
+          const d = new Date(date);
+          const startOfDay = new Date(d);
+          startOfDay.setHours(0, 0, 0, 0);
+          const endOfDay = new Date(d);
+          endOfDay.setHours(23, 59, 59, 999);
+          query.date = { $gte: startOfDay, $lte: endOfDay };
         }
       }
 
@@ -5220,8 +6461,23 @@ exports.manageEmployees = {
       if (deductedAmount !== undefined) updateFields.penaltyDeducted = Number(deductedAmount);
       if (penaltyImposed !== undefined) updateFields.penaltyImposed = Number(penaltyImposed);
       if (violationType) updateFields.violationType = violationType;
+      if (req.body.penaltyWaivedOff !== undefined) updateFields.penaltyWaivedOff = Number(req.body.penaltyWaivedOff);
+      if (req.body.penaltyMediaUrl !== undefined) updateFields.penaltyMediaUrl = req.body.penaltyMediaUrl;
+      if (req.body.penaltyMedia !== undefined) updateFields.penaltyMedia = req.body.penaltyMedia;
 
-      const updated = await Attendance.findOneAndUpdate(query, { $set: updateFields }, { new: true });
+      const setOnInsert = {
+        employeeId: targetEmpId,
+        employeeType: 'Employees',
+        date: date ? new Date(date) : new Date(),
+        status: 'Absent',
+        hoursWorked: 0,
+      };
+
+      const updated = await Attendance.findOneAndUpdate(
+        query,
+        { $set: updateFields, $setOnInsert: setOnInsert },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      );
 
       res.json({ success: true, message: 'Worker penalty recorded', data: updated });
     } catch (err) {

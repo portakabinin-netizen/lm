@@ -18,7 +18,7 @@ const storage = multer.diskStorage({
 
 const upload = multer({
     storage,
-    limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+    limits: { fileSize: 50 * 1024 * 1024 }, // 50MB (Supports high-res mobile photos and videos)
 });
 
 router.post("/single", upload.single("file"), (req, res) => {
@@ -27,7 +27,16 @@ router.post("/single", upload.single("file"), (req, res) => {
     return res.json({ success: true, url });
 });
 
-router.post("/cloudinary", upload.single("file"), async (req, res) => {
+router.post("/cloudinary", (req, res, next) => {
+    upload.single("file")(req, res, (err) => {
+        if (err instanceof multer.MulterError) {
+            return res.status(400).json({ success: false, message: `Upload limit error: ${err.message}` });
+        } else if (err) {
+            return res.status(500).json({ success: false, message: `Upload failed: ${err.message}` });
+        }
+        next();
+    });
+}, async (req, res) => {
     try {
         if (!req.file) return res.status(400).json({ error: "No file uploaded" });
         const leadFolder = req.body.lead_no || "general";

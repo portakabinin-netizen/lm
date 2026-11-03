@@ -534,7 +534,7 @@ const externalService = {
      */
     getCloudinaryOptions: (customConfig = null) => {
         // 1. Check if tenant has active custom Cloudinary config
-        if (customConfig && (customConfig.cloud_name || customConfig.api_url) && customConfig.isActive) {
+        if (customConfig && customConfig.isActive && (customConfig.api_url || (customConfig.cloud_name && customConfig.api_key && customConfig.api_secret))) {
             if (customConfig.api_url) {
                 return { cloudinary_url: customConfig.api_url };
             } else {

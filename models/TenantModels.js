@@ -206,15 +206,44 @@ const leadSchema = new mongoose.Schema(
       new mongoose.Schema(
         {
           shiftName: { type: String, trim: true }, // 'Morning' | 'Afternoon' | 'Night' | 'General' | 'Day' | 'Night12'
-          groupName: { type: String, trim: true }, // 'MANG' (8hr) | 'DaNi' (12hr)
+          groupName: { type: String, trim: true, enum: ['MANG', 'DaNi'] }, // 'MANG' (8hr) | 'DaNi' (12hr) ONLY
           shiftCode: { type: String, trim: true }, // 'M' | 'A' | 'N' | 'G' | 'D' | 'N2'
           startTime: { type: String, trim: true }, // e.g. "06:00"
           durationHrs: { type: Number, default: 8 }, // 8 or 12
+          shiftStartDate: { type: Date, default: Date.now }, // Shift contract start date
           workerSlots: { type: Number, default: 1 }, // Required workers for this shift per day
           // Billing rate options (per-day or per-shift)
           billRate: { type: Number, default: 0 }, // Amount charged to client per worker per shift
           salaryRate: { type: Number, default: 0 }, // Amount paid to worker per shift
           active: { type: Boolean, default: true },
+          // ── Stationed / Bound Worker Binding ──
+          boundWorkerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Employees', default: null },
+          boundWorkerName: { type: String, trim: true, default: '' },
+          boundWorkerMobile: { type: String, trim: true, default: '' },
+          boundWorkerEnrollment: { type: String, trim: true, default: '' },
+          weeklyRestDay: {
+            type: String,
+            default: null,
+          },
+          exemptDays: [{ type: String }],
+          allowedHolidays: [{ type: String }],
+          workers: [
+            new mongoose.Schema(
+              {
+                workerId: { type: mongoose.Schema.Types.Mixed },
+                workerName: { type: String, trim: true },
+                enrollmentNo: { type: String, trim: true, default: '' },
+                mobile: { type: String, trim: true, default: '' },
+                salaryRate: { type: Number, default: 0 },
+                billRate: { type: Number, default: 0 },
+                weeklyRestDay: { type: String, default: null },
+                exemptDays: [{ type: String }],
+                assignedDate: { type: Date, default: Date.now },
+                status: { type: String, default: 'Active' },
+              },
+              { _id: true }
+            ),
+          ],
         },
         { _id: true }
       ),
@@ -317,6 +346,21 @@ const attendanceSchema = new mongoose.Schema(
     ],
     isPosted: { type: Boolean, default: false },
     voucherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Vouchers' },
+    // ── Penalty Management ──
+    penaltyImposed: { type: Number, default: 0 },
+    penaltyDeducted: { type: Number, default: 0 },
+    penaltyWaivedOff: { type: Number, default: 0 },
+    violationType: { type: String, default: '' },
+    penaltyReason: { type: String, default: '' },
+    penaltyApprovedBy: { type: String, default: '' },
+    penaltyMediaUrl: { type: String, default: '' },
+    penaltyMedia: [
+      {
+        url: { type: String },
+        type: { type: String, default: 'image' },
+        uploadedAt: { type: Date, default: Date.now },
+      },
+    ],
   },
   { timestamps: true }
 );
@@ -557,52 +601,113 @@ const siteClientCheckSchema = new mongoose.Schema(
 );
 
 
-// 11. Site Roster & Holiday Master
-const siteRosterHolidaySchema = new mongoose.Schema(
-  {
-    year: { type: Number, required: true },
-    month: { type: Number, required: true },
-    date: { type: String, index: true }, // 'YYYY-MM-DD'
-    dayName: { type: String },
+// 11. Unified Site Roster & Contract Master
+// Sub-schema: Address
+const rosterAddressSchema = new mongoose.Schema({
+  line1: { type: String, trim: true, default: '' },
+  city: { type: String, trim: true, default: '' },
+  state: { type: String, trim: true, default: '' },
+  pincode: { type: String, trim: true, default: '' },
+  country: { type: String, trim: true, default: 'India' }
+}, { _id: false });
 
-    // Mandatory Client / Site Linkage
-    siteId: { type: mongoose.Schema.Types.ObjectId, ref: 'Leads', required: true, index: true },
-    clientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Parties' },
-    siteName: { type: String, required: true },
-    shiftCode: { type: String, trim: true },
+// Sub-schema: Delivery Address
+const rosterDeliveryAddressSchema = new mongoose.Schema({
+  isSameAsBilling: { type: Boolean, default: true },
+  line1: { type: String, trim: true, default: '' },
+  city: { type: String, trim: true, default: '' },
+  state: { type: String, trim: true, default: '' },
+  pincode: { type: String, trim: true, default: '' },
+  country: { type: String, trim: true, default: 'India' }
+}, { _id: false });
 
-    // Stationed Worker on this Site
-    workerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Employees', required: true, index: true },
-    workerName: { type: String, required: true },
+// Sub-schema: Contact Person
+const rosterContactPersonSchema = new mongoose.Schema({
+  name: { type: String, trim: true, default: '' },
+  mobile: { type: String, trim: true, default: '' },
+  email: { type: String, trim: true, lowercase: true, default: '' },
+  waNumber: { type: String, trim: true, default: '' }
+}, { _id: false });
 
-    type: {
-      type: String,
-      required: true,
-      enum: [
-        'WeeklyRest',
-        'NationalHoliday',
-        'FestivalHoliday',
-        'SiteClosed',
-        'SickLeave',
-        'CasualLeave',
-        'PaidHoliday',
-      ],
-      index: true,
-    },
-    restDayOfWeek: {
-      type: String,
-      enum: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', null],
-      default: null,
-    },
-    remark: { type: String, required: true },
-    isPaid: { type: Boolean, default: true },
-    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'userMaster' },
+// Sub-schema: Assigned Worker
+const rosterAssignedWorkerSchema = new mongoose.Schema({
+  workerId: { type: mongoose.Schema.Types.Mixed, required: true },
+  workerName: { type: String, required: true, trim: true },
+  enrollmentNo: { type: String, trim: true, default: '' },
+  mobile: { type: String, trim: true, default: '' },
+  salaryRate: { type: Number, default: 0 },
+  billRate: { type: Number, default: 0 },
+  weeklyRestDay: {
+    type: String,
+    default: null
   },
-  { timestamps: true }
-);
+  exemptDays: [{ type: String }],
+  assignedDate: { type: Date, default: Date.now },
+  status: { type: String, enum: ['Active', 'Relieved', 'Inactive'], default: 'Active' }
+}, { _id: true });
 
-siteRosterHolidaySchema.index({ siteId: 1, workerId: 1, restDayOfWeek: 1 });
-siteRosterHolidaySchema.index({ siteId: 1, date: 1 });
+// Sub-schema: Contract Shift
+const rosterContractShiftSchema = new mongoose.Schema({
+  shiftCode: { type: String, required: true, trim: true }, // 'D', 'N2', 'M', 'A', 'N', 'G'
+  shiftName: { type: String, required: true, trim: true }, // 'Day', 'Night12', 'Morning', etc.
+  groupName: { type: String, required: true, enum: ['MANG', 'DaNi'] }, // Strictly MANG or DaNi
+  startTime: { type: String, trim: true, default: '08:00' },
+  durationHrs: { type: Number, required: true, default: 8 },
+  shiftStartDate: { type: Date, default: Date.now }, // Shift contract start date
+  workerSlots: { type: Number, required: true, default: 1 },
+  billRate: { type: Number, required: true, default: 0 },
+  salaryRate: { type: Number, required: true, default: 0 },
+  active: { type: Boolean, default: true },
+  weeklyRestDay: { type: String, default: null },
+  exemptDays: [{ type: String }],
+  workers: [rosterAssignedWorkerSchema]
+}, { _id: true });
+
+// Sub-schema: Site Holiday / Off Days
+const rosterHolidaySchema = new mongoose.Schema({
+  date: { type: String, trim: true }, // 'YYYY-MM-DD'
+  dayName: { type: String, trim: true },
+  type: {
+    type: String,
+    enum: ['WeeklyRest', 'NationalHoliday', 'FestivalHoliday', 'SiteClosed', 'PaidHoliday'],
+    default: 'WeeklyRest'
+  },
+  remark: { type: String, trim: true, default: '' },
+  isPaid: { type: Boolean, default: true }
+}, { _id: true });
+
+// Main Site Roster Schema (1:1 with accepted leads)
+const siteRosterSchema = new mongoose.Schema({
+  siteId: { type: mongoose.Schema.Types.Mixed, required: true, unique: true, index: true },
+  siteName: { type: String, required: true, trim: true },
+  clientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Parties', default: null },
+
+  // Site Profile & Tax Information
+  gstNo: { type: String, trim: true, uppercase: true, default: '' },
+  billingAddress: { type: rosterAddressSchema, default: () => ({}) },
+  deliveryAddress: { type: rosterDeliveryAddressSchema, default: () => ({}) },
+  contactPerson: { type: rosterContactPersonSchema, default: () => ({}) },
+
+  // Contract Shifts & Assigned Workers
+  shifts: [rosterContractShiftSchema],
+
+  // Site Holidays / Offs
+  holidays: [rosterHolidaySchema],
+
+  // Summary Metrics
+  totalConfiguredShifts: { type: Number, default: 0 },
+  totalRequiredWorkers: { type: Number, default: 0 },
+  totalAssignedWorkers: { type: Number, default: 0 },
+  status: { type: String, enum: ['Active', 'Pending_Staffing', 'Archived'], default: 'Active', index: true }
+}, { timestamps: true });
+
+siteRosterSchema.index({ siteId: 1 }, { unique: true });
+siteRosterSchema.index({ status: 1 });
+siteRosterSchema.index({ 'shifts.shiftCode': 1 });
+siteRosterSchema.index({ 'shifts.workers.workerId': 1 });
+
+// Compatibility schema alias
+const siteRosterHolidaySchema = siteRosterSchema;
 
 // 21. Request Master: Leave, Advance, and Articles Requests (Tenant-Isolated Schema)
 const requestMasterSchema = new mongoose.Schema(
@@ -687,9 +792,12 @@ const getTenantModels = (connection) => {
     AttendanceBackupLogs:
       connection.models.AttendanceBackupLogs ||
       connection.model('AttendanceBackupLogs', attendanceBackupLogSchema),
+    SiteRoster:
+      connection.models.SiteRoster ||
+      connection.model('SiteRoster', siteRosterSchema, 'siteRosters'),
     SiteRosterHolidays:
       connection.models.SiteRosterHolidays ||
-      connection.model('SiteRosterHolidays', siteRosterHolidaySchema),
+      connection.model('SiteRosterHolidays', siteRosterHolidaySchema, 'siteRosters'),
     RequestMaster:
       connection.models.RequestMaster ||
       connection.model('RequestMaster', requestMasterSchema, 'requestMaster'),
