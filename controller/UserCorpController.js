@@ -5866,9 +5866,11 @@ exports.manageEmployees = {
               };
             });
 
+            const staffSalarySum = hoWorkers.reduce((acc, w) => acc + (Number(w.salaryRate) || 0), 0);
+
             if (hoRoster) {
               const currentWorkers = (hoRoster.shifts || []).flatMap(s => s.workers || []);
-              if (currentWorkers.length === 0) {
+              if (currentWorkers.length < hoWorkers.length) {
                 if (!hoRoster.shifts || hoRoster.shifts.length === 0) {
                   hoRoster.shifts = [
                     {
@@ -5878,8 +5880,8 @@ exports.manageEmployees = {
                       startTime: corporateStaff[0]?.dutyShift?.startFrom || '09:00',
                       durationHrs: corporateStaff[0]?.dutyShift?.durationHrs || 8,
                       shiftStartDate: new Date(),
-                      workerSlots: corporateStaff.length,
-                      salaryRate: 0,
+                      workerSlots: Math.max(hoWorkers.length, 4),
+                      salaryRate: staffSalarySum,
                       billRate: 0,
                       active: true,
                       workers: hoWorkers,
@@ -5887,13 +5889,17 @@ exports.manageEmployees = {
                   ];
                 } else {
                   hoRoster.shifts[0].workers = hoWorkers;
-                  hoRoster.shifts[0].workerSlots = Math.max(hoRoster.shifts[0].workerSlots || 1, hoWorkers.length);
+                  hoRoster.shifts[0].workerSlots = Math.max(hoRoster.shifts[0].workerSlots || 1, hoWorkers.length, 4);
+                  hoRoster.shifts[0].salaryRate = staffSalarySum;
                 }
                 hoRoster.totalConfiguredShifts = hoRoster.shifts.length;
-                hoRoster.totalRequiredWorkers = hoWorkers.length;
+                hoRoster.totalRequiredWorkers = Math.max(hoWorkers.length, 4);
                 hoRoster.totalAssignedWorkers = hoWorkers.length;
               } else {
                 hoRoster.totalAssignedWorkers = Math.max(hoRoster.totalAssignedWorkers || 0, currentWorkers.length);
+                if (hoRoster.shifts && hoRoster.shifts[0]) {
+                  hoRoster.shifts[0].salaryRate = Math.max(Number(hoRoster.shifts[0].salaryRate) || 0, staffSalarySum);
+                }
               }
             } else {
               // Include in rosters as corporate roster
@@ -5909,8 +5915,8 @@ exports.manageEmployees = {
                     startTime: corporateStaff[0]?.dutyShift?.startFrom || '09:00',
                     durationHrs: corporateStaff[0]?.dutyShift?.durationHrs || 8,
                     shiftStartDate: new Date(),
-                    workerSlots: corporateStaff.length,
-                    salaryRate: 0,
+                    workerSlots: Math.max(corporateStaff.length, 4),
+                    salaryRate: staffSalarySum,
                     billRate: 0,
                     active: true,
                     workers: hoWorkers,
@@ -5918,7 +5924,7 @@ exports.manageEmployees = {
                 ],
                 holidays: [],
                 totalConfiguredShifts: 1,
-                totalRequiredWorkers: corporateStaff.length,
+                totalRequiredWorkers: Math.max(corporateStaff.length, 4),
                 totalAssignedWorkers: corporateStaff.length,
               });
             }
