@@ -1121,13 +1121,19 @@ exports.manageLeads = {
           // If this is Head Office HO, also sync to '__HO__' corporate roster and UserMaster
           if (isTeamHO) {
             let hoDoc = await RosterModel.findOne({ siteId: '__HO__' });
-            if (hoDoc) {
-              hoDoc.shifts = rosterShifts;
-              hoDoc.totalConfiguredShifts = rosterShifts.length;
-              hoDoc.totalRequiredWorkers = rosterShifts.reduce((acc, sh) => acc + (sh.active ? sh.workerSlots : 0), 0);
-              hoDoc.totalAssignedWorkers = rosterShifts.reduce((acc, sh) => acc + (sh.workers?.length || 0), 0);
-              await hoDoc.save();
+            if (!hoDoc) {
+              hoDoc = new RosterModel({
+                siteId: '__HO__',
+                siteName: 'Corporate Staff (Head Office)',
+                shifts: [],
+                holidays: [],
+              });
             }
+            hoDoc.shifts = rosterShifts;
+            hoDoc.totalConfiguredShifts = rosterShifts.length;
+            hoDoc.totalRequiredWorkers = rosterShifts.reduce((acc, sh) => acc + (sh.active ? sh.workerSlots : 0), 0);
+            hoDoc.totalAssignedWorkers = rosterShifts.reduce((acc, sh) => acc + (sh.workers?.length || 0), 0);
+            await hoDoc.save();
 
             // Sync UserMaster dutyShift config for corporate staff
             try {
@@ -5826,41 +5832,70 @@ exports.manageEmployees = {
 
       // Dynamic Corporate Staff Roster from userMaster (Active Registered Users)
       if (!siteId || siteId === '__HO__' || siteId === '__corp__') {
-        const hoInRosters = rosters.some(r => r.siteId === '__HO__');
-        if (!hoInRosters) {
-          try {
-            const userMaster = require('../models/userMaster');
-            const targetDb = req.tenantDbName || req.user?.dbName;
-            const staffQuery = { userActive: { $ne: false } };
-            if (targetDb) {
-              staffQuery['accessCorporate.dbName'] = targetDb;
-            }
+        let hoRoster = rosters.find(r => r.siteId === '__HO__' || /Corporate Staff|Head Office/i.test(r.siteName || ''));
+        try {
+          const userMaster = require('../models/userMaster');
+          const targetDb = req.tenantDbName || req.user?.dbName;
+          const staffQuery = { userActive: { $ne: false } };
+          if (targetDb) {
+            staffQuery['accessCorporate.dbName'] = targetDb;
+          }
 
-            const corporateStaff = await userMaster
-              .find(staffQuery)
-              .select('-userPassword')
-              .lean();
+          const corporateStaff = await userMaster
+            .find(staffQuery)
+            .select('-userPassword')
+            .lean();
 
-            if (corporateStaff.length > 0) {
-              const hoWorkers = corporateStaff.map((u, idx) => {
-                const uSalary = u.dutyShift?.salaryRate ?? u.salaryRate ?? 0;
-                const uExempt = Array.isArray(u.dutyShift?.exemptDays) && u.dutyShift.exemptDays.length > 0
-                  ? u.dutyShift.exemptDays
-                  : (Array.isArray(u.exemptDays) && u.exemptDays.length > 0 ? u.exemptDays : []);
-                const uRest = u.dutyShift?.weeklyRestDay || u.weeklyRestDay || (uExempt.length ? uExempt.join(', ') : null);
+          if (corporateStaff.length > 0) {
+            const hoWorkers = corporateStaff.map((u, idx) => {
+              const uSalary = u.dutyShift?.salaryRate ?? u.salaryRate ?? 0;
+              const uExempt = Array.isArray(u.dutyShift?.exemptDays) && u.dutyShift.exemptDays.length > 0
+                ? u.dutyShift.exemptDays
+                : (Array.isArray(u.exemptDays) && u.exemptDays.length > 0 ? u.exemptDays : []);
+              const uRest = u.dutyShift?.weeklyRestDay || u.weeklyRestDay || (uExempt.length ? uExempt.join(', ') : null);
 
-                return {
-                  workerId: u._id,
-                  workerName: u.userDisplayName || u.name || ('Staff ' + (idx + 1)),
-                  enrollmentNo: u.userAadhar ? ('UID-' + String(u.userAadhar).slice(-4)) : (u.userRole || ('HO-' + (idx + 1))),
-                  mobile: u.userMobile || '',
-                  weeklyRestDay: uRest,
-                  exemptDays: uExempt,
-                  salaryRate: uSalary,
-                  status: 'Active',
-                };
-              });
+              return {
+                workerId: u._id,
+                workerName: u.userDisplayName || u.name || ('Staff ' + (idx + 1)),
+                enrollmentNo: u.userAadhar ? ('UID-' + String(u.userAadhar).slice(-4)) : (u.userRole || ('HO-' + (idx + 1))),
+                mobile: u.userMobile || '',
+                weeklyRestDay: uRest,
+                exemptDays: uExempt,
+                salaryRate: uSalary,
+                status: 'Active',
+              };
+            });
 
+            if (hoRoster) {
+              const currentWorkers = (hoRoster.shifts || []).flatMap(s => s.workers || []);
+              if (currentWorkers.length === 0) {
+                if (!hoRoster.shifts || hoRoster.shifts.length === 0) {
+                  hoRoster.shifts = [
+                    {
+                      shiftCode: 'G',
+                      shiftName: 'General (Office Staff)',
+                      groupName: 'MANG',
+                      startTime: corporateStaff[0]?.dutyShift?.startFrom || '09:00',
+                      durationHrs: corporateStaff[0]?.dutyShift?.durationHrs || 8,
+                      shiftStartDate: new Date(),
+                      workerSlots: corporateStaff.length,
+                      salaryRate: 0,
+                      billRate: 0,
+                      active: true,
+                      workers: hoWorkers,
+                    },
+                  ];
+                } else {
+                  hoRoster.shifts[0].workers = hoWorkers;
+                  hoRoster.shifts[0].workerSlots = Math.max(hoRoster.shifts[0].workerSlots || 1, hoWorkers.length);
+                }
+                hoRoster.totalConfiguredShifts = hoRoster.shifts.length;
+                hoRoster.totalRequiredWorkers = hoWorkers.length;
+                hoRoster.totalAssignedWorkers = hoWorkers.length;
+              } else {
+                hoRoster.totalAssignedWorkers = Math.max(hoRoster.totalAssignedWorkers || 0, currentWorkers.length);
+              }
+            } else {
               // Include in rosters as corporate roster
               rosters.unshift({
                 _id: '__HO__',
@@ -5886,45 +5921,47 @@ exports.manageEmployees = {
                 totalRequiredWorkers: corporateStaff.length,
                 totalAssignedWorkers: corporateStaff.length,
               });
-
-              // Include each corporate staff member in flatItems
-              for (const u of corporateStaff) {
-                const uSalary = u.dutyShift?.salaryRate ?? u.salaryRate ?? 0;
-                const uExempt = Array.isArray(u.dutyShift?.exemptDays) && u.dutyShift.exemptDays.length > 0
-                  ? u.dutyShift.exemptDays
-                  : (Array.isArray(u.exemptDays) && u.exemptDays.length > 0 ? u.exemptDays : []);
-                const uRest = u.dutyShift?.weeklyRestDay || u.weeklyRestDay || (uExempt.length ? uExempt.join(', ') : null);
-
-                flatItems.unshift({
-                  _id: u._id,
-                  siteId: '__HO__',
-                  siteName: 'Corporate Staff (Head Office)',
-                  type: 'ShiftDuty',
-                  shiftCode: 'G',
-                  shiftName: u.dutyShift?.shiftName || 'General (Office Staff)',
-                  groupName: u.dutyShift?.groupName || 'MANG',
-                  startTime: u.dutyShift?.startFrom || '09:00',
-                  durationHrs: u.dutyShift?.durationHrs || 8,
-                  shiftStartDate: new Date(),
-                  salaryRate: uSalary,
-                  billRate: 0,
-                  workerId: u._id,
-                  workerName: u.userDisplayName || u.name || 'Staff Member',
-                  enrollmentNo: u.userAadhar ? ('UID-' + String(u.userAadhar).slice(-4)) : (u.userRole || 'STAFF'),
-                  mobile: u.userMobile || '',
-                  restDayOfWeek: uRest,
-                  exemptDays: uExempt,
-                  status: 'Active',
-                  remark: 'Corporate Staff Assignment (' + (u.userRole || 'Office') + ')',
-                  isPaid: true,
-                  year: Number(year) || new Date().getFullYear(),
-                  month: Number(month) || (new Date().getMonth() + 1),
-                });
-              }
             }
-          } catch (uErr) {
-            console.warn('listSiteRosterHolidays -> dynamic userMaster staff error:', uErr.message);
+
+            // Include each corporate staff member in flatItems if not already present
+            const hoIdsInFlat = new Set(flatItems.filter(f => f.siteId === '__HO__').map(f => String(f.workerId || f._id)));
+            for (const u of corporateStaff) {
+              if (hoIdsInFlat.has(String(u._id))) continue;
+              const uSalary = u.dutyShift?.salaryRate ?? u.salaryRate ?? 0;
+              const uExempt = Array.isArray(u.dutyShift?.exemptDays) && u.dutyShift.exemptDays.length > 0
+                ? u.dutyShift.exemptDays
+                : (Array.isArray(u.exemptDays) && u.exemptDays.length > 0 ? u.exemptDays : []);
+              const uRest = u.dutyShift?.weeklyRestDay || u.weeklyRestDay || (uExempt.length ? uExempt.join(', ') : null);
+
+              flatItems.unshift({
+                _id: u._id,
+                siteId: '__HO__',
+                siteName: 'Corporate Staff (Head Office)',
+                type: 'ShiftDuty',
+                shiftCode: 'G',
+                shiftName: u.dutyShift?.shiftName || 'General (Office Staff)',
+                groupName: u.dutyShift?.groupName || 'MANG',
+                startTime: u.dutyShift?.startFrom || '09:00',
+                durationHrs: u.dutyShift?.durationHrs || 8,
+                shiftStartDate: new Date(),
+                salaryRate: uSalary,
+                billRate: 0,
+                workerId: u._id,
+                workerName: u.userDisplayName || u.name || 'Staff Member',
+                enrollmentNo: u.userAadhar ? ('UID-' + String(u.userAadhar).slice(-4)) : (u.userRole || 'STAFF'),
+                mobile: u.userMobile || '',
+                restDayOfWeek: uRest,
+                exemptDays: uExempt,
+                status: 'Active',
+                remark: 'Corporate Staff Assignment (' + (u.userRole || 'Office') + ')',
+                isPaid: true,
+                year: Number(year) || new Date().getFullYear(),
+                month: Number(month) || (new Date().getMonth() + 1),
+              });
+            }
           }
+        } catch (uErr) {
+          console.warn('listSiteRosterHolidays -> dynamic userMaster staff error:', uErr.message);
         }
       }
 
