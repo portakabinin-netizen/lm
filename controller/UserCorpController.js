@@ -950,9 +950,12 @@ exports.manageLeads = {
         return res.status(400).json({ success: false, message: 'siteShifts must be an array' });
       }
 
+      const existingLead = await Leads.findById(req.params.id);
+      if (!existingLead) return res.status(404).json({ success: false, message: 'Lead not found' });
+
       // GroupName strictly MANG or DaNi, preserve or set shiftStartDate
       const now = new Date();
-      const isTeamHO = /Team HO|Head Office|Corporate/i.test(lead?.sender_name || lead?.name || '');
+      const isTeamHO = /Team HO|Head Office|Corporate/i.test(existingLead.sender_name || existingLead.name || '');
       const normalizedShifts = siteShifts.map((s) => {
         let workers = Array.isArray(s.workers) ? s.workers : [];
 
@@ -1023,11 +1026,8 @@ exports.manageLeads = {
         };
       });
 
-      const lead = await Leads.findByIdAndUpdate(
-        req.params.id,
-        { $set: { siteShifts: normalizedShifts } },
-        { new: true }
-      );
+      existingLead.siteShifts = normalizedShifts;
+      const lead = await existingLead.save();
       if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
 
       // ── Bidirectional Sync: Site shifts -> SiteRoster (Unified Contract Master) ──
