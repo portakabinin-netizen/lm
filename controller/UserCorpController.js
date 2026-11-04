@@ -199,6 +199,118 @@ const manageSpoke = {
 };
 
 /**
+ * 🚨 _dispatchRateChangeAlerts
+ * Dispatches real-time broadcast and audit chat messages (both public tenant room and 1-on-1 direct message
+ * to all CorpAdmin, userAdmin, and Admin users) whenever any user revises a Pay Rate or Bill Rate
+ * from Shift Scheduler or Daily Roster screen.
+ */
+const _dispatchRateChangeAlerts = async ({ req, siteName, source, changes }) => {
+  if (!Array.isArray(changes) || changes.length === 0) return;
+
+  try {
+    const { Messages } = req.tenantModels || {};
+    const room = req.tenantDbName || req.user?.dbName;
+    const modifierName = req.user?.userDisplayName || req.user?.name || 'Authorized User';
+    const modifierRole = req.user?.userRole || 'User';
+    const modifierId = String(req.user?._id || 'system');
+    const now = new Date();
+    const timeFormatted = now.toLocaleString('en-IN', {
+      timeZone: 'Asia/Kolkata',
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+    });
+
+    const auditHeader = `🚨 *PAY / BILL RATE REVISION ALERT*`;
+    const auditMeta = [
+      `📍 *Site / Project:* ${siteName || 'Site'}`,
+      `🖥️ *Source:* ${source || 'Shift Scheduler & Daily Roster'}`,
+      `👤 *Changed By:* ${modifierName} (${modifierRole})`,
+      `🕒 *Timestamp:* ${timeFormatted}`,
+    ].join('\n');
+
+    const auditDetails = `\n📋 *Rate Revisions:*\n` + changes.join('\n');
+    const fullAuditText = `${auditHeader}\n${auditMeta}\n${auditDetails}`;
+
+    // 1. 📢 Real-Time Socket Broadcast to All Admin Devices
+    if (req.io && room) {
+      req.io.to(room).emit('admin:broadcast', {
+        id: new mongoose.Types.ObjectId().toString(),
+        title: '🚨 Pay/Bill Rate Changed',
+        message: `Rate update on ${siteName} by ${modifierName}:\n${changes.slice(0, 3).join('\n')}${changes.length > 3 ? `\n...and ${changes.length - 3} more` : ''}`,
+        fullAudit: fullAuditText,
+        priority: 'urgent',
+        targetRoles: ['CorpAdmin', 'userAdmin', 'Admin'],
+        sentBy: modifierName,
+        sentByRole: modifierRole,
+        siteName: siteName,
+        changesCount: changes.length,
+        at: now.toISOString(),
+      });
+    }
+
+    // 2. 💬 Post in Group Chatroom (Public / Tenant room)
+    if (Messages) {
+      const groupMsg = new Messages({
+        senderName: '⚡ Rate Change Audit',
+        senderId: modifierId,
+        text: fullAuditText,
+        type: 'text',
+        isOneToOne: false,
+        status: 'unseen',
+      });
+      await groupMsg.save();
+
+      if (req.io && room) {
+        req.io.to(room).emit('newMessage', groupMsg);
+      }
+    }
+
+    // 3. 📩 Send 1-on-1 Direct Chat Message & Notification to All Admins
+    if (Messages) {
+      const adminQuery = {
+        userRole: { $in: ['CorpAdmin', 'userAdmin', 'Admin'] },
+        userActive: { $ne: false },
+      };
+      if (room) {
+        adminQuery['accessCorporate.dbName'] = room;
+      }
+      const adminUsers = await userMaster
+        .find(adminQuery)
+        .select('_id userDisplayName userRole')
+        .lean();
+
+      for (const admin of adminUsers) {
+        const adminMsg = new Messages({
+          senderName: '⚡ Rate Change Audit',
+          senderId: modifierId,
+          text: fullAuditText,
+          type: 'text',
+          isOneToOne: true,
+          receiverId: String(admin._id),
+          status: 'unseen',
+        });
+        await adminMsg.save();
+
+        if (req.io) {
+          req.io.to(String(admin._id)).emit('newMessage', adminMsg);
+          if (room) {
+            req.io.to(room).emit('newMessage', adminMsg);
+          }
+        }
+      }
+    }
+
+    console.log(`✅ [RateAudit] Broadcast & chat alerts sent for ${changes.length} rate changes on "${siteName}".`);
+  } catch (err) {
+    console.error('❌ [_dispatchRateChangeAlerts] error:', err.message);
+  }
+};
+
+/**
  * 🎯 LEADS & CRM MANAGEMENT
  */
 exports.manageLeads = {
@@ -1026,6 +1138,94 @@ exports.manageLeads = {
         };
       });
 
+      // ── Detect Pay Rate & Bill Rate revisions for Admin Alert & Chat ──
+      const siteName = existingLead.sender_name || existingLead.client_name || existingLead.name || 'Site';
+      const oldShifts = Array.isArray(existingLead.siteShifts) ? existingLead.siteShifts : [];
+      const rateChanges = [];
+
+      for (const s of normalizedShifts) {
+        const shiftLabel = s.shiftName || s.shiftCode || 'Shift';
+        const oldShift = oldShifts.find((os) =>
+          (s.shiftCode && os.shiftCode && String(os.shiftCode).toLowerCase() === String(s.shiftCode).toLowerCase()) ||
+          (s.shiftName && os.shiftName && String(os.shiftName).toLowerCase() === String(s.shiftName).toLowerCase()) ||
+          (s._id && os._id && String(s._id) === String(os._id))
+        );
+
+        if (oldShift) {
+          // 1. Shift Bill Rate
+          const oldBill = Number(oldShift.billRate) || 0;
+          const newBill = Number(s.billRate) || 0;
+          if (oldBill !== newBill) {
+            const diff = newBill - oldBill;
+            const sign = diff > 0 ? `+₹${diff.toLocaleString('en-IN')}` : `-₹${Math.abs(diff).toLocaleString('en-IN')}`;
+            rateChanges.push(`• Shift [${shiftLabel}]: Bill Rate revised from ₹${oldBill.toLocaleString('en-IN')} ➔ ₹${newBill.toLocaleString('en-IN')} (${sign})`);
+          }
+
+          // 2. Shift Pay Rate
+          const oldSal = Number(oldShift.salaryRate) || 0;
+          const newSal = Number(s.salaryRate) || 0;
+          if (oldSal !== newSal) {
+            const diff = newSal - oldSal;
+            const sign = diff > 0 ? `+₹${diff.toLocaleString('en-IN')}` : `-₹${Math.abs(diff).toLocaleString('en-IN')}`;
+            rateChanges.push(`• Shift [${shiftLabel}]: Pay Rate revised from ₹${oldSal.toLocaleString('en-IN')} ➔ ₹${newSal.toLocaleString('en-IN')} (${sign})`);
+          }
+
+          // 3. Worker-level rates
+          const oldWorkers = Array.isArray(oldShift.workers) ? oldShift.workers : [];
+          for (const w of s.workers || []) {
+            const workerName = w.workerName || 'Worker';
+            const oldWorker = oldWorkers.find((ow) =>
+              (w.workerId && ow.workerId && String(w.workerId) === String(ow.workerId)) ||
+              (w.workerName && ow.workerName && String(w.workerName).toLowerCase() === String(ow.workerName).toLowerCase()) ||
+              (w.mobile && ow.mobile && String(w.mobile).slice(-10) === String(ow.mobile).slice(-10))
+            ) || (oldShift.boundWorkerId && w.workerId && String(oldShift.boundWorkerId) === String(w.workerId) ? {
+              workerName: oldShift.boundWorkerName,
+              salaryRate: oldShift.salaryRate,
+              billRate: oldShift.billRate,
+            } : null);
+
+            if (oldWorker) {
+              const oldWPay = Number(oldWorker.salaryRate) || 0;
+              const newWPay = Number(w.salaryRate) || 0;
+              if (oldWPay !== newWPay) {
+                const diff = newWPay - oldWPay;
+                const sign = diff > 0 ? `+₹${diff.toLocaleString('en-IN')}` : `-₹${Math.abs(diff).toLocaleString('en-IN')}`;
+                rateChanges.push(`• Worker [${workerName}] (${shiftLabel}): Pay Rate revised from ₹${oldWPay.toLocaleString('en-IN')} ➔ ₹${newWPay.toLocaleString('en-IN')} (${sign})`);
+              }
+
+              const oldWBill = Number(oldWorker.billRate) || 0;
+              const newWBill = Number(w.billRate) || 0;
+              if (oldWBill !== newWBill) {
+                const diff = newWBill - oldWBill;
+                const sign = diff > 0 ? `+₹${diff.toLocaleString('en-IN')}` : `-₹${Math.abs(diff).toLocaleString('en-IN')}`;
+                rateChanges.push(`• Worker [${workerName}] (${shiftLabel}): Bill Rate revised from ₹${oldWBill.toLocaleString('en-IN')} ➔ ₹${newWBill.toLocaleString('en-IN')} (${sign})`);
+              }
+            } else {
+              // Newly assigned worker
+              if (Number(w.salaryRate) > 0) {
+                rateChanges.push(`• Assigned Worker [${workerName}] (${shiftLabel}): Pay Rate set to ₹${Number(w.salaryRate).toLocaleString('en-IN')}`);
+              }
+              if (Number(w.billRate) > 0) {
+                rateChanges.push(`• Assigned Worker [${workerName}] (${shiftLabel}): Bill Rate set to ₹${Number(w.billRate).toLocaleString('en-IN')}`);
+              }
+            }
+          }
+        } else {
+          // Newly added shift
+          if (Number(s.salaryRate) > 0) {
+            rateChanges.push(`• New Shift [${shiftLabel}]: Pay Rate set to ₹${Number(s.salaryRate).toLocaleString('en-IN')}`);
+          }
+          if (Number(s.billRate) > 0) {
+            rateChanges.push(`• New Shift [${shiftLabel}]: Bill Rate set to ₹${Number(s.billRate).toLocaleString('en-IN')}`);
+          }
+          for (const w of s.workers || []) {
+            if (Number(w.salaryRate) > 0) {
+              rateChanges.push(`• New Shift [${shiftLabel}] Worker [${w.workerName || 'Worker'}]: Pay Rate set to ₹${Number(w.salaryRate).toLocaleString('en-IN')}`);
+            }
+          }
+        }
+      }
+
       existingLead.siteShifts = normalizedShifts;
       const lead = await existingLead.save();
       if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
@@ -1120,20 +1320,39 @@ exports.manageLeads = {
 
           // If this is Head Office HO, also sync to '__HO__' corporate roster and UserMaster
           if (isTeamHO) {
+            const { ProfileMaster } = req.tenantModels || {};
+            let profileLocations = [];
+            if (ProfileMaster) {
+              try {
+                const prof = await ProfileMaster.findOne({}).lean();
+                if (prof && Array.isArray(prof.locations)) profileLocations = prof.locations;
+              } catch {}
+            }
+            const isBO = /Branch Office|\bBO\b/i.test(lead.sender_name || lead.name || '');
+            const locType = isBO ? 'BO' : 'HO';
+            const hoLoc = profileLocations.find((l) => l.locationType === 'HO') || profileLocations[0] || null;
+            const rawCity = (hoLoc?.address?.city || hoLoc?.address?.district || lead.sender_city || 'Delhi').trim();
+            const cleanCity = rawCity.replace(/Head Office|Branch Office|Corporate Staff|Corporate/gi, '').replace(/^[-( ]+|[-) ]+$/g, '').trim() || 'Delhi';
+            const canonicalCorpName = `Corporate Staff (${locType}-${cleanCity})`;
+
             let hoDoc = await RosterModel.findOne({ siteId: '__HO__' });
             if (!hoDoc) {
               hoDoc = new RosterModel({
                 siteId: '__HO__',
-                siteName: 'Corporate Staff (Head Office)',
+                siteName: canonicalCorpName,
                 shifts: [],
                 holidays: [],
               });
             }
+            hoDoc.siteName = canonicalCorpName;
             hoDoc.shifts = rosterShifts;
             hoDoc.totalConfiguredShifts = rosterShifts.length;
             hoDoc.totalRequiredWorkers = rosterShifts.reduce((acc, sh) => acc + (sh.active ? sh.workerSlots : 0), 0);
             hoDoc.totalAssignedWorkers = rosterShifts.reduce((acc, sh) => acc + (sh.workers?.length || 0), 0);
             await hoDoc.save();
+
+            // 🗑️ Remove redundant separate siteRoster for this lead so it NEVER duplicates
+            await RosterModel.deleteMany({ siteId: lead._id });
 
             // Sync UserMaster dutyShift config for corporate staff
             try {
@@ -1162,7 +1381,17 @@ exports.manageLeads = {
         }
       }
 
-      res.json({ success: true, data: lead });
+      // ── Dispatch Rate Revision Alert & Chat Notification to Admins ──
+      if (rateChanges.length > 0) {
+        await _dispatchRateChangeAlerts({
+          req,
+          siteName,
+          source: 'Shift Scheduler',
+          changes: rateChanges,
+        });
+      }
+
+      res.json({ success: true, data: lead, rateChangesCount: rateChanges.length });
     } catch (err) {
       res.status(500).json({ success: false, message: err.message });
     }
@@ -5344,7 +5573,107 @@ exports.manageEmployees = {
     for (const lead of activeLeads) {
       const siteId = String(lead._id);
       const isTeamHO = /Team HO|Head Office|Corporate/i.test(lead.sender_name || lead.name || '');
-      const siteName = isTeamHO ? 'Head Office (HO)' : (lead.sender_name || lead.client_name || lead.name || 'Site');
+      const isBO = /Branch Office|\bBO\b/i.test(lead.sender_name || lead.name || '');
+      const locType = isBO ? 'BO' : 'HO';
+      const rawCity = (hoLocation?.address?.city || hoLocation?.address?.district || lead.sender_city || 'Delhi').trim();
+      const cleanCity = rawCity.replace(/Head Office|Branch Office|Corporate Staff|Corporate/gi, '').replace(/^[-( ]+|[-) ]+$/g, '').trim() || 'Delhi';
+      const canonicalCorpName = `Corporate Staff (${locType}-${cleanCity})`;
+
+      if (isTeamHO) {
+        // 🏢 Corporate Roster for Registered Users (HO / BO) - Manage strictly under canonical '__HO__'
+        const hoWorkers = corpStaffEmps.map((emp) => ({
+          workerId: emp._id,
+          workerName: emp.name,
+          enrollmentNo: emp.userRole || 'HO-Staff',
+          mobile: emp.mobile,
+          weeklyRestDay: 'Sun',
+          assignedDate: now,
+          status: 'Active',
+        }));
+
+        const hoSiteShifts = [{
+          shiftName: 'General (Office Staff)',
+          groupName: 'MANG',
+          shiftCode: 'G',
+          startTime: '09:00',
+          durationHrs: 8,
+          shiftStartDate: now,
+          workerSlots: Math.max(hoWorkers.length, 4),
+          billRate: 0,
+          salaryRate: 0,
+          active: true,
+          boundWorkerId: hoWorkers[0]?.workerId || null,
+          boundWorkerName: hoWorkers[0]?.workerName || 'Corporate Staff',
+          weeklyRestDay: 'Sun',
+          workers: hoWorkers,
+        }];
+
+        await Leads.findByIdAndUpdate(siteId, { $set: { siteShifts: hoSiteShifts, sender_name: canonicalCorpName } });
+
+        let hoDoc = await RosterModel.findOne({ siteId: '__HO__' });
+        if (!hoDoc) {
+          hoDoc = new RosterModel({
+            siteId: '__HO__',
+            siteName: canonicalCorpName,
+            clientId: lead.clientId || null,
+            shifts: [],
+            holidays: [],
+          });
+        }
+        hoDoc.siteName = canonicalCorpName;
+
+        if (hoLocation) {
+          const hoAddr = hoLocation.address || {};
+          hoDoc.billingAddress = {
+            line1: hoAddr.line1 || '141B Ground Floor, OPP. LSR College',
+            city: hoAddr.city || hoAddr.district || 'South Delhi',
+            state: hoAddr.state || 'Delhi',
+            pincode: hoAddr.pincode || '110048',
+            country: 'India',
+          };
+          hoDoc.deliveryAddress = {
+            isSameAsBilling: true,
+            line1: hoAddr.line1 || '141B Ground Floor, OPP. LSR College',
+            city: hoAddr.city || hoAddr.district || 'South Delhi',
+            state: hoAddr.state || 'Delhi',
+            pincode: hoAddr.pincode || '110048',
+            country: 'India',
+          };
+          hoDoc.gstNo = hoLocation.gstin || lead.gst_number || '';
+          hoDoc.contactPerson = {
+            name: 'Suresh Chauhan',
+            mobile: '9212790790',
+            email: 'admin@prathamservices.com',
+            waNumber: '9212790790',
+          };
+        }
+
+        hoDoc.shifts = [{
+          shiftCode: 'G',
+          shiftName: 'General (Office Staff)',
+          groupName: 'MANG',
+          startTime: '09:00',
+          durationHrs: 8,
+          shiftStartDate: now,
+          workerSlots: Math.max(hoWorkers.length, 4),
+          billRate: 0,
+          salaryRate: 0,
+          active: true,
+          workers: hoWorkers,
+        }];
+        hoDoc.totalConfiguredShifts = 1;
+        hoDoc.totalRequiredWorkers = Math.max(hoWorkers.length, 4);
+        hoDoc.totalAssignedWorkers = hoWorkers.length;
+        hoDoc.status = 'Active';
+        await hoDoc.save();
+
+        // 🗑️ Remove redundant separate siteRoster for this lead so it NEVER duplicates
+        await RosterModel.deleteMany({ siteId: lead._id });
+        reconciledCount++;
+        continue;
+      }
+
+      const siteName = lead.sender_name || lead.client_name || lead.name || 'Site';
 
       let rosterDoc = await RosterModel.findOne({ siteId });
       if (!rosterDoc) {
@@ -5706,16 +6035,93 @@ exports.manageEmployees = {
       const empUserLinkedIds = new Set(empWithUser.map((e) => String(e._id)));
       const empUserLinkedMobiles = new Set(empWithUser.map((e) => String(e.mobile || '').replace(/\D/g, '').slice(-10)).filter(Boolean));
 
-      const rosters = await RosterModel.find(filter)
-        .populate('siteId', 'sender_name client_name status siteShifts')
+      const rawRosters = await RosterModel.find(filter)
+        .populate('siteId', 'sender_name client_name status siteShifts location sender_city')
         .sort({ siteName: 1 })
         .lean();
 
+      // Resolve authoritative corporate profile locations (HO / BO)
+      const { ProfileMaster } = req.tenantModels || {};
+      let profileLocations = [];
+      if (ProfileMaster) {
+        try {
+          const prof = await ProfileMaster.findOne({}).lean();
+          if (prof && Array.isArray(prof.locations)) {
+            profileLocations = prof.locations;
+          }
+        } catch {}
+      }
+      const hoLocation = profileLocations.find((l) => l.locationType === 'HO') || profileLocations[0] || null;
+      const hoCityRaw = (hoLocation?.address?.city || hoLocation?.address?.district || (hoLocation?.locationName !== 'Head Office' ? hoLocation?.locationName : '') || 'Delhi').trim();
+      const hoCleanCity = hoCityRaw.replace(/Head Office|Branch Office|Corporate Staff|Corporate/gi, '').replace(/^[-( ]+|[-) ]+$/g, '').trim() || 'Delhi';
+      const canonicalHoName = `Corporate Staff (HO-${hoCleanCity})`;
+
+      // ── Consolidate & Merge Duplicate Corporate (HO / BO) Rosters ──
+      const rosters = [];
+      const corporateMap = new Map();
+
+      for (const r of rawRosters) {
+        const leadDoc = (r.siteId && typeof r.siteId === 'object') ? r.siteId : null;
+        const rawSiteName = r.siteName || leadDoc?.sender_name || leadDoc?.name || '';
+        const isCorporate = r.siteId === '__HO__' || String(r.siteId?._id || '') === '__HO__' ||
+          /Corporate Staff|Head Office|Team HO|\bHO\b|\bBO\b/i.test(rawSiteName);
+
+        if (isCorporate) {
+          const isBO = /Branch Office|\bBO\b/i.test(rawSiteName);
+          const locType = isBO ? 'BO' : 'HO';
+          const matchedLoc = isBO
+            ? (profileLocations.find((l) => l.locationType === 'BO' || l.locationType === 'RO') || null)
+            : hoLocation;
+          const rawCity = (matchedLoc?.address?.city || matchedLoc?.address?.district || leadDoc?.sender_city || (matchedLoc?.locationName !== 'Head Office' && matchedLoc?.locationName) || hoCleanCity).trim();
+          const cleanCity = rawCity.replace(/Head Office|Branch Office|Corporate Staff|Corporate/gi, '').replace(/^[-( ]+|[-) ]+$/g, '').trim() || hoCleanCity;
+          const canonicalName = `Corporate Staff (${locType}-${cleanCity})`;
+          const groupKey = `${locType}-${cleanCity.toLowerCase()}`;
+
+          r.siteName = canonicalName;
+
+          if (!corporateMap.has(groupKey)) {
+            corporateMap.set(groupKey, r);
+            rosters.push(r);
+          } else {
+            // Merge shifts & workers into existing canonical corporate roster
+            const existing = corporateMap.get(groupKey);
+            existing.siteName = canonicalName;
+            const existingWorkerIds = new Set(
+              (existing.shifts || []).flatMap((s) => s.workers || []).map((w) => String(w.workerId || w._id))
+            );
+            for (const sh of r.shifts || []) {
+              const matchedShift = (existing.shifts || []).find((s) => s.shiftCode === sh.shiftCode);
+              if (matchedShift) {
+                matchedShift.workers = matchedShift.workers || [];
+                for (const w of sh.workers || []) {
+                  if (!existingWorkerIds.has(String(w.workerId || w._id))) {
+                    matchedShift.workers.push(w);
+                    existingWorkerIds.add(String(w.workerId || w._id));
+                  }
+                }
+                matchedShift.workerSlots = Math.max(matchedShift.workerSlots || 1, matchedShift.workers.length);
+              } else {
+                existing.shifts = existing.shifts || [];
+                existing.shifts.push(sh);
+              }
+            }
+            existing.totalConfiguredShifts = existing.shifts?.length || 1;
+            existing.totalAssignedWorkers = (existing.shifts || []).reduce((acc, s) => acc + (s.workers?.length || 0), 0);
+            existing.totalRequiredWorkers = (existing.shifts || []).reduce((acc, s) => acc + (s.workerSlots || 1), 0);
+          }
+        } else {
+          rosters.push(r);
+        }
+      }
+
       // If callers query flat items (e.g. SalaryRegister looking for holidays/leaves or legacy shift cards)
       const flatItems = [];
+      const seenCorporateStaffIds = new Set();
+
       for (const r of rosters) {
         const leadDoc = (r.siteId && typeof r.siteId === 'object') ? r.siteId : null;
         const leadShifts = Array.isArray(leadDoc?.siteShifts) ? leadDoc.siteShifts : [];
+        const isCorpDoc = r.siteId === '__HO__' || /Corporate Staff|Head Office|Team HO|\bHO\b|\bBO\b/i.test(r.siteName || '');
 
         // Flatten contract shifts into duty items
         for (const sh of r.shifts || []) {
@@ -5755,6 +6161,12 @@ exports.manageEmployees = {
               : []);
 
           for (const w of effectiveWorkers) {
+            const wid = String(w.workerId || matchedLeadShift?.boundWorkerId || '');
+            if (isCorpDoc && wid) {
+              if (seenCorporateStaffIds.has(wid)) continue;
+              seenCorporateStaffIds.add(wid);
+            }
+
             if (!workerId || String(w.workerId) === String(workerId)) {
               const wRawExempt = Array.isArray(w.exemptDays) && w.exemptDays.length > 0
                 ? w.exemptDays
@@ -5771,9 +6183,9 @@ exports.manageEmployees = {
                 : (sh.salaryRate || matchedLeadShift?.salaryRate || 0);
 
               const cleanMob = String(w.mobile || matchedLeadShift?.boundWorkerMobile || '').replace(/\D/g, '').slice(-10);
-              const wid = String(w.workerId || matchedLeadShift?.boundWorkerId || '');
               const isOwnDevice = (
                 r.siteId === '__HO__' ||
+                isCorpDoc ||
                 regUserIds.has(wid) ||
                 empUserLinkedIds.has(wid) ||
                 (cleanMob && (regMobiles.has(cleanMob) || empUserLinkedMobiles.has(cleanMob)))
@@ -5869,6 +6281,7 @@ exports.manageEmployees = {
             const staffSalarySum = hoWorkers.reduce((acc, w) => acc + (Number(w.salaryRate) || 0), 0);
 
             if (hoRoster) {
+              hoRoster.siteName = canonicalHoName;
               const currentWorkers = (hoRoster.shifts || []).flatMap(s => s.workers || []);
               if (currentWorkers.length < hoWorkers.length) {
                 if (!hoRoster.shifts || hoRoster.shifts.length === 0) {
@@ -5906,7 +6319,7 @@ exports.manageEmployees = {
               rosters.unshift({
                 _id: '__HO__',
                 siteId: '__HO__',
-                siteName: 'Corporate Staff (Head Office)',
+                siteName: canonicalHoName,
                 shifts: [
                   {
                     shiftCode: 'G',
@@ -5930,9 +6343,9 @@ exports.manageEmployees = {
             }
 
             // Include each corporate staff member in flatItems if not already present
-            const hoIdsInFlat = new Set(flatItems.filter(f => f.siteId === '__HO__').map(f => String(f.workerId || f._id)));
             for (const u of corporateStaff) {
-              if (hoIdsInFlat.has(String(u._id))) continue;
+              if (seenCorporateStaffIds.has(String(u._id)) || seenCorporateStaffIds.has(String(u.userDisplayName || u.name).toLowerCase())) continue;
+              seenCorporateStaffIds.add(String(u._id));
               const uSalary = u.dutyShift?.salaryRate ?? u.salaryRate ?? 0;
               const uExempt = Array.isArray(u.dutyShift?.exemptDays) && u.dutyShift.exemptDays.length > 0
                 ? u.dutyShift.exemptDays
@@ -5942,7 +6355,7 @@ exports.manageEmployees = {
               flatItems.unshift({
                 _id: u._id,
                 siteId: '__HO__',
-                siteName: 'Corporate Staff (Head Office)',
+                siteName: canonicalHoName,
                 type: 'ShiftDuty',
                 shiftCode: 'G',
                 shiftName: u.dutyShift?.shiftName || 'General (Office Staff)',
@@ -6065,6 +6478,25 @@ exports.manageEmployees = {
         const effDurationHrs = Number(durationHrs) || (effGroupName === 'DaNi' ? 12 : 8);
         const effStartDate = shiftStartDate ? new Date(shiftStartDate) : now;
 
+        const siteRosterRateChanges = [];
+        if (targetShift) {
+          const shiftLabel = targetShift.shiftName || code;
+          if (salaryRate !== undefined && Number(targetShift.salaryRate || 0) !== Number(salaryRate)) {
+            const oldSal = Number(targetShift.salaryRate || 0);
+            const newSal = Number(salaryRate);
+            const diff = newSal - oldSal;
+            const sign = diff > 0 ? `+₹${diff.toLocaleString('en-IN')}` : `-₹${Math.abs(diff).toLocaleString('en-IN')}`;
+            siteRosterRateChanges.push(`• Shift [${shiftLabel}]: Pay Rate revised from ₹${oldSal.toLocaleString('en-IN')} ➔ ₹${newSal.toLocaleString('en-IN')} (${sign})`);
+          }
+          if (billRate !== undefined && Number(targetShift.billRate || 0) !== Number(billRate)) {
+            const oldBill = Number(targetShift.billRate || 0);
+            const newBill = Number(billRate);
+            const diff = newBill - oldBill;
+            const sign = diff > 0 ? `+₹${diff.toLocaleString('en-IN')}` : `-₹${Math.abs(diff).toLocaleString('en-IN')}`;
+            siteRosterRateChanges.push(`• Shift [${shiftLabel}]: Bill Rate revised from ₹${oldBill.toLocaleString('en-IN')} ➔ ₹${newBill.toLocaleString('en-IN')} (${sign})`);
+          }
+        }
+
         if (!targetShift) {
           // Add new shift
           targetShift = {
@@ -6170,7 +6602,22 @@ exports.manageEmployees = {
       rosterDoc.totalAssignedWorkers = rosterDoc.shifts.reduce((acc, sh) => acc + (sh.workers?.length || 0), 0);
       await rosterDoc.save();
 
-      res.status(200).json({ success: true, message: 'Site roster updated successfully', data: rosterDoc });
+      // ── Dispatch Rate Revision Alert & Chat Notification to Admins ──
+      if (typeof siteRosterRateChanges !== 'undefined' && siteRosterRateChanges.length > 0) {
+        await _dispatchRateChangeAlerts({
+          req,
+          siteName: rosterDoc.siteName || 'Site',
+          source: 'Daily Roster',
+          changes: siteRosterRateChanges,
+        });
+      }
+
+      res.status(200).json({
+        success: true,
+        message: 'Site roster updated successfully',
+        data: rosterDoc,
+        rateChangesCount: typeof siteRosterRateChanges !== 'undefined' ? siteRosterRateChanges.length : 0,
+      });
     } catch (err) {
       console.error('saveSiteRosterHoliday error:', err.message);
       res.status(400).json({ success: false, message: err.message });
@@ -6230,6 +6677,19 @@ exports.manageEmployees = {
       const { SiteRoster, SiteRosterHolidays } = req.tenantModels || {};
       const RosterModel = SiteRoster || SiteRosterHolidays;
 
+      // ── Detect Corporate Staff Pay Rate Revisions ──
+      const userIds = staffConfigs.map((s) => s.userId || s._id).filter(Boolean);
+      let existingStaffUsers = [];
+      try {
+        existingStaffUsers = await userMaster
+          .find({ _id: { $in: userIds } })
+          .select('_id userDisplayName name salaryRate dutyShift')
+          .lean();
+      } catch (fErr) {
+        console.warn('saveCorporateRoster -> existing users lookup error:', fErr.message);
+      }
+      const corpRateChanges = [];
+
       const updatedUsers = [];
       const rosterWorkers = [];
 
@@ -6244,6 +6704,15 @@ exports.manageEmployees = {
         const combined = Array.from(new Set([...rawExempt, ...rawWeekly]));
         const weeklyRestDay = combined.length > 0 ? combined.join(', ') : null;
         const salaryRate = Number(item.salaryRate) || 0;
+
+        const oldStaff = existingStaffUsers.find((u) => String(u._id) === String(userId));
+        const oldSalary = Number(oldStaff?.dutyShift?.salaryRate ?? oldStaff?.salaryRate ?? 0);
+        if (oldStaff && oldSalary !== salaryRate) {
+          const diff = salaryRate - oldSalary;
+          const sign = diff > 0 ? `+₹${diff.toLocaleString('en-IN')}` : `-₹${Math.abs(diff).toLocaleString('en-IN')}`;
+          const staffName = oldStaff.userDisplayName || oldStaff.name || 'Staff';
+          corpRateChanges.push(`• Corporate Staff [${staffName}]: Monthly Pay Rate revised from ₹${oldSalary.toLocaleString('en-IN')} ➔ ₹${salaryRate.toLocaleString('en-IN')} (${sign})`);
+        }
 
         // 1. Update in userMaster
         const updated = await userMaster.findByIdAndUpdate(
@@ -6279,17 +6748,30 @@ exports.manageEmployees = {
 
       // 2. Save all information in SiteRoster (Contract Master for Corporate HO)
       if (RosterModel) {
+        const { ProfileMaster, Leads } = req.tenantModels || {};
+        let profileLocations = [];
+        if (ProfileMaster) {
+          try {
+            const prof = await ProfileMaster.findOne({}).lean();
+            if (prof && Array.isArray(prof.locations)) profileLocations = prof.locations;
+          } catch {}
+        }
+        const hoLocation = profileLocations.find((l) => l.locationType === 'HO') || profileLocations[0] || null;
+        const hoCity = (hoLocation?.address?.city || hoLocation?.address?.district || (hoLocation?.locationName !== 'Head Office' ? hoLocation?.locationName : '') || 'Delhi').trim();
+        const cleanCity = hoCity.replace(/Head Office|Branch Office|Corporate Staff|Corporate/gi, '').replace(/^[-( ]+|[-) ]+$/g, '').trim() || 'Delhi';
+        const canonicalHoName = `Corporate Staff (HO-${cleanCity})`;
+
         let corpRoster = await RosterModel.findOne({ siteId: '__HO__' });
         if (!corpRoster) {
           corpRoster = new RosterModel({
             siteId: '__HO__',
-            siteName: 'Corporate Staff (Head Office)',
+            siteName: canonicalHoName,
             shifts: [],
             holidays: [],
           });
         }
 
-        corpRoster.siteName = 'Corporate Staff (Head Office)';
+        corpRoster.siteName = canonicalHoName;
         corpRoster.shifts = [
           {
             shiftCode: 'G',
@@ -6311,12 +6793,34 @@ exports.manageEmployees = {
         corpRoster.totalRequiredWorkers = rosterWorkers.length;
         corpRoster.totalAssignedWorkers = rosterWorkers.length;
         await corpRoster.save();
+
+        // 🗑️ Clean up duplicate legacy separate rosters for HO leads
+        if (Leads) {
+          try {
+            const hoLeads = await Leads.find({ sender_name: { $regex: /Head Office|Team HO|Corporate/i } }).select('_id').lean();
+            if (hoLeads.length > 0) {
+              const hoLeadIds = hoLeads.map((l) => l._id);
+              await RosterModel.deleteMany({ siteId: { $in: hoLeadIds } });
+            }
+          } catch {}
+        }
+      }
+
+      // ── Dispatch Rate Revision Alert & Chat Notification to Admins ──
+      if (corpRateChanges.length > 0) {
+        await _dispatchRateChangeAlerts({
+          req,
+          siteName: 'Corporate Staff (HO)',
+          source: 'Daily Roster (Corporate Staff Setup)',
+          changes: corpRateChanges,
+        });
       }
 
       res.json({
         success: true,
         message: 'Corporate roster, salary and rest days saved successfully',
         data: updatedUsers,
+        rateChangesCount: corpRateChanges.length,
       });
     } catch (err) {
       console.error('saveCorporateRoster error:', err.message);
