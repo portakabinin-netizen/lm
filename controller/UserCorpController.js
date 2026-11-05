@@ -2320,8 +2320,18 @@ exports.manageEmployees = {
       const { from_date, to_date, date, employeeId } = req.query;
       let q = {};
 
+      let empClause = null;
       if (employeeId) {
-        q.employeeId = employeeId;
+        const empIdStr = String(employeeId);
+        const isObjectId = mongoose.Types.ObjectId.isValid(empIdStr);
+        const objId = isObjectId ? new mongoose.Types.ObjectId(empIdStr) : null;
+        empClause = {
+          $or: [
+            { employeeId: empIdStr },
+            ...(objId ? [{ employeeId: objId }] : []),
+            { _id: isObjectId ? objId : empIdStr },
+          ],
+        };
       }
 
       let filterFrom = from_date;
@@ -2358,30 +2368,19 @@ exports.manageEmployees = {
           // If query specifies a historical period (to_date is in past), query date: dateFilter directly.
           // This avoids scanning open shifts from current dates and lets MongoDB use the date index directly.
           const isHistorical = dateFilter.$lte && (new Date(dateFilter.$lte).getTime() < (Date.now() - 24 * 60 * 60 * 1000));
-          if (isHistorical) {
-            if (q.employeeId) {
-              q = {
-                employeeId: q.employeeId,
-                date: dateFilter,
-              };
-            } else {
-              q = { date: dateFilter };
-            }
+          const periodClause = isHistorical
+            ? { date: dateFilter }
+            : { $or: [{ date: dateFilter }, { dutyEnd: { $exists: false } }, { dutyEnd: null }] };
+
+          if (empClause) {
+            q = { $and: [empClause, periodClause] };
           } else {
-            // Current or ongoing period: Include either the date range OR anything that is still "On Duty"
-            if (q.employeeId) {
-              q = {
-                employeeId: q.employeeId,
-                $or: [{ date: dateFilter }, { dutyEnd: { $exists: false } }, { dutyEnd: null }],
-              };
-            } else {
-              q = {
-                $or: [{ date: dateFilter }, { dutyEnd: { $exists: false } }, { dutyEnd: null }],
-              };
-            }
+            q = periodClause;
           }
         }
-      } else if (!q.employeeId) {
+      } else if (empClause) {
+        q = empClause;
+      } else {
         // Fallback default: past 30 days or active duty to prevent timeout/full scan
         const defaultStart = new Date();
         defaultStart.setDate(defaultStart.getDate() - 30);
@@ -2765,10 +2764,9 @@ exports.manageEmployees = {
         else if (ds.shiftName) defaultShiftCode = ds.shiftName.substring(0, 1);
       }
 
-      // Exemption check for geoHistory: admins and workers are exempt.
+      // Exemption check for geoHistory: ONLY admins are exempt. Registered users / workers MUST be tracked!
       const isAdminRole = ['corpadmin', 'useradmin', 'admin'].includes(role.toLowerCase());
-      const isEmployeeCollection = !!employeeDoc;
-      const isExemptUser = isAdminRole || isEmployeeCollection;
+      const isExemptUser = isAdminRole;
       let finalGeoHistory = isExemptUser ? [] : (geoHistory || []);
 
       // Merge site-shift override on top of defaults (site always wins when available)
@@ -3030,11 +3028,10 @@ exports.manageEmployees = {
         return res.status(404).json({ success: false, message: 'Attendance record not found' });
       }
 
-      // Exemption check: Admins and workers are exempt.
+      // Exemption check: ONLY Admins are exempt from GPS tracking. Registered users / workers MUST be tracked!
       const recordRole = (record.role || '').toLowerCase();
       const isAdminRole = ['corpadmin', 'useradmin', 'admin'].includes(recordRole);
-      const isWorker = record.employeeType === 'Employees';
-      const isExemptUser = isAdminRole || isWorker;
+      const isExemptUser = isAdminRole;
 
       const allowed = [
         'forcedOff',
@@ -3129,11 +3126,22 @@ exports.manageEmployees = {
         }
       }
 
+      // Keep latest coordinates on the record for fast lookup & real-time map marker
+      if (emittedGeoUpdate) {
+        const lastTick = Array.isArray(emittedGeoUpdate) ? emittedGeoUpdate[emittedGeoUpdate.length - 1] : emittedGeoUpdate;
+        if (lastTick && (lastTick.lat !== undefined || lastTick.latitude !== undefined)) {
+          record.lat = Number(lastTick.lat ?? lastTick.latitude);
+          record.long = Number(lastTick.long ?? lastTick.longitude);
+        }
+      }
+
       await record.save();
 
       if (emittedGeoUpdate) {
         req.io.to(req.tenantDbName).emit('attendance:geo_update', {
           attendanceId: record._id,
+          employeeId: record.employeeId,
+          workerId: record.employeeId,
           tick: emittedGeoUpdate,
         });
       }
@@ -3317,7 +3325,7 @@ exports.manageEmployees = {
         ''
       ).toLowerCase();
       const isAdminRole = ['corpadmin', 'useradmin', 'admin'].includes(checkRole);
-      const isExemptUser = isAdminRole || isWorker;
+      const isExemptUser = isAdminRole;
 
       if (type === 'ON' && emp && isWorker && !emp.shiftGroupName) {
         // Find employee document to update
@@ -4155,7 +4163,7 @@ exports.manageEmployees = {
         ''
       ).toLowerCase();
       const isAdminRole = ['corpadmin', 'useradmin', 'admin'].includes(checkRole);
-      const isExemptUser = isAdminRole || isWorker;
+      const isExemptUser = isAdminRole;
 
       // 2. Close current shift
       current.dutyEnd = now;
@@ -4400,7 +4408,7 @@ exports.manageEmployees = {
         active = await Attendance.find({
           $or: [{ dutyEnd: { $exists: false } }, { dutyEnd: null }, { dutyEnd: '' }],
         })
-          .select({ geoHistory: { $slice: -1 } })
+          .slice('geoHistory', -20)
           .lean();
       } catch (dbErr) {
         console.error('❌ [STEP 1] FAILED — Attendance.find() threw:', dbErr.message);
@@ -4480,6 +4488,21 @@ exports.manageEmployees = {
           currentLong = latest?.long;
         }
 
+        if (currentLat === null || currentLat === undefined || isNaN(currentLat)) {
+          currentLat = a.lat ?? a.startLat ?? a.siteLat ?? a.location?.lat ?? null;
+          currentLong = a.long ?? a.startLong ?? a.siteLong ?? a.location?.long ?? null;
+        }
+
+        let staffGeoHistory = Array.isArray(a.geoHistory) ? [...a.geoHistory] : [];
+        if (staffGeoHistory.length === 0 && currentLat !== null && currentLong !== null) {
+          staffGeoHistory = [{
+            lat: currentLat,
+            long: currentLong,
+            type: 'start',
+            timestamp: a.dutyStart ? new Date(a.dutyStart) : new Date(),
+          }];
+        }
+
         const targetId = String(a.employeeId?._id || a.employeeId);
         const emp = emps.find((e) => String(e._id) === targetId);
         const user = users.find(
@@ -4496,14 +4519,29 @@ exports.manageEmployees = {
         const isFromUserMaster = !!user && !EXCLUDED_ROLES.has(roleLower) && EMPLOYEE_ROLES.has(roleLower);
         const isEmployee = isFromEmployees || isFromUserMaster;
 
+        // Staff = registered user saved in userMaster; Worker = non-registered saved in Employees
+        const isStaffUser = Boolean(
+          a.employeeType === 'userMaster' ||
+          !!user ||
+          (emp && !!emp.user_id) ||
+          isFromUserMaster
+        );
+
         return {
           ...a,
+          lat: currentLat,
+          long: currentLong,
+          geoHistory: staffGeoHistory,
           location: { lat: currentLat, long: currentLong },
           displayName,
           photo: emp?.photo_url || user?.userProfileImage || null,
           role: resolvedRole,
           mobile: emp?.mobile || emp?.phone || user?.userMobile || null,
           isEmployee,
+          isStaff: isStaffUser,
+          isStaffUser,
+          employeeType: isStaffUser ? 'userMaster' : (a.employeeType || 'Employees'),
+          user_id: user?._id || emp?.user_id || null,
         };
       });
 
