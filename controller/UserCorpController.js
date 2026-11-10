@@ -6630,19 +6630,31 @@ exports.manageEmployees = {
         contactPerson,
       } = req.body;
 
-      if (!siteId) {
+      let effectiveSiteId = siteId;
+      if (!effectiveSiteId && workerId && Employees) {
+        try {
+          const emp = await Employees.findById(workerId).lean();
+          if (emp?.assignedSiteId || emp?.siteId || emp?.leadId) {
+            effectiveSiteId = String(emp.assignedSiteId || emp.siteId || emp.leadId);
+          }
+        } catch {}
+      }
+      if (!effectiveSiteId && workerId) {
+        effectiveSiteId = '__HO__';
+      }
+      if (!effectiveSiteId) {
         return res.status(400).json({ success: false, message: 'siteId is required' });
       }
 
-      let rosterDoc = await RosterModel.findOne({ siteId });
+      let rosterDoc = await RosterModel.findOne({ siteId: effectiveSiteId });
       if (!rosterDoc) {
-        let siteName = 'Site';
-        if (Leads) {
-          const l = await Leads.findById(siteId).lean();
+        let siteName = effectiveSiteId === '__HO__' ? 'Head Office' : 'Site';
+        if (Leads && effectiveSiteId !== '__HO__') {
+          const l = await Leads.findById(effectiveSiteId).lean();
           if (l) siteName = l.sender_name || l.client_name || l.name || siteName;
         }
         rosterDoc = new RosterModel({
-          siteId,
+          siteId: effectiveSiteId,
           siteName,
           shifts: [],
           holidays: [],
@@ -7069,37 +7081,48 @@ exports.manageEmployees = {
 
   deleteSiteRosterHoliday: async (req, res) => {
     try {
-      const { SiteRoster, SiteRosterHolidays } = req.tenantModels || {};
+      const { SiteRoster, SiteRosterHolidays, Leads } = req.tenantModels || {};
       const RosterModel = SiteRoster || SiteRosterHolidays;
+      const userMaster = require('../models/userMaster');
       const { id } = req.params;
 
-      // Check if id is a holiday subdocument, a shift subdocument, or a whole roster document
-      const doc = await RosterModel.findOne({
-        $or: [
-          { _id: id },
-          { 'holidays._id': id },
-          { 'shifts._id': id },
-          { 'shifts.workers._id': id },
-        ],
-      });
-
-      if (!doc) {
-        return res.status(404).json({ success: false, message: 'Roster item not found' });
+      const deletedCount = await _executeRosterRemoval(RosterModel, Leads, userMaster, id);
+      if (deletedCount === 0) {
+        return res.status(404).json({ success: false, message: 'Roster record not found or already removed' });
       }
 
-      if (String(doc._id) === String(id)) {
-        await RosterModel.findByIdAndDelete(id);
-      } else {
-        doc.holidays = (doc.holidays || []).filter((h) => String(h._id) !== String(id));
-        for (const sh of doc.shifts || []) {
-          sh.workers = (sh.workers || []).filter((w) => String(w._id) !== String(id));
-        }
-        await doc.save();
-      }
-
-      res.json({ success: true, message: 'Roster item deleted successfully' });
+      res.json({ success: true, message: 'Roster record removed successfully', deletedCount });
     } catch (err) {
       console.error('deleteSiteRosterHoliday error:', err.message);
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  batchDeleteSiteRosterHolidays: async (req, res) => {
+    try {
+      const { SiteRoster, SiteRosterHolidays, Leads } = req.tenantModels || {};
+      const RosterModel = SiteRoster || SiteRosterHolidays;
+      const userMaster = require('../models/userMaster');
+      const { ids, items } = req.body;
+
+      const targets = Array.isArray(items) && items.length > 0 ? items : (Array.isArray(ids) ? ids : []);
+      if (targets.length === 0) {
+        return res.status(400).json({ success: false, message: 'No records provided for deletion' });
+      }
+
+      let totalDeleted = 0;
+      for (const target of targets) {
+        try {
+          const count = await _executeRosterRemoval(RosterModel, Leads, userMaster, target);
+          totalDeleted += count;
+        } catch (itemErr) {
+          console.warn('batchDelete error for target:', target, itemErr.message);
+        }
+      }
+
+      res.json({ success: true, message: `Removed ${totalDeleted} record(s) successfully`, deletedCount: totalDeleted });
+    } catch (err) {
+      console.error('batchDeleteSiteRosterHolidays error:', err.message);
       res.status(500).json({ success: false, message: err.message });
     }
   },

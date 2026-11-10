@@ -108,6 +108,7 @@ router.post("/hr/site-roster-holidays/sync-from-yesterday", ctrl.manageEmployees
 router.post("/hr/site-roster-holidays/generate-year", ctrl.manageEmployees.generateYearHolidays);
 router.put("/hr/site-roster-holidays/corporate-roster", ctrl.manageEmployees.saveCorporateRoster);
 router.delete("/hr/site-roster-holidays/:id", ctrl.manageEmployees.deleteSiteRosterHoliday);
+router.post("/hr/site-roster-holidays/batch-delete", ctrl.manageEmployees.batchDeleteSiteRosterHolidays);
 
 // --- ⚖️ WORKER PENALTIES & DEDUCTIONS ---
 router.get("/hr/worker-penalties", ctrl.manageEmployees.listWorkerPenalties);
