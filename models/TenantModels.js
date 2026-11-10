@@ -669,9 +669,21 @@ const rosterHolidaySchema = new mongoose.Schema({
   dayName: { type: String, trim: true },
   type: {
     type: String,
-    enum: ['WeeklyRest', 'NationalHoliday', 'FestivalHoliday', 'SiteClosed', 'PaidHoliday'],
+    enum: [
+      'WeeklyRest',
+      'NationalHoliday',
+      'FestivalHoliday',
+      'SiteClosed',
+      'PaidHoliday',
+      'SickLeave',
+      'CasualLeave',
+      'UnpaidLeave'
+    ],
     default: 'WeeklyRest'
   },
+  scope: { type: String, enum: ['site', 'worker'], default: 'site' },
+  workerId: { type: mongoose.Schema.Types.Mixed, default: null },
+  workerName: { type: String, trim: true, default: null },
   remark: { type: String, trim: true, default: '' },
   isPaid: { type: Boolean, default: true }
 }, { _id: true });

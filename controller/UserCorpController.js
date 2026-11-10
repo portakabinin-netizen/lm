@@ -3327,6 +3327,97 @@ exports.manageEmployees = {
       const isAdminRole = ['corpadmin', 'useradmin', 'admin'].includes(checkRole);
       const isExemptUser = isAdminRole;
 
+      if (type === 'ON') {
+        const todayStr = new Date().toISOString().slice(0, 10);
+        const { SiteRoster, SiteRosterHolidays } = req.tenantModels || {};
+        const RosterModel = SiteRoster || SiteRosterHolidays;
+        const effectiveEmpId = isWorker ? String(emp?._id || queryId) : String(queryId);
+        const targetSiteId = leadId || siteId;
+        const todayStartUtc = new Date();
+        todayStartUtc.setHours(0, 0, 0, 0);
+        const todayEndUtc = new Date();
+        todayEndUtc.setHours(23, 59, 59, 999);
+
+        // 1. Check if another worker was assigned as single-day replacement for this worker today
+        const isCoveredToday = await Attendance.findOne({
+          'leaveCoverage.originalWorkerId': effectiveEmpId,
+          date: { $gte: todayStartUtc, $lte: todayEndUtc },
+          'leaveCoverage.isCoveringForLeave': true,
+        }).lean();
+
+        if (isCoveredToday) {
+          return res.status(403).json({
+            success: false,
+            onLeave: true,
+            message: 'Duty cannot be started: You are on leave today and replacement worker has been assigned for today. Roster will resume tomorrow.',
+          });
+        }
+
+        if (RosterModel && targetSiteId) {
+          const rosterDoc = await RosterModel.findOne({
+            $or: [
+              { siteId: targetSiteId },
+              { 'shifts.workers.workerId': effectiveEmpId },
+            ],
+          }).lean();
+
+          if (rosterDoc && Array.isArray(rosterDoc.holidays)) {
+            // 2. Site-wide closed or national/festival holiday
+            const siteOff = rosterDoc.holidays.find(
+              (h) => h.date === todayStr && (!h.scope || h.scope === 'site') && ['NationalHoliday', 'FestivalHoliday', 'SiteClosed'].includes(h.type)
+            );
+            if (siteOff) {
+              return res.status(403).json({
+                success: false,
+                isHoliday: true,
+                message: `Site is closed today for ${siteOff.remark || siteOff.type}. Duty cannot be started.`,
+              });
+            }
+
+            // 3. Worker-specific leave or admin-assigned off
+            const workerLeave = rosterDoc.holidays.find(
+              (h) =>
+                h.date === todayStr &&
+                (String(h.workerId) === effectiveEmpId || String(h.workerName || '').toLowerCase() === String(emp?.name || emp?.userDisplayName || '').toLowerCase()) &&
+                ['SickLeave', 'CasualLeave', 'UnpaidLeave', 'WeeklyRest'].includes(h.type)
+            );
+            if (workerLeave) {
+              return res.status(403).json({
+                success: false,
+                onLeave: true,
+                message: `You are marked on ${workerLeave.type === 'WeeklyRest' ? 'Rest Day' : workerLeave.type} for today (${todayStr}). Duty start is blocked. Roster will resume tomorrow.`,
+              });
+            }
+          }
+
+          // 4. Check worker weeklyRestDay in roster shift (ONLY if explicitly set by admin - NO default rest day!)
+          if (rosterDoc && Array.isArray(rosterDoc.shifts)) {
+            const daysOfWeek = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+            const todayDayName = daysOfWeek[new Date().getDay()];
+            for (const sh of rosterDoc.shifts) {
+              const matchedWorker = (sh.workers || []).find((w) => String(w.workerId) === effectiveEmpId);
+              if (matchedWorker) {
+                const assignedRestStr = (matchedWorker.weeklyRestDay || '').trim();
+                const assignedExempt = Array.isArray(matchedWorker.exemptDays) ? matchedWorker.exemptDays : [];
+                if (assignedRestStr || assignedExempt.length > 0) {
+                  const restDays = [
+                    ...assignedExempt,
+                    ...(assignedRestStr ? assignedRestStr.split(',').map((d) => d.trim()) : []),
+                  ].filter(Boolean);
+                  if (restDays.includes(todayDayName)) {
+                    return res.status(403).json({
+                      success: false,
+                      isRestDay: true,
+                      message: `Today (${todayDayName}) is your assigned Weekly Rest Day. Duty start is not scheduled.`,
+                    });
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
       if (type === 'ON' && emp && isWorker && !emp.shiftGroupName) {
         // Find employee document to update
         const employeeDoc = await Employees.findOne({
@@ -5480,7 +5571,7 @@ exports.manageEmployees = {
 
   coverShiftForLeave: async (req, res) => {
     try {
-      const { Attendance } = req.tenantModels || {};
+      const { Attendance, Employees } = req.tenantModels || {};
       if (!Attendance) {
         return res.status(500).json({ success: false, message: 'Tenant Attendance model not available' });
       }
@@ -5495,29 +5586,99 @@ exports.manageEmployees = {
         overtimeRate,
       } = req.body;
 
-      const query = {
+      if (!coveringWorkerId || !scheduledWorkerId) {
+        return res.status(400).json({ success: false, message: 'Both coveringWorkerId and scheduledWorkerId are required' });
+      }
+
+      const dStr = typeof date === 'string' && date ? date : new Date().toISOString().slice(0, 10);
+      const targetDate = new Date(dStr);
+      const startOfDay = new Date(dStr + 'T00:00:00.000Z');
+      const endOfDay = new Date(dStr + 'T23:59:59.999Z');
+
+      let doc = await Attendance.findOne({
         employeeId: coveringWorkerId,
-        date: date ? new Date(date) : new Date(new Date().toISOString().slice(0, 10)),
-      };
-      if (shiftCode) query.shiftCode = shiftCode;
+        date: { $gte: startOfDay, $lte: endOfDay },
+      });
 
-      const doc = await Attendance.findOneAndUpdate(
-        query,
-        {
-          $set: {
-            'leaveCoverage.isCoveringForLeave': true,
-            'leaveCoverage.originalWorkerId': scheduledWorkerId,
-            'leaveCoverage.leaveType': leaveType || 'ShortLeave',
-            'leaveCoverage.handoverType': handoverType || 'Reliever',
-            'leaveCoverage.overtimeRate': Number(overtimeRate) || 1.0,
+      if (!doc) {
+        doc = new Attendance({
+          employeeId: coveringWorkerId,
+          employeeType: 'Employees',
+          leadId: leadId || null,
+          date: targetDate,
+          shiftCode: shiftCode || 'G',
+          status: 'Present',
+          remarks: `Single-day replacement covering for leave (${leaveType || 'Leave'})`,
+          leaveCoverage: {
+            isCoveringForLeave: true,
+            originalWorkerId: scheduledWorkerId,
+            leaveType: leaveType || 'CasualLeave',
+            handoverType: handoverType || 'Reliever',
+            overtimeRate: Number(overtimeRate) || 1.0,
           },
-        },
-        { new: true, upsert: false }
-      );
+        });
+      } else {
+        doc.leaveCoverage = {
+          isCoveringForLeave: true,
+          originalWorkerId: scheduledWorkerId,
+          leaveType: leaveType || 'CasualLeave',
+          handoverType: handoverType || 'Reliever',
+          overtimeRate: Number(overtimeRate) || 1.0,
+        };
+        doc.remarks = (doc.remarks ? `${doc.remarks} | ` : '') + 'Single-day replacement covering for leave';
+      }
 
-      res.json({ success: true, message: 'Shift cover recorded successfully', data: doc });
+      await doc.save();
+      res.json({
+        success: true,
+        message: 'Single-day replacement assigned successfully. Next day strictly follows normal roster.',
+        data: doc,
+      });
     } catch (err) {
       console.error('coverShiftForLeave error:', err.message);
+      res.status(500).json({ success: false, message: err.message });
+    }
+  },
+
+  getAvailableWorkers: async (req, res) => {
+    try {
+      const { Employees, Attendance } = req.tenantModels || {};
+      if (!Employees) {
+        return res.status(500).json({ success: false, message: 'Tenant Employees model not available' });
+      }
+      const { date } = req.query;
+      const dStr = typeof date === 'string' && date ? date : new Date().toISOString().slice(0, 10);
+      const startOfDay = new Date(dStr + 'T00:00:00.000Z');
+      const endOfDay = new Date(dStr + 'T23:59:59.999Z');
+
+      const busyWorkerIds = new Set();
+      if (Attendance) {
+        const busyAttendances = await Attendance.find({
+          date: { $gte: startOfDay, $lte: endOfDay },
+          status: { $in: ['Present', 'Duty'] },
+          dutyEnd: null,
+        }).select('employeeId').lean();
+
+        busyAttendances.forEach((a) => {
+          if (a.employeeId) busyWorkerIds.add(String(a.employeeId));
+        });
+      }
+
+      const allEmployees = await Employees.find({
+        status: { $nin: ['Relieved', 'Inactive'] },
+      }).select('_id name userDisplayName mobile role status').lean();
+
+      const available = allEmployees.map((emp) => ({
+        _id: emp._id,
+        name: emp.name || emp.userDisplayName || 'Worker',
+        mobile: emp.mobile || '',
+        role: emp.role || 'Staff',
+        isAvailable: !busyWorkerIds.has(String(emp._id)),
+      })).sort((a, b) => (b.isAvailable ? 1 : 0) - (a.isAvailable ? 1 : 0));
+
+      res.json({ success: true, data: available });
+    } catch (err) {
+      console.error('getAvailableWorkers error:', err.message);
       res.status(500).json({ success: false, message: err.message });
     }
   },
@@ -6273,6 +6434,9 @@ exports.manageEmployees = {
               dayName: h.dayName,
               remark: h.remark,
               isPaid: h.isPaid,
+              scope: h.scope || (h.workerId ? 'worker' : 'site'),
+              workerId: h.workerId || null,
+              workerName: h.workerName || null,
               year: Number(year) || new Date().getFullYear(),
               month: Number(month) || (new Date().getMonth() + 1),
             });
@@ -6496,15 +6660,19 @@ exports.manageEmployees = {
       // Case 1: Holiday / Off addition
       if (type && type !== 'ShiftDuty') {
         const dObj = date ? new Date(date) : now;
-        rosterDoc.holidays.push({
+        const holidayEntry = {
           date: typeof date === 'string' ? date : dObj.toISOString().slice(0, 10),
           dayName: dayName || dObj.toLocaleDateString('en-US', { weekday: 'short' }),
           type: type || 'WeeklyRest',
-          remark: remark || 'Site Off / Holiday',
+          remark: remark || (workerName ? `${type} - ${workerName}` : 'Site Off / Holiday'),
           isPaid: isPaid !== undefined ? Boolean(isPaid) : true,
-        });
+          scope: workerId ? 'worker' : (req.body.scope || 'site'),
+          workerId: workerId || null,
+          workerName: workerName || null,
+        };
+        rosterDoc.holidays.push(holidayEntry);
         await rosterDoc.save();
-        return res.status(201).json({ success: true, message: 'Holiday saved to site roster', data: rosterDoc });
+        return res.status(201).json({ success: true, message: 'Holiday/Leave saved to site roster', data: rosterDoc });
       }
 
       // Case 2: Shift worker change / replacement (Strictly replaces assigned worker)

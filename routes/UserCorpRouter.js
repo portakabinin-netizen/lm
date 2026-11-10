@@ -91,6 +91,8 @@ router.post("/hr/attendance/backup-and-purge", ctrl.manageEmployees.backupAndPur
 router.get("/hr/attendance/backup-logs", ctrl.manageEmployees.getBackupLogs);
 router.get("/hr/attendance/download-backup/:backupId", ctrl.manageEmployees.downloadBackupArchive);
 router.post("/hr/attendance/cover-shift-leave", ctrl.manageEmployees.coverShiftForLeave);
+router.post("/hr/site-roster-holidays/cover", ctrl.manageEmployees.coverShiftForLeave);
+router.get("/hr/available-workers", ctrl.manageEmployees.getAvailableWorkers);
 
 router.post("/hr/attendance",    attendanceLockGuard, ctrl.manageEmployees.markAttendance);
 router.put("/hr/attendance/:id/compact-gps", attendanceLockGuard, ctrl.manageEmployees.updateCompactGps);
