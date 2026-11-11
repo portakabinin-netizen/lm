@@ -149,7 +149,7 @@ const manageSpoke = {
       // 🚀 Apply Hierarchical Location Filtering
       const q = { ...filter };
       const accessibleIds = req.user?.accessibleLocationIds;
-      if (req.user?.userRole !== 'CorpAdmin' && accessibleIds?.length > 0) {
+      if (req.query.all !== 'true' && req.user?.userRole !== 'CorpAdmin' && accessibleIds?.length > 0) {
         q.locationId = { $in: accessibleIds };
       }
 
@@ -607,7 +607,7 @@ exports.manageLeads = {
       const clean = mobile.replace(/\D/g, '').slice(-10);
       const q = { sender_mobile: { $regex: new RegExp(clean.split('').join('\\D*') + '\\D*$') } };
       const accessibleIds = req.user?.accessibleLocationIds;
-      if (req.user?.userRole !== 'CorpAdmin' && accessibleIds?.length > 0) {
+      if (req.query.all !== 'true' && req.user?.userRole !== 'CorpAdmin' && accessibleIds?.length > 0) {
         q.locationId = { $in: accessibleIds };
       }
 
@@ -626,7 +626,7 @@ exports.manageLeads = {
 
       const q = { status: { $regex: new RegExp(`^${status}$`, 'i') } };
       const accessibleIds = req.user?.accessibleLocationIds;
-      if (req.user?.userRole !== 'CorpAdmin' && accessibleIds?.length > 0) {
+      if (req.query.all !== 'true' && req.user?.userRole !== 'CorpAdmin' && accessibleIds?.length > 0) {
         q.locationId = { $in: accessibleIds };
       }
 
@@ -644,7 +644,7 @@ exports.manageLeads = {
 
       const q = { status: { $in: activeTags } };
       const accessibleIds = req.user?.accessibleLocationIds;
-      if (req.user?.userRole !== 'CorpAdmin' && accessibleIds?.length > 0) {
+      if (req.query.all !== 'true' && req.user?.userRole !== 'CorpAdmin' && accessibleIds?.length > 0) {
         q.locationId = { $in: accessibleIds };
       }
 
@@ -663,7 +663,7 @@ exports.manageLeads = {
       
       const q = {};
       const accessibleIds = req.user?.accessibleLocationIds;
-      if (req.user?.userRole !== 'CorpAdmin' && accessibleIds?.length > 0) {
+      if (req.query.all !== 'true' && req.user?.userRole !== 'CorpAdmin' && accessibleIds?.length > 0) {
         q.locationId = { $in: accessibleIds };
       }
 
@@ -792,7 +792,7 @@ exports.manageLeads = {
       const q = {};
 
       const accessibleIds = req.user?.accessibleLocationIds;
-      if (req.user?.userRole !== 'CorpAdmin' && accessibleIds?.length > 0) {
+      if (req.query.all !== 'true' && req.user?.userRole !== 'CorpAdmin' && accessibleIds?.length > 0) {
         q.locationId = { $in: accessibleIds };
       }
 
@@ -1696,10 +1696,17 @@ exports.manageEmployees = {
       if (req.query.all !== 'true') {
         q.active = { $ne: false };
       }
-      if (req.user?.userRole !== 'CorpAdmin' && accessibleIds?.length > 0) {
+      if (req.query.all !== 'true' && req.user?.userRole !== 'CorpAdmin' && accessibleIds?.length > 0) {
         q.locationId = { $in: accessibleIds };
       }
-      const employeesList = await Employees.find(q).lean();
+      let employeesList = await Employees.find(q).lean();
+
+      if (req.query.excludeCorpAdmin === 'true') {
+        employeesList = employeesList.filter((emp) => {
+          const r = String(emp.userRole || emp.role || '').trim().toLowerCase().replace(/[\s_-]/g, '');
+          return r !== 'corpadmin' && r !== 'corporateadmin' && r !== 'corpadminfull';
+        });
+      }
 
       const userMaster = require('../models/userMaster');
       const tenantDbName = req.tenantDbName || req.user?.dbName;
@@ -1707,7 +1714,13 @@ exports.manageEmployees = {
       if (tenantDbName) {
         uQuery.accessCorporate = { $elemMatch: { dbName: tenantDbName, isActive: { $ne: false } } };
       }
-      const userMasterList = await userMaster.find(uQuery).lean();
+      let userMasterList = await userMaster.find(uQuery).lean();
+      if (req.query.excludeCorpAdmin === 'true') {
+        userMasterList = userMasterList.filter((u) => {
+          const r = String(u.userRole || u.role || '').trim().toLowerCase().replace(/[\s_-]/g, '');
+          return r !== 'corpadmin' && r !== 'corporateadmin' && r !== 'corpadminfull';
+        });
+      }
 
       const userMapById = new Map();
       const userMapByMobile = new Map();
@@ -1725,6 +1738,7 @@ exports.manageEmployees = {
           mobile: u.userMobile || u.mobile,
           email: u.email,
           role: u.userRole || u.role || 'project',
+          userRole: u.userRole || u.role,
           employeeType: 'userMaster',
           user_id: u._id,
           userActive: u.userActive,
@@ -7133,18 +7147,32 @@ exports.manageEmployees = {
       const { workerId, year, month } = req.query;
       const filter = {
         $or: [
-          { penaltyAmount: { $gt: 0 } },
+          { penaltyImposed: { $gt: 0 } },
           { penaltyDeducted: { $gt: 0 } },
+          { penaltyAmount: { $gt: 0 } },
         ],
       };
 
-      if (workerId && mongoose.Types.ObjectId.isValid(workerId)) {
-        filter.employeeId = workerId;
+      if (workerId) {
+        const wid = String(workerId);
+        filter.$and = filter.$and || [];
+        filter.$and.push({
+          $or: [
+            { employeeId: wid },
+            ...(mongoose.Types.ObjectId.isValid(wid) ? [{ employeeId: new mongoose.Types.ObjectId(wid) }] : []),
+          ],
+        });
       }
       if (year && month) {
-        const startOfMonth = new Date(Number(year), Number(month) - 1, 1);
+        const startOfMonth = new Date(Number(year), Number(month) - 1, 1, 0, 0, 0, 0);
         const endOfMonth = new Date(Number(year), Number(month), 0, 23, 59, 59, 999);
-        filter.date = { $gte: startOfMonth, $lte: endOfMonth };
+        filter.$and = filter.$and || [];
+        filter.$and.push({
+          $or: [
+            { date: { $gte: startOfMonth, $lte: endOfMonth } },
+            { dutyStart: { $gte: startOfMonth, $lte: endOfMonth } },
+          ],
+        });
       }
 
       const records = await Attendance.find(filter)
@@ -7152,17 +7180,26 @@ exports.manageEmployees = {
         .sort({ date: -1 })
         .lean();
 
-      const formatted = records.map((r) => ({
-        _id: r._id,
-        id: r.employeeId?._id || r.employeeId,
-        workerId: r.employeeId?._id || r.employeeId,
-        workerName: r.employeeId?.name || r.workerName || 'Worker',
-        penaltyImposed: r.penaltyImposed || 0,
-        penaltyDeducted: r.penaltyDeducted || 0,
-        penaltyWaivedOff: r.penaltyWaivedOff || 0,
-        penaltyReason: r.penaltyReason || '',
-        date: r.date,
-      }));
+      const formatted = records.map((r) => {
+        const rawWorkerId = r.employeeId?._id || r.employeeId || '';
+        const rawWorkerName = r.employeeId?.name || r.workerName || 'Worker';
+        const imp = Number(r.penaltyImposed) || Number(r.penaltyAmount) || 0;
+        const ded = Number(r.penaltyDeducted) || 0;
+        const wai = Number(r.penaltyWaivedOff) || 0;
+        return {
+          _id: r._id,
+          id: String(rawWorkerId),
+          workerId: String(rawWorkerId),
+          workerName: rawWorkerName,
+          penaltyImposed: imp,
+          penaltyDeducted: ded,
+          penaltyWaivedOff: wai,
+          penaltyAmount: imp,
+          penaltyReason: r.penaltyReason || '',
+          violationType: r.violationType || '',
+          date: r.date,
+        };
+      });
 
       res.json({ success: true, data: formatted });
     } catch (err) {
@@ -7193,13 +7230,29 @@ exports.manageEmployees = {
         if (m && y && targetEmpId) {
           const startOfMonth = new Date(y, m - 1, 1, 0, 0, 0, 0);
           const endOfMonth = new Date(y, m, 0, 23, 59, 59, 999);
+          const empOr = [
+            { employeeId: targetEmpId },
+            ...(mongoose.Types.ObjectId.isValid(targetEmpId) ? [{ employeeId: new mongoose.Types.ObjectId(targetEmpId) }] : []),
+          ];
           const attDocs = await Attendance.find({
-            employeeId: targetEmpId,
-            date: { $gte: startOfMonth, $lte: endOfMonth },
-            penaltyImposed: { $gt: 0 },
+            $and: [
+              { $or: empOr },
+              {
+                $or: [
+                  { date: { $gte: startOfMonth, $lte: endOfMonth } },
+                  { dutyStart: { $gte: startOfMonth, $lte: endOfMonth } },
+                ],
+              },
+              {
+                $or: [
+                  { penaltyImposed: { $gt: 0 } },
+                  { penaltyAmount: { $gt: 0 } },
+                ],
+              },
+            ],
           });
           for (const doc of attDocs) {
-            const imp = Number(doc.penaltyImposed) || 0;
+            const imp = Number(doc.penaltyImposed) || Number(doc.penaltyAmount) || 0;
             const wai = Number(doc.penaltyWaivedOff) || 0;
             doc.penaltyDeducted = Math.max(0, imp - wai);
             await doc.save();
@@ -7517,7 +7570,7 @@ exports.manageSuppliers = {
       }
       const q = { type: 'Supplier' };
       const accessibleIds = req.user?.accessibleLocationIds;
-      if (req.user?.userRole !== 'CorpAdmin' && accessibleIds?.length > 0) {
+      if (req.query.all !== 'true' && req.user?.userRole !== 'CorpAdmin' && accessibleIds?.length > 0) {
         q.locationId = { $in: accessibleIds };
       }
       const data = await Model.find(q).sort({ createdAt: -1 }).lean();
