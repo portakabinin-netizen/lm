@@ -435,9 +435,6 @@ async function resolveBoundRosterWorker({
   }
 
   if (!boundWorkerId) {
-    console.log(
-      '[autoEndScheduler] No permanently bound worker assigned in roster table for slot ' + targetCode + ' at "' + (lead?.sender_name || 'Site') + '".'
-    );
     return null;
   }
 
@@ -474,9 +471,6 @@ async function resolveBoundRosterWorker({
   if (check.ok) {
     const resolvedWorkerName = check.emp?.name || boundWorkerName || 'Worker';
     const finalSalaryRate = boundSalaryRate || check.emp?.daily_rate || check.emp?.rate || 0;
-    console.log(
-      '🔒 [autoEndScheduler] Bound roster worker resolved: ' + resolvedWorkerName + ' (' + boundWorkerId + ') for ' + targetCode + ' at "' + (lead?.sender_name || 'Site') + '" (salaryRate: ₹' + finalSalaryRate + ')'
-    );
     return {
       workerId: boundWorkerId,
       emp: check.emp,
@@ -486,9 +480,6 @@ async function resolveBoundRosterWorker({
       holidayRemark: check.holidayRemark,
     };
   } else {
-    console.log(
-      '⚠️ [autoEndScheduler] Bound worker ' + boundWorkerId + ' unavailable for ' + targetCode + ' at "' + (lead?.sender_name || 'Site') + '": ' + check.reason + ' (' + (check.remark || '') + ')'
-    );
     return null;
   }
 }
@@ -586,9 +577,6 @@ async function findSteppedPreviousDayWorker({
         });
 
         if (check.ok) {
-          console.log(
-            `🔄 [autoEndScheduler] Stepped fallback found worker ${check.emp.name || candidateId} from today-${dayOffset} (${targetDateStr}) on shift ${targetShiftCode || targetCodes.join('/')} at "${lead.sender_name || 'Site'}"`
-          );
           return {
             workerId: candidateId,
             emp: check.emp,
@@ -636,9 +624,6 @@ async function findSteppedPreviousDayWorker({
       });
 
       if (check.ok) {
-        console.log(
-          `🔄 [autoEndScheduler] Stepped fallback found worker ${check.emp.name || candidateId} from today-${dayOffset} (${targetDateStr}) (site-level duty) at "${lead.sender_name || 'Site'}"`
-        );
         return {
           workerId: candidateId,
           emp: check.emp,
@@ -689,36 +674,49 @@ function cleanupSuppressionCache() {
   }
 }
 
-// ── Debounced Bulk Notification State: "{Worker count} Rollover successfully" ──
-const _pendingRolloverCounts = new Map(); // tenantDbName -> count
+// ── Debounced Bulk Notification State: "{Worker count} worker(s) across {Site count} site(s) rollover successfully" ──
+const _pendingRolloverCounts = new Map(); // tenantDbName -> worker count
+const _pendingRolloverSites = new Map();  // tenantDbName -> Set of unique siteIds
 const _pendingRolloverTimers = new Map(); // tenantDbName -> NodeJS.Timeout
 
-function recordRolloverSuccess(tenantDbName, io, count = 1) {
+function recordRolloverSuccess(tenantDbName, io, count = 1, siteId = null) {
   if (!io || !tenantDbName || count <= 0) return;
 
   const currentCount = (_pendingRolloverCounts.get(tenantDbName) || 0) + count;
   _pendingRolloverCounts.set(tenantDbName, currentCount);
+
+  if (siteId) {
+    if (!_pendingRolloverSites.has(tenantDbName)) {
+      _pendingRolloverSites.set(tenantDbName, new Set());
+    }
+    _pendingRolloverSites.get(tenantDbName).add(String(siteId));
+  }
 
   if (_pendingRolloverTimers.has(tenantDbName)) {
     clearTimeout(_pendingRolloverTimers.get(tenantDbName));
   }
 
   const timer = setTimeout(() => {
-    const finalCount = _pendingRolloverCounts.get(tenantDbName) || 0;
+    const finalWorkerCount = _pendingRolloverCounts.get(tenantDbName) || 0;
+    const siteSet = _pendingRolloverSites.get(tenantDbName);
+    const finalSiteCount = siteSet && siteSet.size > 0 ? siteSet.size : 1;
+
     _pendingRolloverCounts.delete(tenantDbName);
+    _pendingRolloverSites.delete(tenantDbName);
     _pendingRolloverTimers.delete(tenantDbName);
 
-    if (finalCount > 0) {
+    if (finalWorkerCount > 0) {
+      const summaryMsg = `${finalWorkerCount} worker(s) across ${finalSiteCount} site(s) rollover successfully`;
       io.to(tenantDbName).emit('admin:broadcast', {
         id: 'rollover-bulk-' + Date.now(),
         title: 'Auto Shift Rollover Successful',
-        message: `${finalCount} Rollover successfully`,
+        message: summaryMsg,
         priority: 'normal',
         targetRoles: ['CorpAdmin', 'userAdmin', 'Project'],
         sentBy: 'System',
         at: new Date().toISOString(),
       });
-      console.log(`📢 [autoEndScheduler] Emitted bulk rollover notification for tenant ${tenantDbName}: "${finalCount} Rollover successfully"`);
+      console.log(`📢 [autoEndScheduler] Rollover summary: ${summaryMsg}`);
     }
   }, 2500); // 2.5s debounce to aggregate all concurrent / sweeper workers
 
@@ -738,7 +736,6 @@ function scheduleAutoEnd(attendanceId, scheduledEndAt, AttendanceModel, tenantDb
       const existing = await AttendanceModel.findById(id).select('markedByDevice employeeType employeeId siteId workerName').lean();
       if (!existing) return;
       if (existing.markedByDevice === true || existing.employeeType === 'userMaster' || existing.siteId === '__HO__') {
-        console.log(`📱 [autoEndScheduler] Attendance ${id} (${existing.workerName || 'Staff'}) marked on own device. Skipping auto-end; duty end will be marked by worker/staff.`);
         return;
       }
       const db = AttendanceModel.db;
@@ -749,7 +746,6 @@ function scheduleAutoEnd(attendanceId, scheduledEndAt, AttendanceModel, tenantDb
         EmployeesModel: Employees,
       });
       if (isOwnDev) {
-        console.log(`📱 [autoEndScheduler] Worker ${existing.workerName || 'Staff'} (${existing.employeeId}) logs in with own device. Skipping auto-end; duty end will be marked by worker/staff.`);
         return;
       }
       // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -855,7 +851,6 @@ function scheduleAutoEnd(attendanceId, scheduledEndAt, AttendanceModel, tenantDb
           at: endTime.toISOString(),
         });
       }
-      console.log('[autoEndScheduler] Auto-closed attendance ' + id + ' at scheduled end.');
 
       // ── Trigger Auto Shift Rollover to next bound worker ──
       handleAutoShiftRollover(result, AttendanceModel, tenantDbName, io).catch((err) =>
@@ -867,7 +862,6 @@ function scheduleAutoEnd(attendanceId, scheduledEndAt, AttendanceModel, tenantDb
   }, delayMs);
 
   _timers.set(id, timer);
-  console.log('[autoEndScheduler] Scheduled auto-end for ' + id + ' in ' + Math.round(delayMs / 60000) + ' min');
 }
 
 /**
@@ -891,9 +885,6 @@ async function handleAutoShiftRollover(closedAttendance, AttendanceModel, tenant
 
     // 1) Logic Check: Lead status must be strictly 'Accepted'
     if (!isValidLeadStatus(lead.status)) {
-      console.log(
-        `[autoEndScheduler] Site "${lead.sender_name || lead.name}" has status "${lead.status}" (only "Accepted" leads allowed for marking attendance). Skipping rollover.`
-      );
       return;
     }
 
@@ -902,9 +893,6 @@ async function handleAutoShiftRollover(closedAttendance, AttendanceModel, tenant
 
     // 2) Single-shift site schedule check:
     if (activeSiteShifts.length === 1) {
-      console.log(
-        `[autoEndScheduler] Site "${lead.sender_name || 'Site'}" is a single-shift schedule (${activeSiteShifts[0].shiftCode}). Will auto-start at next scheduled start time.`
-      );
       return;
     }
 
@@ -926,7 +914,6 @@ async function handleAutoShiftRollover(closedAttendance, AttendanceModel, tenant
       nextShiftCode = nightShift ? nightShift.shiftCode : 'N';
     } else if (outgoingCode === 'G') {
       // 🛡️ General shift (G) is EXEMPT from shift switching / rotational rollover
-      console.log(`[autoEndScheduler] Shift G (General) at site "${lead.sender_name || 'Site'}" is exempt from rotational shift switching.`);
       return null;
     } else {
       const other = activeSiteShifts.find((s) => s.shiftCode !== outgoingCode);
@@ -960,9 +947,6 @@ async function handleAutoShiftRollover(closedAttendance, AttendanceModel, tenant
 
       // ── Check Daily Shift Slot Suppression ──
       if (isShiftSlotSuppressed(tenantDbName, effectiveLeadId, targetShiftCode, todayStr)) {
-        console.log(
-          `🛡️ [autoEndScheduler] Slot ${targetShiftCode} at site "${lead.sender_name || 'Site'}" is suppressed for today. Skipping slot.`
-        );
         continue;
       }
 
@@ -977,9 +961,6 @@ async function handleAutoShiftRollover(closedAttendance, AttendanceModel, tenant
       }).lean();
 
       if (siteShiftAlreadyActive) {
-        console.log(
-          `[autoEndScheduler] Site "${lead.sender_name || 'Site'}" already has an active duty on shift ${targetShiftCode}. Checking next slot.`
-        );
         continue;
       }
 
@@ -1001,7 +982,6 @@ async function handleAutoShiftRollover(closedAttendance, AttendanceModel, tenant
       const excludeSet = new Set();
       if (boundId && justEndedWorkerId && boundId === justEndedWorkerId && isSwitchOrDoubleDutyPair) {
         // Worker is assigned to do BOTH shifts (Double Duty: D-N2 or M-A/A-N/N-M) - allow seamless rollover!
-        console.log(`[autoEndScheduler] Worker ${justEndedWorkerId} is bound to both ${outgoingCode} and ${targetShiftCode} (Double Duty). Allowing rollover.`);
       } else if (justEndedWorkerId) {
         excludeSet.add(justEndedWorkerId);
       }
@@ -1026,9 +1006,6 @@ async function handleAutoShiftRollover(closedAttendance, AttendanceModel, tenant
       });
 
       if (!boundWorker) {
-        console.log(
-          `[autoEndScheduler] No available bound worker for slot ${targetShiftCode} at site "${lead.sender_name || 'site'}". Reliever required.`
-        );
         if (io && tenantDbName) {
           io.to(tenantDbName).emit('attendance:reliever_needed', {
             siteId: String(lead._id),
@@ -1067,9 +1044,6 @@ async function handleAutoShiftRollover(closedAttendance, AttendanceModel, tenant
       });
 
       if (isIncomingOwnDevice) {
-        console.log(
-          `📱 [autoEndScheduler] Rollover worker/staff ${incomingWorkerName} (${incomingWorkerId}) logs in with own device. Skipping auto-start rollover; duty start will be marked by worker/staff.`
-        );
         continue; // Worker marks duty themselves via app
       }
       // ──────────────────────────────────────────────────────────
@@ -1078,7 +1052,6 @@ async function handleAutoShiftRollover(closedAttendance, AttendanceModel, tenant
     }
 
     if (!startedShift) {
-      console.log(`[autoEndScheduler] No eligible incoming worker available for rollover at site "${lead.sender_name || 'Site'}".`);
       return;
     }
 
@@ -1127,9 +1100,6 @@ async function handleAutoShiftRollover(closedAttendance, AttendanceModel, tenant
     const gapMs = scheduledStartUtc.getTime() - endTime.getTime();
 
     if (gapMs > MAX_ROLLOVER_HANDOVER_GAP_MS) {
-      console.log(
-        `⏱️ [autoEndScheduler] Non-continuous shift detected. Shift ${outgoingCode} ended at ${endTime.toISOString()}, but next shift ${targetShiftCode} starts at ${scheduledStartUtc.toISOString()} (${Math.round(gapMs / 60000)}m gap). Shift will auto-start at its scheduled start time.`
-      );
       return; // Defer to autoStartScheduledShifts at scheduled start time!
     }
 
@@ -1202,11 +1172,8 @@ async function handleAutoShiftRollover(closedAttendance, AttendanceModel, tenant
     if (io && tenantDbName) {
       io.to(tenantDbName).emit('attendance:created', { data: newDuty });
       io.to(tenantDbName).emit('attendance:active_updated');
-      recordRolloverSuccess(tenantDbName, io, 1);
+      recordRolloverSuccess(tenantDbName, io, 1, effectiveLeadId || lead._id);
     }
-    console.log(
-      `[autoEndScheduler] Auto-rolled over duty at ${lead.sender_name} to ${incomingWorkerName} (${targetShiftCode})`
-    );
   } catch (rErr) {
     console.error('[autoEndScheduler] handleAutoShiftRollover error:', rErr.message);
   }
@@ -1253,9 +1220,6 @@ async function sweepExpiredShifts(AttendanceModel, tenantDbName, io) {
       });
 
       if (isOwnDevice) {
-        console.log(
-          `📱 [autoEndScheduler] Skipping auto-end for ${rec.workerName} (${rec.employeeId}) — worker logs in with own device. Duty end must be marked by worker/staff.`
-        );
         cancelAutoEnd(rec._id);
         continue;
       }
@@ -1479,9 +1443,6 @@ async function autoStartScheduledShifts(conn, tenantDbName, io) {
           });
 
           if (workerHasOwnDevice) {
-            console.log(
-              `📱 [autoEndScheduler] Worker/staff ${workerName} (${targetWorkerId}) at "${lead.sender_name || 'Site'}" logs in with own device. Skipping auto-start duty; duty start will be marked by worker/staff via app.`
-            );
             continue; // Do NOT auto-start duty! Worker will mark duty start via app
           }
           // ─────────────────────────────────────────────────────────
@@ -1552,12 +1513,8 @@ async function autoStartScheduledShifts(conn, tenantDbName, io) {
           if (io && tenantDbName) {
             io.to(tenantDbName).emit('attendance:created', { data: newDuty });
             io.to(tenantDbName).emit('attendance:active_updated');
-            recordRolloverSuccess(tenantDbName, io, 1);
+            recordRolloverSuccess(tenantDbName, io, 1, lead._id);
           }
-
-          console.log(
-            `[autoEndScheduler] Auto-started scheduled shift ${shiftCode} at site "${lead.sender_name || 'Site'}" for ${workerName} (${targetWorkerId})`
-          );
         }
       }
     }
